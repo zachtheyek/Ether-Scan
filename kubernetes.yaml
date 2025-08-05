@@ -1,0 +1,211 @@
+# SETI ML Pipeline Kubernetes Deployment
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: seti-ml
+
+---
+# Persistent Volume for data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seti-data-pvc
+  namespace: seti-ml
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Ti
+
+---
+# Persistent Volume for models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seti-models-pvc
+  namespace: seti-ml
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# ConfigMap for pipeline configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seti-config
+  namespace: seti-ml
+data:
+  config.json: |
+    {
+      "model": {
+        "latent_dim": 8,
+        "dense_layer_size": 512,
+        "alpha": 10.0,
+        "beta": 0.5
+      },
+      "data": {
+        "width_bin": 4096,
+        "downsample_factor": 8
+      },
+      "inference": {
+        "batch_size": 5000,
+        "classification_threshold": 0.5
+      }
+    }
+
+---
+# Training Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seti-training-job
+  namespace: seti-ml
+spec:
+  template:
+    spec:
+      containers:
+      - name: seti-training
+        image: gcr.io/project-id/seti-ml:latest
+        command: ["python", "main.py", "train", "--rounds", "20"]
+        resources:
+          requests:
+            memory: "32Gi"
+            cpu: "8"
+            nvidia.com/gpu: "4"
+          limits:
+            memory: "64Gi"
+            cpu: "16"
+            nvidia.com/gpu: "4"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data/seti
+        - name: models-volume
+          mountPath: /models/seti
+        - name: config-volume
+          mountPath: /app/config
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: seti-data-pvc
+      - name: models-volume
+        persistentVolumeClaim:
+          claimName: seti-models-pvc
+      - name: config-volume
+        configMap:
+          name: seti-config
+      restartPolicy: OnFailure
+
+---
+# Inference Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seti-inference
+  namespace: seti-ml
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: seti-inference
+  template:
+    metadata:
+      labels:
+        app: seti-inference
+    spec:
+      containers:
+      - name: seti-inference
+        image: gcr.io/project-id/seti-ml:latest
+        command: ["python", "inference_server.py"]  # Would need to create this
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "32Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: models-volume
+          mountPath: /models/seti
+          readOnly: true
+        env:
+        - name: VAE_MODEL_PATH
+          value: "/models/seti/vae_encoder_final.h5"
+        - name: RF_MODEL_PATH
+          value: "/models/seti/random_forest_final.joblib"
+      volumes:
+      - name: models-volume
+        persistentVolumeClaim:
+          claimName: seti-models-pvc
+
+---
+# Service for inference
+apiVersion: v1
+kind: Service
+metadata:
+  name: seti-inference-service
+  namespace: seti-ml
+spec:
+  selector:
+    app: seti-inference
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: LoadBalancer
+
+---
+# CronJob for periodic processing
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: seti-batch-processing
+  namespace: seti-ml
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: seti-batch
+            image: gcr.io/project-id/seti-ml:latest
+            command: 
+            - python
+            - main.py
+            - inference
+            - /models/seti/vae_encoder_latest.h5
+            - /models/seti/random_forest_latest.joblib
+            - --n-bands
+            - "16"
+            resources:
+              requests:
+                memory: "32Gi"
+                cpu: "8"
+                nvidia.com/gpu: "2"
+            volumeMounts:
+            - name: data-volume
+              mountPath: /data/seti
+            - name: models-volume
+              mountPath: /models/seti
+            - name: output-volume
+              mountPath: /output/seti
+          volumes:
+          - name: data-volume
+            persistentVolumeClaim:
+              claimName: seti-data-pvc
+          - name: models-volume
+            persistentVolumeClaim:
+              claimName: seti-models-pvc
+          - name: output-volume
+            persistentVolumeClaim:
+              claimName: seti-output-pvc
+          restartPolicy: OnFailure
