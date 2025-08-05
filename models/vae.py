@@ -24,7 +24,7 @@ class Sampling(layers.Layer):
 class BetaVAE(keras.Model):
     """Beta-VAE model with custom loss functions for SETI"""
     
-    def __init__(self, encoder, decoder, alpha=10, beta=0.5, gamma=0, **kwargs):
+    def __init__(self, encoder, decoder, alpha=10, beta=1.5, gamma=0, **kwargs):
         super(BetaVAE, self).__init__(**kwargs)
         self.encoder = encoder
         self.decoder = decoder
