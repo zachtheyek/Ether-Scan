@@ -108,7 +108,7 @@ def create_cadence_data(background: np.ndarray, signal_type: str,
     
     # Random signal parameters
     snr = np.random.uniform(*snr_range)
-    drift_rate = np.random.uniform(*drift_range)
+    drift_rate = np.random.uniform(*drift_range) # NOTE: addressed class imbalance from new_cadence() in synthetic_real_dynamic.py (from original code base)
     
     if signal_type == "true":
         # ETI signal: appears only in ON observations (0, 2, 4)
