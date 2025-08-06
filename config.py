@@ -5,7 +5,7 @@ Contains all hyperparameters and settings
 
 import os
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 
 @dataclass
 class ModelConfig:
@@ -30,6 +30,34 @@ class DataConfig:
     # Frequency and time resolution
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
+
+    # Data file specifications
+    training_files: List[str] = None
+    test_files: List[str] = None
+    
+    # Data subset specifications (for memory management)
+    file_subsets: Dict[str, Tuple[Optional[int], Optional[int]]] = None
+    
+    def __post_init__(self):
+        """Initialize default file lists"""
+        if self.training_files is None:
+            self.training_files = [
+                'real_filtered_LARGE_HIP110750.npy',
+                'real_filtered_LARGE_HIP13402.npy',
+                'real_filtered_LARGE_HIP8497.npy'
+            ]
+        
+        if self.test_files is None:
+            self.test_files = [
+                'real_filtered_LARGE_test_HIP15638.npy'
+            ]
+        
+        if self.file_subsets is None:
+            self.file_subsets = {
+                'real_filtered_LARGE_HIP110750.npy': (8000, None),  # Skip first 8000
+                'real_filtered_LARGE_HIP13402.npy': (None, 4000),   # Use first 4000
+                'real_filtered_LARGE_HIP8497.npy': (None, 4000)     # Use first 4000
+            }
     
 @dataclass
 class TrainingConfig:
@@ -69,10 +97,22 @@ class Config:
         self.rf = RandomForestConfig()
         self.inference = InferenceConfig()
         
-        # Paths
+        # Paths - can be overridden by environment variables
         self.data_path = os.environ.get('SETI_DATA_PATH', '/data/seti')
         self.model_path = os.environ.get('SETI_MODEL_PATH', '/models/seti')
         self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/output/seti')
+
+    def get_training_file_path(self, filename: str) -> str:
+        """Get full path for a training file"""
+        return os.path.join(self.data_path, 'training', filename)
+    
+    def get_test_file_path(self, filename: str) -> str:
+        """Get full path for a test file"""
+        return os.path.join(self.data_path, 'testing', filename)
+    
+    def get_file_subset(self, filename: str) -> Tuple[Optional[int], Optional[int]]:
+        """Get subset slice indices for a file"""
+        return self.data.file_subsets.get(filename, (None, None))
         
     def to_dict(self):
         """Convert config to dictionary for serialization"""

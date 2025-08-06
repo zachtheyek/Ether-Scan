@@ -39,32 +39,46 @@ def setup_gpu_config():
         except RuntimeError as e:
             logger.error(f"GPU configuration error: {e}")
 
-def load_background_data(data_path: str) -> np.ndarray:
-    """Load background observation data"""
-    logger.info(f"Loading background data from {data_path}")
+def load_background_data(config: Config) -> np.ndarray:
+    """
+    Load background observation data based on configuration
     
-    # This is a placeholder - in production, this would load actual observation files
-    # For now, assuming preprocessed numpy arrays
-    background_files = [
-        'real_filtered_LARGE_HIP110750.npy',
-        'real_filtered_LARGE_HIP13402.npy',
-        'real_filtered_LARGE_HIP8497.npy'
-    ]
+    Args:
+        config: Configuration object with file specifications
+        
+    Returns:
+        Stacked numpy array of background observations
+    """
+    logger.info(f"Loading background data from {config.data_path}")
     
     backgrounds = []
-    for filename in background_files:
-        filepath = os.path.join(data_path, filename)
-        if os.path.exists(filepath):
-            data = np.load(filepath)
-            backgrounds.append(data)
-            logger.info(f"Loaded {filename}: shape {data.shape}")
     
-    if backgrounds:
-        return np.vstack(backgrounds)
-    else:
-        # Generate dummy data for testing
-        logger.warning("No background files found, generating dummy data")
-        return np.random.randn(1000, 6, 16, 4096)
+    for filename in config.data.training_files:
+        filepath = config.get_training_file_path(filename)
+        
+        if os.path.exists(filepath):
+            # Load the data
+            data = np.load(filepath)
+            logger.info(f"Loaded {filename}: original shape {data.shape}")
+            
+            # Apply subset if specified
+            start, end = config.get_file_subset(filename)
+            if start is not None or end is not None:
+                data = data[start:end]
+                logger.info(f"  Applied subset [{start}:{end}], new shape {data.shape}")
+            
+            backgrounds.append(data)
+        else:
+            logger.warning(f"File not found: {filepath}")
+    
+    if not backgrounds:
+        raise FileNotFoundError(f"No training files found in {config.data_path}/training/")
+    
+    # Stack all backgrounds
+    stacked_data = np.vstack(backgrounds)
+    logger.info(f"Total background data shape: {stacked_data.shape}")
+    
+    return stacked_data
 
 def train_command(args):
     """Execute training command"""
@@ -81,7 +95,7 @@ def train_command(args):
         config.training.batch_size = args.batch_size
     
     # Load background data
-    background_data = load_background_data(args.data_path or config.data_path)
+    background_data = load_background_data(config)
     
     # Train
     pipeline = train_full_pipeline(
