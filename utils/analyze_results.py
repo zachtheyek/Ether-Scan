@@ -1,4 +1,7 @@
-# analyze_results.py
+"""
+Loads inference results & summarizes high-confidence detections
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 
