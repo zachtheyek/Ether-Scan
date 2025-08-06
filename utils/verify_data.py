@@ -1,4 +1,10 @@
-# verify_data.py
+"""
+Data loading script to verify data formats
+Expected shape: (N, 6, 16, 4096)
+Expected dtype: float34 or float64
+Expected values: >=0
+"""
+
 import numpy as np
 import os
 
