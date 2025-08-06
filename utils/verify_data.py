@@ -1,28 +1,193 @@
 """
-Data loading script to verify data formats
-Expected shape: (N, 6, 16, 4096)
-Expected dtype: float34 or float64
-Expected values: >=0
+Memory-efficient data verification script
+Uses memory mapping to avoid loading entire files into RAM
 """
 
 import numpy as np
 import os
+import gc
+import psutil
+from typing import Dict, Any
 
-def verify_data_format(data_path):
-    files = [f for f in os.listdir(data_path) if f.endswith('.npy')]
+def get_memory_usage():
+    """Get current memory usage in GB"""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024 / 1024
+
+def verify_data_file(filepath: str) -> Dict[str, Any]:
+    """
+    Verify a single data file using memory mapping
     
-    for file in files[:3]:  # Check first 3 files
+    Args:
+        filepath: Path to the numpy file
+        
+    Returns:
+        Dictionary with file information
+    """
+    filename = os.path.basename(filepath)
+    print(f"\nFile: {filename}")
+    
+    # Get file size
+    file_size_gb = os.path.getsize(filepath) / 1e9
+    print(f"File size: {file_size_gb:.2f} GB")
+    
+    # Use memory mapping to avoid loading entire file
+    data = np.load(filepath, mmap_mode='r')
+    
+    info = {
+        'filename': filename,
+        'shape': data.shape,
+        'dtype': str(data.dtype),
+        'file_size_gb': file_size_gb
+    }
+    
+    print(f"Shape: {data.shape}")
+    print(f"Data type: {data.dtype}")
+    
+    # Sample data statistics (don't process entire array)
+    # Sample from different parts of the file
+    n_samples = min(10, data.shape[0])
+    sample_indices = np.linspace(0, data.shape[0]-1, n_samples, dtype=int)
+    
+    sample_mins = []
+    sample_maxs = []
+    sample_means = []
+    
+    print(f"Sampling {n_samples} snippets for statistics...")
+    
+    for idx in sample_indices:
+        # Load just one snippet at a time
+        snippet = data[idx]
+        sample_mins.append(np.min(snippet))
+        sample_maxs.append(np.max(snippet))
+        sample_means.append(np.mean(snippet))
+        
+        # Clear snippet from memory
+        del snippet
+        gc.collect()
+    
+    info['sample_min'] = np.min(sample_mins)
+    info['sample_max'] = np.max(sample_maxs)
+    info['sample_mean'] = np.mean(sample_means)
+    
+    print(f"Sample min value: {info['sample_min']:.2e}")
+    print(f"Sample max value: {info['sample_max']:.2e}")
+    print(f"Sample mean value: {info['sample_mean']:.2e}")
+    
+    # Calculate expected memory requirement if loaded fully
+    expected_memory_gb = np.prod(data.shape) * np.dtype(data.dtype).itemsize / 1e9
+    print(f"Memory required if fully loaded: {expected_memory_gb:.2f} GB")
+    
+    info['expected_memory_gb'] = expected_memory_gb
+    
+    # Clean up
+    del data
+    gc.collect()
+    
+    return info
+
+def verify_data_format(data_path: str, max_files: int = None):
+    """
+    Verify data format for all files in a directory
+    
+    Args:
+        data_path: Directory containing .npy files
+        max_files: Maximum number of files to check
+    """
+    files = sorted([f for f in os.listdir(data_path) if f.endswith('.npy')])
+    
+    if max_files:
+        files = files[:max_files]
+    
+    print(f"Found {len(files)} .npy files")
+    print(f"Initial memory usage: {get_memory_usage():.2f} GB")
+    
+    all_info = []
+    
+    for i, file in enumerate(files):
+        print(f"\n--- Processing file {i+1}/{len(files)} ---")
         filepath = os.path.join(data_path, file)
-        data = np.load(filepath)
-        print(f"\nFile: {file}")
-        print(f"Shape: {data.shape}")
-        print(f"Data type: {data.dtype}")
-        print(f"Min value: {data.min()}")
-        print(f"Max value: {data.max()}")
-        print(f"File size: {os.path.getsize(filepath) / 1e9:.2f} GB")
+        
+        try:
+            info = verify_data_file(filepath)
+            all_info.append(info)
+        except Exception as e:
+            print(f"Error processing {file}: {e}")
+            continue
+        
+        print(f"Current memory usage: {get_memory_usage():.2f} GB")
+        
+        # Force garbage collection
+        gc.collect()
+    
+    return all_info
 
-print("=== Training Data ===")
-verify_data_format('/data/seti/training/')
+def print_summary(info_list: list):
+    """Print summary statistics"""
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    
+    total_size = sum(info['file_size_gb'] for info in info_list)
+    total_memory = sum(info['expected_memory_gb'] for info in info_list)
+    
+    print(f"Total files processed: {len(info_list)}")
+    print(f"Total disk space: {total_size:.2f} GB")
+    print(f"Total memory if all loaded: {total_memory:.2f} GB")
+    
+    # Check shape consistency
+    shapes = [info['shape'] for info in info_list]
+    unique_shapes = list(set(str(s[1:]) for s in shapes))  # Ignore first dimension
+    
+    if len(unique_shapes) == 1:
+        print(f"Consistent data shape (excluding first dim): {unique_shapes[0]}")
+    else:
+        print(f"WARNING: Inconsistent shapes found: {unique_shapes}")
+    
+    # Data type consistency
+    dtypes = list(set(info['dtype'] for info in info_list))
+    if len(dtypes) == 1:
+        print(f"Consistent data type: {dtypes[0]}")
+    else:
+        print(f"WARNING: Multiple data types: {dtypes}")
 
-print("\n=== Test Data ===")
-verify_data_format('/data/seti/testing/')
+def main():
+    """Main verification function"""
+    print("=== Memory-Efficient Data Verification ===")
+    
+    # Check available memory
+    total_memory = psutil.virtual_memory().total / 1e9
+    available_memory = psutil.virtual_memory().available / 1e9
+    
+    print(f"System memory: {total_memory:.1f} GB total, {available_memory:.1f} GB available")
+    
+    # Verify training data
+    print("\n=== Training Data ===")
+    training_info = verify_data_format('/data/seti/training/')
+    
+    # Verify test data
+    print("\n\n=== Test Data ===")
+    test_info = verify_data_format('/data/seti/testing/')
+    
+    # Print summaries
+    print_summary(training_info)
+    
+    # Recommendations
+    print("\n" + "="*60)
+    print("RECOMMENDATIONS")
+    print("="*60)
+    
+    if training_info:
+        sample_info = training_info[0]
+        if sample_info['expected_memory_gb'] > available_memory * 0.8:
+            print("WARNING: Data files are too large to load entirely into memory!")
+            print("Recommendations:")
+            print("1. Use memory mapping (mmap_mode='r') when loading files")
+            print("2. Process data in smaller chunks")
+            print("3. Consider downsampling or using a subset for initial testing")
+            print("4. Upgrade to a machine with more RAM if full loading is required")
+    
+    print("\nVerification complete!")
+
+if __name__ == "__main__":
+    main()
