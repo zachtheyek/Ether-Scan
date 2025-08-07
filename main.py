@@ -96,13 +96,16 @@ def train_command(args):
     
     # Load background data
     background_data = load_background_data(config)
+    logger.info(f"Background data loaded successfully, shape: {background_data.shape}")
     
     # Train
+    logger.info("Starting train_full_pipeline...")
     pipeline = train_full_pipeline(
         config,
         background_data,
         n_rounds=args.rounds
     )
+    logger.info("train_full_pipeline completed")
     
     # Save config
     config_path = os.path.join(config.model_path, 'config.json')

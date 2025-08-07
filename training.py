@@ -28,12 +28,17 @@ class TrainingPipeline:
             config: Configuration object
             background_data: Array of background observations for data generation
         """
+        logger.info("Initializing TrainingPipeline...")
         self.config = config
+        logger.info("Creating DataPreprocessor...")
         self.preprocessor = DataPreprocessor(config)
+        logger.info("Creating DataGenerator...")
         self.data_generator = DataGenerator(config, background_data)
         
         # Initialize models
+        logger.info("Creating VAE model...")
         self.vae = create_vae_model(config)
+        logger.info("VAE model created successfully")
         self.rf_model = None
         
         # Training history
@@ -353,10 +358,14 @@ def train_full_pipeline(config, background_data: np.ndarray,
         Trained pipeline object
     """
     # Create pipeline
+    logger.info("Creating TrainingPipeline...")
     pipeline = TrainingPipeline(config, background_data)
+    logger.info("TrainingPipeline created successfully")
     
     # Train
+    logger.info(f"Starting iterative training for {n_rounds} rounds...")
     pipeline.iterative_training(n_rounds)
+    logger.info("Iterative training completed")
     
     # Evaluate
     metrics = pipeline.evaluate()
