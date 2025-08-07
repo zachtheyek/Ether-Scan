@@ -3,17 +3,24 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.9
+  - python=3.10
   - numpy
   - tensorflow
   - scikit-learn
-  - joblib
-  - numba
-  - astropy
-  - matplotlib
   - pandas
+  - matplotlib
+  - astropy
+  - numba
+  - joblib
   - scikit-image
+  # - pytest
+  # - black 
+  # - flake8
+  # - mypy
+  - tensorboard
+  - tqdm
   - psutil
   - pip
   - pip:
     - setigen
+    - blimpy
