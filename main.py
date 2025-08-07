@@ -77,6 +77,8 @@ def load_background_data(config: Config) -> np.ndarray:
     # Stack all backgrounds
     stacked_data = np.vstack(backgrounds)
     logger.info(f"Total background data shape: {stacked_data.shape}")
+    logger.info(f"Data type: {stacked_data.dtype}, Memory usage: {stacked_data.nbytes / 1e9:.2f} GB")
+    logger.info("About to return stacked_data from load_background_data...")
     
     return stacked_data
 
@@ -95,8 +97,11 @@ def train_command(args):
         config.training.batch_size = args.batch_size
     
     # Load background data
+    logger.info("About to call load_background_data...")
     background_data = load_background_data(config)
+    logger.info("load_background_data returned successfully")
     logger.info(f"Background data loaded successfully, shape: {background_data.shape}")
+    logger.info(f"Background data type: {background_data.dtype}")
     
     # Train
     logger.info("Starting train_full_pipeline...")
