@@ -46,7 +46,7 @@ def verify_data_file(filepath: str) -> Dict[str, Any]:
     
     # Sample data statistics (don't process entire array)
     # Sample from different parts of the file
-    n_samples = min(10, data.shape[0])
+    n_samples = min(50, data.shape[0])
     sample_indices = np.linspace(0, data.shape[0]-1, n_samples, dtype=int)
     
     sample_mins = []
