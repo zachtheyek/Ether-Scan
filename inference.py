@@ -11,8 +11,8 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 
-from .preprocessing import DataPreprocessor
-from .models.random_forest import RandomForestModel
+from preprocessing import DataPreprocessor
+from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
