@@ -5,7 +5,7 @@ channels:
 dependencies:
   - python=3.9
   - numpy
-  - tensorflow=2.13.0
+  - tensorflow
   - scikit-learn
   - joblib
   - numba
