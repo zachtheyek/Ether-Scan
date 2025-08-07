@@ -1,0 +1,19 @@
+name: bl-seti-cloud
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy
+  - tensorflow=2.13.0
+  - scikit-learn
+  - joblib
+  - numba
+  - astropy
+  - matplotlib
+  - pandas
+  - scikit-image
+  - psutil
+  - pip
+  - pip:
+    - setigen
