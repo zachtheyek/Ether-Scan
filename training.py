@@ -10,10 +10,10 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from .preprocessing import DataPreprocessor
-from .data_generation import DataGenerator, create_mixed_training_batch
-from .models.vae import create_vae_model
-from .models.random_forest import train_random_forest
+from preprocessing import DataPreprocessor
+from data_generation import DataGenerator, create_mixed_training_batch
+from models.vae import create_vae_model
+from models.random_forest import train_random_forest
 
 logger = logging.getLogger(__name__)
 
