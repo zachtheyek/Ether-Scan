@@ -119,9 +119,9 @@ class BetaVAE(keras.Model):
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
             # Clustering losses
-            true_latents = [self.encoder(true_data[:, i, :, :, :], training=True)[2] 
+            true_latents = [self.encoder(tf.expand_dims(true_data[:, i, :, :], -1), training=True)[2] 
                            for i in range(6)]
-            false_latents = [self.encoder(false_data[:, i, :, :, :], training=True)[2] 
+            false_latents = [self.encoder(tf.expand_dims(false_data[:, i, :, :], -1), training=True)[2] 
                             for i in range(6)]
             
             true_clustering_loss = self.compute_clustering_loss(true_latents, "true")
