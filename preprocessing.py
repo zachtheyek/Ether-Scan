@@ -108,23 +108,29 @@ def downsample_frequency(data: np.ndarray, factor: int = 8) -> np.ndarray:
     
     return output
 
-@jit(parallel=True)
 def prepare_for_model(data: np.ndarray) -> np.ndarray:
     """
     Prepare data for model input by combining observations
     
     Args:
-        data: Cadence data (batch, 6, time, freq, 1)
+        data: Cadence data (batch, 6, time, freq) or (batch, 6, time, freq, 1)
         
     Returns:
         Combined data (batch*6, time, freq, 1)
     """
     batch_size = data.shape[0]
     num_obs = data.shape[1]
-    new_data = np.zeros((batch_size * num_obs, data.shape[2], data.shape[3], data.shape[4]))
     
-    for i in prange(batch_size):
-        new_data[i*num_obs:(i+1)*num_obs, :, :, :] = data[i, :, :, :, :]
+    if len(data.shape) == 4:
+        # 4D input: (batch, 6, time, freq) -> add channel dimension
+        new_data = np.zeros((batch_size * num_obs, data.shape[2], data.shape[3], 1))
+        for i in range(batch_size):
+            new_data[i*num_obs:(i+1)*num_obs, :, :, 0] = data[i, :, :, :]
+    else:
+        # 5D input: (batch, 6, time, freq, 1)
+        new_data = np.zeros((batch_size * num_obs, data.shape[2], data.shape[3], data.shape[4]))
+        for i in range(batch_size):
+            new_data[i*num_obs:(i+1)*num_obs, :, :, :] = data[i, :, :, :, :]
     
     return new_data
 
