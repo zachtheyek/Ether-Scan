@@ -173,6 +173,19 @@ class DataPreprocessor:
         """
         return prepare_for_model(cadences)
     
+    def downsample_frequency(self, data: np.ndarray, factor: int = 8) -> np.ndarray:
+        """
+        Downsample data in frequency dimension
+        
+        Args:
+            data: Input data
+            factor: Downsampling factor
+            
+        Returns:
+            Downsampled data
+        """
+        return downsample_frequency(data, factor)
+    
     def extract_snippets_with_overlap(self, data: np.ndarray, overlap: float = 0.5) -> List[np.ndarray]:
         """
         Extract overlapping snippets from continuous data
