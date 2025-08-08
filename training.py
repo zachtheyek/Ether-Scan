@@ -10,16 +10,16 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-# Force CPU-only training to avoid cuDNN issues
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-tf.config.set_visible_devices([], 'GPU')
-
-print("INFO: Using CPU-only training to avoid cuDNN compatibility issues")
-
-# Optimize CPU performance
-tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
-tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
+# Configure GPU settings
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        # Enable memory growth for all GPUs
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"INFO: Found {len(gpus)} GPU(s)")
+    except RuntimeError as e:
+        print(f"GPU configuration error: {e}")
 
 from preprocessing import DataPreprocessor
 from data_generation import DataGenerator, create_mixed_training_batch
@@ -82,7 +82,7 @@ class TrainingPipeline:
         # Create generator functions for streaming data
         def train_generator():
             # Generate data in small batches to avoid OOM
-            batch_size = 20  # Very small batch size for CPU training
+            batch_size = 100  # Small batch size for generation
             n_batches = self.config.training.num_samples_train // batch_size
             
             for _ in range(n_batches):
@@ -114,7 +114,7 @@ class TrainingPipeline:
         
         def val_generator():
             # Generate validation data in small batches
-            batch_size = 10  # Very small for CPU
+            batch_size = 50
             n_batches = self.config.training.num_samples_test // batch_size
             
             for _ in range(n_batches):
