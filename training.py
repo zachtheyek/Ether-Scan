@@ -61,48 +61,82 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets
+        Prepare training and validation datasets using streaming generation
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
-        logger.info("Generating training data...")
+        logger.info("Creating streaming training dataset...")
         
-        # Generate datasets
-        train_data = self.data_generator.generate_training_set()
-        val_data = self.data_generator.generate_test_set()
+        # Create generator functions for streaming data
+        def train_generator():
+            # Generate data in small batches to avoid OOM
+            batch_size = 100  # Small batch size for generation
+            n_batches = self.config.training.num_samples_train // batch_size
+            
+            for _ in range(n_batches):
+                # Generate small batch
+                train_data = {
+                    'true': self.data_generator.generate_batch(batch_size, "true"),
+                    'false': self.data_generator.generate_batch(batch_size, "false"),
+                    'concatenated': None,
+                    'true_combined': None
+                }
+                
+                # Create concatenated data
+                train_data['concatenated'] = np.vstack([train_data['true'], train_data['false']])
+                train_data['true_combined'] = np.vstack([train_data['true'], train_data['true']])
+                
+                # Preprocess
+                train_concat = self.preprocessor.downsample_frequency(train_data['concatenated'])
+                train_true = self.preprocessor.downsample_frequency(train_data['true_combined'])
+                train_false = self.preprocessor.downsample_frequency(train_data['false'])
+                
+                train_concat_flat = self.preprocessor.prepare_batch(train_concat)
+                
+                # Yield samples one by one
+                for i in range(train_concat_flat.shape[0]):
+                    yield ((train_concat_flat[i], train_true[i], train_false[i]), train_concat_flat[i])
         
-        # Preprocess
-        logger.info("Preprocessing data...")
+        def val_generator():
+            # Generate validation data in small batches
+            batch_size = 50
+            n_batches = self.config.training.num_samples_test // batch_size
+            
+            for _ in range(n_batches):
+                val_data = {
+                    'true': self.data_generator.generate_batch(batch_size, "true"),
+                    'false': self.data_generator.generate_batch(batch_size, "false")
+                }
+                
+                val_concat = self.preprocessor.downsample_frequency(val_data['true'])
+                val_concat_flat = self.preprocessor.prepare_batch(val_concat)
+                
+                for i in range(val_concat_flat.shape[0]):
+                    yield ((val_concat_flat[i], val_data['true'][i], val_data['false'][i]), val_concat_flat[i])
         
-        # Training dataset
-        train_concat = self.preprocessor.downsample_frequency(train_data['concatenated'])
-        train_true = self.preprocessor.downsample_frequency(train_data['true_combined'])
-        train_false = self.preprocessor.downsample_frequency(train_data['false'])
+        # Create TF datasets from generators
+        output_signature = (
+            (
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),  # concatenated_flat
+                tf.TensorSpec(shape=(6, 16, None), dtype=tf.float32),  # true
+                tf.TensorSpec(shape=(6, 16, None), dtype=tf.float32)   # false
+            ),
+            tf.TensorSpec(shape=(None,), dtype=tf.float32)  # target
+        )
         
-        # Prepare for model
-        train_concat_flat = self.preprocessor.prepare_batch(train_concat)
+        train_dataset = tf.data.Dataset.from_generator(
+            train_generator,
+            output_signature=output_signature
+        )
         
-        # Create TF dataset
-        train_dataset = tf.data.Dataset.from_tensor_slices((
-            (train_concat_flat, train_true, train_false),
-            train_concat_flat  # Target is same as input for autoencoder
-        ))
+        val_dataset = tf.data.Dataset.from_generator(
+            val_generator, 
+            output_signature=output_signature
+        )
         
         train_dataset = train_dataset.batch(self.config.training.batch_size)
         train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
-        
-        # Validation dataset
-        val_concat = self.preprocessor.downsample_frequency(val_data['true'])
-        val_true = self.preprocessor.downsample_frequency(val_data['true'])
-        val_false = self.preprocessor.downsample_frequency(val_data['false'])
-        
-        val_concat_flat = self.preprocessor.prepare_batch(val_concat)
-        
-        val_dataset = tf.data.Dataset.from_tensor_slices((
-            (val_concat_flat, val_true, val_false),
-            val_concat_flat
-        ))
         
         val_dataset = val_dataset.batch(self.config.training.validation_batch_size)
         val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
