@@ -94,9 +94,11 @@ class TrainingPipeline:
                 
                 train_concat_flat = self.preprocessor.prepare_batch(train_concat)
                 
-                # Yield samples one by one
+                # Yield samples one by one - map flattened indices back to original batch indices
+                batch_size = train_concat.shape[0]
                 for i in range(train_concat_flat.shape[0]):
-                    yield ((train_concat_flat[i], train_true[i], train_false[i]), train_concat_flat[i])
+                    batch_idx = i // 6  # Each batch produces 6 flattened samples
+                    yield ((train_concat_flat[i], train_true[batch_idx], train_false[batch_idx]), train_concat_flat[i])
         
         def val_generator():
             # Generate validation data in small batches
@@ -110,10 +112,13 @@ class TrainingPipeline:
                 }
                 
                 val_concat = self.preprocessor.downsample_frequency(val_data['true'])
+                val_true = self.preprocessor.downsample_frequency(val_data['true'])
+                val_false = self.preprocessor.downsample_frequency(val_data['false'])
                 val_concat_flat = self.preprocessor.prepare_batch(val_concat)
                 
                 for i in range(val_concat_flat.shape[0]):
-                    yield ((val_concat_flat[i], val_data['true'][i], val_data['false'][i]), val_concat_flat[i])
+                    batch_idx = i // 6  # Each batch produces 6 flattened samples
+                    yield ((val_concat_flat[i], val_true[batch_idx], val_false[batch_idx]), val_concat_flat[i])
         
         # Create TF datasets from generators
         output_signature = (
