@@ -62,8 +62,8 @@ class DataConfig:
 @dataclass
 class TrainingConfig:
     """Training configuration"""
-    batch_size: int = 256
-    validation_batch_size: int = 512
+    batch_size: int = 128  # Reduced for cuDNN stability
+    validation_batch_size: int = 256
     epochs_per_round: int = 100
     num_training_rounds: int = 20
     

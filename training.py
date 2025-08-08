@@ -10,16 +10,25 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-# Configure GPU settings
+# Configure GPU settings to avoid cuDNN conflicts
+import os
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
+
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
-        # Enable memory growth for all GPUs
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"INFO: Found {len(gpus)} GPU(s)")
+        # Use only the first GPU to avoid multi-GPU cuDNN conflicts
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        # Enable memory growth
+        tf.config.experimental.set_memory_growth(gpus[0], True)
+        print(f"INFO: Using GPU {gpus[0].name} (single GPU mode to avoid cuDNN conflicts)")
     except RuntimeError as e:
         print(f"GPU configuration error: {e}")
+
+# Disable XLA compilation to avoid cuDNN algorithm conflicts
+tf.config.optimizer.set_jit(False)
 
 from preprocessing import DataPreprocessor
 from data_generation import DataGenerator, create_mixed_training_batch
