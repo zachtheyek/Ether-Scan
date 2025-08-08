@@ -94,24 +94,25 @@ def load_background_data(config: Config) -> np.ndarray:
         filepath = config.get_training_file_path(filename)
         
         if os.path.exists(filepath):
-            # Load the data
-            data = np.load(filepath)
-            logger.info(f"Loaded {filename}: original shape {data.shape}")
-            
-            # Apply subset if specified
+            # Get subset parameters
             start, end = config.get_file_subset(filename)
-            if start is not None or end is not None:
-                data = data[start:end]
-                logger.info(f"  Applied subset [{start}:{end}], new shape {data.shape}")
             
-            # Convert to float32 and copy to output array
-            data_f32 = data.astype(np.float32)
-            next_idx = current_idx + data_f32.shape[0]
-            stacked_data[current_idx:next_idx] = data_f32
+            # Load only the subset using memory mapping
+            with np.load(filepath, mmap_mode='r') as mmap_data:
+                if start is not None or end is not None:
+                    data = mmap_data[start:end].astype(np.float32)
+                    logger.info(f"Loaded subset [{start}:{end}] from {filename}, shape: {data.shape}")
+                else:
+                    data = mmap_data[:].astype(np.float32) 
+                    logger.info(f"Loaded full {filename}, shape: {data.shape}")
+            
+            # Copy to output array
+            next_idx = current_idx + data.shape[0]
+            stacked_data[current_idx:next_idx] = data
             current_idx = next_idx
             
             # Free memory immediately
-            del data, data_f32
+            del data
     
     logger.info(f"Total background data shape: {stacked_data.shape}")
     logger.info(f"Data type: {stacked_data.dtype}, Memory usage: {stacked_data.nbytes / 1e9:.2f} GB")
