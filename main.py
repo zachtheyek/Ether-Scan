@@ -51,7 +51,44 @@ def load_background_data(config: Config) -> np.ndarray:
     """
     logger.info(f"Loading background data from {config.data_path}")
     
-    backgrounds = []
+    # First pass: calculate total size and determine dtype
+    total_samples = 0
+    sample_shape = None
+    
+    for filename in config.data.training_files:
+        filepath = config.get_training_file_path(filename)
+        
+        if os.path.exists(filepath):
+            # Load just the shape info without loading full data
+            with open(filepath, 'rb') as f:
+                version = np.lib.format.read_magic(f)
+                shape, fortran, dtype = np.lib.format.read_array_header_1_0(f)
+                if sample_shape is None:
+                    sample_shape = shape[1:]  # Skip first dimension (samples)
+                
+            # Calculate how many samples after subsetting
+            start, end = config.get_file_subset(filename)
+            file_samples = shape[0]
+            if start is not None:
+                file_samples -= start
+            if end is not None:
+                file_samples = min(file_samples, end - (start or 0))
+            
+            total_samples += file_samples
+            logger.info(f"File {filename}: {file_samples} samples after subsetting")
+        else:
+            logger.warning(f"File not found: {filepath}")
+    
+    if total_samples == 0:
+        raise FileNotFoundError(f"No training files found in {config.data_path}/training/")
+    
+    # Pre-allocate output array as float32 to save memory
+    output_shape = (total_samples,) + sample_shape
+    logger.info(f"Pre-allocating array with shape {output_shape}")
+    stacked_data = np.empty(output_shape, dtype=np.float32)
+    
+    # Second pass: load data directly into pre-allocated array
+    current_idx = 0
     
     for filename in config.data.training_files:
         filepath = config.get_training_file_path(filename)
@@ -67,15 +104,15 @@ def load_background_data(config: Config) -> np.ndarray:
                 data = data[start:end]
                 logger.info(f"  Applied subset [{start}:{end}], new shape {data.shape}")
             
-            backgrounds.append(data)
-        else:
-            logger.warning(f"File not found: {filepath}")
+            # Convert to float32 and copy to output array
+            data_f32 = data.astype(np.float32)
+            next_idx = current_idx + data_f32.shape[0]
+            stacked_data[current_idx:next_idx] = data_f32
+            current_idx = next_idx
+            
+            # Free memory immediately
+            del data, data_f32
     
-    if not backgrounds:
-        raise FileNotFoundError(f"No training files found in {config.data_path}/training/")
-    
-    # Stack all backgrounds
-    stacked_data = np.vstack(backgrounds)
     logger.info(f"Total background data shape: {stacked_data.shape}")
     logger.info(f"Data type: {stacked_data.dtype}, Memory usage: {stacked_data.nbytes / 1e9:.2f} GB")
     logger.info("About to return stacked_data from load_background_data...")
