@@ -96,11 +96,15 @@ def downsample_frequency(data: np.ndarray, factor: int = 8) -> np.ndarray:
     output_shape[-2] = output_shape[-2] // factor
     output = np.zeros(output_shape)
     
-    # Process each observation separately
-    for i in range(data.shape[1]):
-        output[:, i, :, :] = downscale_local_mean(
-            data[:, i, :, :], (1, 1, factor)
-        )
+    if len(data.shape) == 4:
+        # Process each observation separately for 4D data (batch, obs, time, freq)
+        for i in range(data.shape[1]):
+            output[:, i, :, :] = downscale_local_mean(
+                data[:, i, :, :], (1, 1, factor)
+            )
+    else:
+        # Handle 3D data (batch, time, freq) directly
+        output = downscale_local_mean(data, (1, 1, factor))
     
     return output
 
