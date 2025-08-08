@@ -201,7 +201,7 @@ def build_encoder(latent_dim: int = 8,
 
 def build_decoder(latent_dim: int = 8,
                  dense_size: int = 512,
-                 kernel_size: Tuple[int, int] = (3, 3)) -> keras.Model:
+                 kernel_size: Tuple[int, int] = (4, 4)) -> keras.Model:
     """Build decoder network"""
     
     latent_inputs = keras.Input(shape=(latent_dim,))
@@ -211,27 +211,37 @@ def build_decoder(latent_dim: int = 8,
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(latent_inputs)
-    x = layers.Dense(1 * 32 * 256, activation="relu",
+    x = layers.Dense(1 * 16 * 512, activation="relu",
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(x)
     
     # Reshape for convolutional layers
-    x = layers.Reshape((1, 32, 256))(x)
+    x = layers.Reshape((1, 16, 512))(x)
     
-    # Transposed convolutional layers
-    x = layers.Conv2DTranspose(256, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=2, padding="same")(x)
+    # Use UpSampling + Conv2D instead of Conv2DTranspose for cuDNN stability
+    x = layers.UpSampling2D(2)(x)  # 2, 32, 512
+    x = layers.Conv2D(256, kernel_size, activation="relu", padding="same")(x)
+    x = layers.Conv2D(128, kernel_size, activation="relu", padding="same")(x)
+    x = layers.Conv2D(64, kernel_size, activation="relu", padding="same")(x)
+    
+    x = layers.UpSampling2D(2)(x)  # 4, 64, 512
+    x = layers.Conv2D(64, kernel_size, activation="relu", padding="same")(x)
+    x = layers.Conv2D(32, kernel_size, activation="relu", padding="same")(x)
+    x = layers.Conv2D(32, kernel_size, activation="relu", padding="same")(x)
+    
+    x = layers.UpSampling2D(2)(x)  # 8, 128, 512
+    x = layers.Conv2D(32, kernel_size, activation="relu", padding="same")(x)
+    x = layers.Conv2D(16, kernel_size, activation="relu", padding="same")(x)
+    
+    x = layers.UpSampling2D(2)(x)  # 16, 256, 512
+    x = layers.Conv2D(16, kernel_size, activation="relu", padding="same")(x)
+    
+    # Final upsampling to get to 16, 512, 1 
+    x = layers.UpSampling2D((1, 2))(x)  # 16, 512, 512
     
     # Output layer
-    decoder_outputs = layers.Conv2DTranspose(1, kernel_size, activation="sigmoid", padding="same")(x)
+    decoder_outputs = layers.Conv2D(1, kernel_size, activation="sigmoid", padding="same")(x)
     
     decoder = keras.Model(latent_inputs, decoder_outputs, name="decoder")
     return decoder

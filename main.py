@@ -2,9 +2,17 @@
 Main entry point for SETI ML Pipeline
 """
 
+# CRITICAL: Set TensorFlow environment variables BEFORE any imports
+import os
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+os.environ['TF_DETERMINISTIC_OPS'] = '1'
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+
 import argparse
 import logging
-import os
 import sys
 import numpy as np
 from datetime import datetime
@@ -27,17 +35,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_gpu_config():
-    """Configure GPU memory growth"""
-    import tensorflow as tf
-    
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"Configured {len(gpus)} GPUs")
-        except RuntimeError as e:
-            logger.error(f"GPU configuration error: {e}")
+    """Configure GPU memory growth - disabled to avoid conflicts with training.py cuDNN fixes"""
+    # GPU configuration is now handled in training.py to avoid cuDNN conflicts
+    logger.info("GPU configuration delegated to training.py for cuDNN compatibility")
 
 def load_background_data(config: Config) -> np.ndarray:
     """

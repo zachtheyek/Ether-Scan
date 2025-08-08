@@ -2,19 +2,22 @@
 Training pipeline for SETI ML models
 """
 
-import numpy as np
-import tensorflow as tf
-from typing import Dict, Optional, Tuple
-import logging
-import os
-from datetime import datetime
-import matplotlib.pyplot as plt
-
-# Configure GPU settings to avoid cuDNN conflicts
+# CRITICAL: Set environment variables BEFORE importing TensorFlow
 import os
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Reduce TF logging
+# Force cuDNN deterministic operations
+os.environ['TF_DETERMINISTIC_OPS'] = '1'
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+
+import numpy as np
+import tensorflow as tf
+from typing import Dict, Optional, Tuple
+import logging
+from datetime import datetime
+import matplotlib.pyplot as plt
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:

@@ -41,4 +41,13 @@ run_and_log "cat /proc/cpuinfo | grep 'model name' | head -1"
 run_and_log "curl -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/machine-type"
 run_and_log "curl -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/zone"
 
-echo "Results saved to: $OUTPUT_FILE"
+# -------------------------------
+# Additional environment & model tests
+
+# 1. Check environment variables
+run_and_log "echo 'Environment variables:'"
+run_and_log "echo 'LD_LIBRARY_PATH: $LD_LIBRARY_PATH'"
+run_and_log "echo 'CUDA_HOME: $CUDA_HOME'"
+
+# 2. Quick TensorFlow + GPU test
+run_and_log "python -c \"import tensorflow as tf; print('✅ TF version:', tf.__version__); print('✅ GPUs detected:', len(tf.config.list_physical_devices('GPU'))); print('✅ XLA disabled:', tf
