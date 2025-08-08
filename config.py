@@ -67,9 +67,9 @@ class TrainingConfig:
     epochs_per_round: int = 100
     num_training_rounds: int = 20
     
-    # Data generation parameters
-    num_samples_train: int = 6000
-    num_samples_test: int = 1000
+    # Data generation parameters  
+    num_samples_train: int = 1000  # Reduced from 6000 to avoid OOM
+    num_samples_test: int = 500    # Reduced from 1000
     snr_base: int = 10
     snr_range: int = 40
     

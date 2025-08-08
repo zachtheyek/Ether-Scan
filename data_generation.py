@@ -151,7 +151,7 @@ class DataGenerator:
         Returns:
             Batch of cadences (n_samples, 6, time, freq)
         """
-        batch = np.zeros((n_samples, 6, 16, self.config.data.width_bin))
+        batch = np.zeros((n_samples, 6, 16, self.config.data.width_bin), dtype=np.float32)
         
         for i in range(n_samples):
             # Random background
