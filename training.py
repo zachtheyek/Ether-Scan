@@ -10,6 +10,19 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
+# Configure GPU memory growth and mixed precision
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        tf.config.experimental.set_visible_devices(gpus[:1], 'GPU')  # Use only first GPU
+    except RuntimeError as e:
+        print(f"GPU configuration error: {e}")
+
+# Disable XLA JIT compilation to avoid cuDNN issues
+tf.config.optimizer.set_jit(False)
+
 from preprocessing import DataPreprocessor
 from data_generation import DataGenerator, create_mixed_training_batch
 from models.vae import create_vae_model

@@ -2,8 +2,8 @@
 2301.12670v1.pdf
 
 # Outputs & logs
-# outputs/
-# *.log
+outputs/
+*.log
 
 # Artifacts
 **/__pycache__/
