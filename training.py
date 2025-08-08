@@ -75,30 +75,31 @@ class TrainingPipeline:
             n_batches = self.config.training.num_samples_train // batch_size
             
             for _ in range(n_batches):
-                # Generate small batch
-                train_data = {
-                    'true': self.data_generator.generate_batch(batch_size, "true"),
-                    'false': self.data_generator.generate_batch(batch_size, "false"),
-                    'concatenated': None,
-                    'true_combined': None
-                }
+                # Generate small batch - each will be (batch_size, 6, time, freq)
+                true_data = self.data_generator.generate_batch(batch_size, "true")
+                false_data = self.data_generator.generate_batch(batch_size, "false")
                 
-                # Create concatenated data
-                train_data['concatenated'] = np.vstack([train_data['true'], train_data['false']])
-                train_data['true_combined'] = np.vstack([train_data['true'], train_data['true']])
+                # Downsample frequency
+                true_data = self.preprocessor.downsample_frequency(true_data)
+                false_data = self.preprocessor.downsample_frequency(false_data)
                 
-                # Preprocess
-                train_concat = self.preprocessor.downsample_frequency(train_data['concatenated'])
-                train_true = self.preprocessor.downsample_frequency(train_data['true_combined'])
-                train_false = self.preprocessor.downsample_frequency(train_data['false'])
+                # Flatten each cadence into individual observations for main training
+                true_flat = self.preprocessor.prepare_batch(true_data)  # (batch_size*6, time, freq, 1)
+                false_flat = self.preprocessor.prepare_batch(false_data)  # (batch_size*6, time, freq, 1)
                 
-                train_concat_flat = self.preprocessor.prepare_batch(train_concat)
+                # For each flattened sample, yield with corresponding cadence data
+                for i in range(true_flat.shape[0]):
+                    cadence_idx = i // 6  # Which original cadence this observation came from
+                    
+                    # Use the true sample as main input, with full cadence data for clustering
+                    yield ((true_flat[i], true_data[cadence_idx], false_data[cadence_idx]), true_flat[i])
                 
-                # Yield samples one by one - map flattened indices back to original batch indices
-                batch_size = train_concat.shape[0]
-                for i in range(train_concat_flat.shape[0]):
-                    batch_idx = i // 6  # Each batch produces 6 flattened samples
-                    yield ((train_concat_flat[i], train_true[batch_idx], train_false[batch_idx]), train_concat_flat[i])
+                # Also yield false samples
+                for i in range(false_flat.shape[0]):
+                    cadence_idx = i // 6  # Which original cadence this observation came from
+                    
+                    # Use the false sample as main input, with full cadence data for clustering  
+                    yield ((false_flat[i], true_data[cadence_idx], false_data[cadence_idx]), false_flat[i])
         
         def val_generator():
             # Generate validation data in small batches
@@ -106,19 +107,23 @@ class TrainingPipeline:
             n_batches = self.config.training.num_samples_test // batch_size
             
             for _ in range(n_batches):
-                val_data = {
-                    'true': self.data_generator.generate_batch(batch_size, "true"),
-                    'false': self.data_generator.generate_batch(batch_size, "false")
-                }
+                # Generate small batch - each will be (batch_size, 6, time, freq)
+                true_data = self.data_generator.generate_batch(batch_size, "true")
+                false_data = self.data_generator.generate_batch(batch_size, "false")
                 
-                val_concat = self.preprocessor.downsample_frequency(val_data['true'])
-                val_true = self.preprocessor.downsample_frequency(val_data['true'])
-                val_false = self.preprocessor.downsample_frequency(val_data['false'])
-                val_concat_flat = self.preprocessor.prepare_batch(val_concat)
+                # Downsample frequency
+                true_data = self.preprocessor.downsample_frequency(true_data)
+                false_data = self.preprocessor.downsample_frequency(false_data)
                 
-                for i in range(val_concat_flat.shape[0]):
-                    batch_idx = i // 6  # Each batch produces 6 flattened samples
-                    yield ((val_concat_flat[i], val_true[batch_idx], val_false[batch_idx]), val_concat_flat[i])
+                # Flatten each cadence into individual observations
+                true_flat = self.preprocessor.prepare_batch(true_data)  # (batch_size*6, time, freq, 1)
+                
+                # For validation, just use true samples
+                for i in range(true_flat.shape[0]):
+                    cadence_idx = i // 6  # Which original cadence this observation came from
+                    
+                    # Use the true sample with corresponding cadence data
+                    yield ((true_flat[i], true_data[cadence_idx], false_data[cadence_idx]), true_flat[i])
         
         # Create TF datasets from generators
         output_signature = (
