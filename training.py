@@ -118,11 +118,11 @@ class TrainingPipeline:
         # Create TF datasets from generators
         output_signature = (
             (
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),  # concatenated_flat
-                tf.TensorSpec(shape=(6, 16, None), dtype=tf.float32),  # true
-                tf.TensorSpec(shape=(6, 16, None), dtype=tf.float32)   # false
+                tf.TensorSpec(shape=(16, 512, 1), dtype=tf.float32),  # concatenated_flat
+                tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32),  # true
+                tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32)   # false
             ),
-            tf.TensorSpec(shape=(None,), dtype=tf.float32)  # target
+            tf.TensorSpec(shape=(16, 512, 1), dtype=tf.float32)  # target
         )
         
         train_dataset = tf.data.Dataset.from_generator(
