@@ -170,7 +170,7 @@ class TrainingPipeline:
             checkpoint_path = os.path.join(
                 self.config.model_path, 
                 'checkpoints',
-                'vae_checkpoint_{epoch:02d}.h5'
+                'vae_checkpoint_{epoch:02d}.weights.h5'
             )
             callbacks.append(
                 tf.keras.callbacks.ModelCheckpoint(
