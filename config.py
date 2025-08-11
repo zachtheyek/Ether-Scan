@@ -1,6 +1,6 @@
 """
 Configuration module for SETI ML Pipeline
-Contains all hyperparameters and settings
+Contains all hyperparameters and settings - FIXED for proper dimensions
 """
 
 import os
@@ -21,9 +21,9 @@ class ModelConfig:
 @dataclass
 class DataConfig:
     """Data processing configuration"""
-    width_bin: int = 4096  # Frequency bins per snippet
+    width_bin: int = 4096  # Frequency bins per snippet (PAPER SPEC)
     time_bins: int = 16    # Time bins per observation
-    downsample_factor: int = 8
+    downsample_factor: int = 1  # CHANGED: No downsampling to preserve resolution
     num_observations: int = 6  # Per cadence (3 ON, 3 OFF)
     overlap_factor: float = 0.5
     
@@ -55,21 +55,21 @@ class DataConfig:
         if self.file_subsets is None:
             self.file_subsets = {
                 'real_filtered_LARGE_HIP110750.npy': (8000, None),  # Skip first 8000
-                'real_filtered_LARGE_HIP13402.npy': (None, 4000),   # Use first 4000
-                'real_filtered_LARGE_HIP8497.npy': (None, 4000)     # Use first 4000
+                'real_filtered_LARGE_HIP13402.npy': (None, 2000),   # REDUCED: Use first 2000 (memory)
+                'real_filtered_LARGE_HIP8497.npy': (None, 2000)     # REDUCED: Use first 2000 (memory)
             }
     
 @dataclass
 class TrainingConfig:
     """Training configuration"""
-    batch_size: int = 128  # Reduced for cuDNN stability
-    validation_batch_size: int = 256
-    epochs_per_round: int = 100
-    num_training_rounds: int = 20
+    batch_size: int = 32   # REDUCED for 4096 frequency bins memory usage
+    validation_batch_size: int = 64
+    epochs_per_round: int = 50  # REDUCED for initial testing
+    num_training_rounds: int = 10  # REDUCED for initial testing
     
     # Data generation parameters  
-    num_samples_train: int = 1000  # Reduced from 6000 to avoid OOM
-    num_samples_test: int = 500    # Reduced from 1000
+    num_samples_train: int = 500   # REDUCED from 1000 to avoid OOM with 4096 dims
+    num_samples_test: int = 200    # REDUCED from 500
     snr_base: int = 10
     snr_range: int = 40
     
@@ -85,7 +85,7 @@ class RandomForestConfig:
 class InferenceConfig:
     """Inference/execution configuration"""
     classification_threshold: float = 0.5
-    batch_size: int = 5000
+    batch_size: int = 1000  # REDUCED for 4096 frequency bins
     max_drift_rate: float = 10.0  # Hz/s
     
 class Config:
@@ -97,34 +97,49 @@ class Config:
         self.rf = RandomForestConfig()
         self.inference = InferenceConfig()
         
-        # Paths - can be overridden by environment variables
-        self.data_path = os.environ.get('SETI_DATA_PATH', '/data/seti')
-        self.model_path = os.environ.get('SETI_MODEL_PATH', '/models/seti')
-        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/output/seti')
-
+        # File paths
+        self.data_path = os.environ.get('SETI_DATA_PATH', '/data')
+        self.model_path = os.environ.get('SETI_MODEL_PATH', '/models')
+        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/outputs')
+        
+        # Create paths if they don't exist
+        os.makedirs(self.data_path, exist_ok=True)
+        os.makedirs(self.model_path, exist_ok=True)
+        os.makedirs(self.output_path, exist_ok=True)
+    
     def get_training_file_path(self, filename: str) -> str:
-        """Get full path for a training file"""
+        """Get full path for training file"""
         return os.path.join(self.data_path, 'training', filename)
     
     def get_test_file_path(self, filename: str) -> str:
-        """Get full path for a test file"""
-        return os.path.join(self.data_path, 'testing', filename)
+        """Get full path for test file"""
+        return os.path.join(self.data_path, 'test', filename)
     
     def get_file_subset(self, filename: str) -> Tuple[Optional[int], Optional[int]]:
-        """Get subset slice indices for a file"""
+        """Get subset range for file"""
         return self.data.file_subsets.get(filename, (None, None))
-        
-    def to_dict(self):
+    
+    def to_dict(self) -> dict:
         """Convert config to dictionary for serialization"""
         return {
-            'model': self.model.__dict__,
-            'data': self.data.__dict__,
-            'training': self.training.__dict__,
-            'rf': self.rf.__dict__,
-            'inference': self.inference.__dict__,
-            'paths': {
-                'data': self.data_path,
-                'model': self.model_path,
-                'output': self.output_path
+            'model': {
+                'latent_dim': self.model.latent_dim,
+                'dense_layer_size': self.model.dense_layer_size,
+                'kernel_size': self.model.kernel_size,
+                'alpha': self.model.alpha,
+                'beta': self.model.beta,
+                'gamma': self.model.gamma,
+                'learning_rate': self.model.learning_rate
+            },
+            'data': {
+                'width_bin': self.data.width_bin,
+                'time_bins': self.data.time_bins,
+                'downsample_factor': self.data.downsample_factor,
+                'num_observations': self.data.num_observations
+            },
+            'training': {
+                'batch_size': self.training.batch_size,
+                'epochs_per_round': self.training.epochs_per_round,
+                'num_training_rounds': self.training.num_training_rounds
             }
         }
