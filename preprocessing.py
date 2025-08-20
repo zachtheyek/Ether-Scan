@@ -1,6 +1,7 @@
 """
 Data preprocessing module for SETI ML Pipeline
 Handles data loading, normalization, and shaping
+Fixed to match paper dimensions and processing flow
 """
 
 import numpy as np
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 @njit(nopython=True)
 def normalize_log(data: np.ndarray) -> np.ndarray:
     """
-    Apply log normalization to data
+    Apply log normalization to data as per paper
     
     Args:
         data: Input array
@@ -23,114 +24,130 @@ def normalize_log(data: np.ndarray) -> np.ndarray:
         Normalized array between 0 and 1
     """
     # Add small epsilon to avoid log(0)
-    data = np.log(data + 1e-10)
-    data = data - data.min()
-    if data.max() > 0:
-        data = data / data.max()
-    return data
+    data_log = np.log(data + 1e-10)
+    data_shifted = data_log - data_log.min()
+    if data_shifted.max() > 0:
+        data_normalized = data_shifted / data_shifted.max()
+    else:
+        data_normalized = data_shifted
+    return data_normalized
 
-@jit(parallel=True)
+@jit(nopython=False)  # Changed because we need numpy operations that njit doesn't support
 def shape_observation_data(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
     """
     Reshape raw observation data into snippets
+    Paper: Extract 4096-channel snippets from continuous observation
     
     Args:
-        data: Raw observation data (time, polarization, frequency)
-        width_bin: Number of frequency bins per snippet
+        data: Raw observation data (time_bins, polarization, frequency_channels)
+              Expected shape: (16, 2, total_freq_channels)
+        width_bin: Number of frequency bins per snippet (4096 as per paper)
         
     Returns:
-        Reshaped data (num_snippets, time_bins, freq_bins, channels)
+        Reshaped data (num_snippets, time_bins, freq_bins)
+        Note: No channel dimension here - added later for model input
     """
-    samples = data.shape[2] // width_bin
-    new_data = np.zeros((samples, 16, width_bin, 1))
+    time_bins, n_pol, total_freq = data.shape
+    samples = total_freq // width_bin
     
-    for i in prange(samples):
-        new_data[i, :, :, 0] = data[:, 0, i*width_bin:(i+1)*width_bin]
+    # Output shape: (samples, 16, 4096) - no channel dimension yet
+    new_data = np.zeros((samples, time_bins, width_bin))
+    
+    for i in range(samples):
+        # Extract snippet from first polarization only (as per paper)
+        new_data[i, :, :] = data[:, 0, i*width_bin:(i+1)*width_bin]
     
     return new_data
 
-@jit(parallel=True)
-def combine_cadence_observations(A1, A2, A3, B, C, D, width_bin: int, factor: int):
+def combine_cadence_observations(A1, A2, A3, B, C, D, width_bin: int = 4096, factor: int = 8):
     """
     Combine 6 observations into a single cadence array
+    Paper: ABACAD or ABABAB pattern, 3 ON and 3 OFF observations
     
     Args:
-        A1, A2, A3: ON observations
-        B, C, D: OFF observations
-        width_bin: Frequency bins
-        factor: Downsampling factor
+        A1, A2, A3: ON observations (shape: samples, time, freq)
+        B, C, D: OFF observations (shape: samples, time, freq)
+        width_bin: Frequency bins (4096)
+        factor: Downsampling factor (8)
         
     Returns:
-        Combined array (samples, 6, time_bins, freq_bins, 1)
+        Combined array (samples, 6, time_bins, freq_bins_downsampled)
     """
     samples = A1.shape[0]
-    data = np.zeros((samples, 6, 16, width_bin//factor, 1))
+    time_bins = A1.shape[1]  # 16
+    freq_bins_downsampled = width_bin // factor  # 512
     
-    for i in prange(samples):
-        # ON observations
-        data[i, 0, :, :, :] = A1[i, :, :, :]
-        data[i, 2, :, :, :] = A2[i, :, :, :]
-        data[i, 4, :, :, :] = A3[i, :, :, :]
-        # OFF observations
-        data[i, 1, :, :, :] = B[i, :, :, :]
-        data[i, 3, :, :, :] = C[i, :, :, :]
-        data[i, 5, :, :, :] = D[i, :, :, :]
+    # Shape: (samples, 6, 16, 512)
+    data = np.zeros((samples, 6, time_bins, freq_bins_downsampled))
+    
+    # Downsample each observation
+    for i in range(samples):
+        # ON observations (indices 0, 2, 4)
+        data[i, 0, :, :] = downscale_local_mean(A1[i], (1, factor))
+        data[i, 2, :, :] = downscale_local_mean(A2[i], (1, factor))
+        data[i, 4, :, :] = downscale_local_mean(A3[i], (1, factor))
         
-        # Normalize each cadence
-        data[i, :, :, :, :] = normalize_log(data[i, :, :, :, :])
+        # OFF observations (indices 1, 3, 5)
+        data[i, 1, :, :] = downscale_local_mean(B[i], (1, factor))
+        data[i, 3, :, :] = downscale_local_mean(C[i], (1, factor))
+        data[i, 5, :, :] = downscale_local_mean(D[i], (1, factor))
+        
+        # Normalize each cadence using log normalization
+        for j in range(6):
+            data[i, j, :, :] = normalize_log(data[i, j, :, :])
     
     return data
 
 def downsample_frequency(data: np.ndarray, factor: int = 8) -> np.ndarray:
     """
     Downsample data in frequency dimension
+    Paper: Downsample by factor of 8 to get 512 frequency bins
     
     Args:
-        data: Input data
-        factor: Downsampling factor
+        data: Input data (various shapes)
+        factor: Downsampling factor (8)
         
     Returns:
         Downsampled data
     """
-    if len(data.shape) == 4:
-        # Process each observation separately for 4D data (batch, obs, time, freq)
+    if len(data.shape) == 3:
+        # Shape: (batch, time, freq) -> (batch, time, freq//factor)
+        return downscale_local_mean(data, (1, 1, factor))
+    elif len(data.shape) == 4:
+        # Shape: (batch, obs, time, freq) -> (batch, obs, time, freq//factor)
         output_shape = list(data.shape)
         output_shape[-1] = output_shape[-1] // factor
         output = np.zeros(output_shape)
         
         for i in range(data.shape[1]):
-            output[:, i, :, :] = downscale_local_mean(
-                data[:, i, :, :], (1, 1, factor)
-            )
+            output[:, i, :, :] = downscale_local_mean(data[:, i, :, :], (1, 1, factor))
+        return output
     else:
-        # Handle 3D data (batch, time, freq) directly
-        output = downscale_local_mean(data, (1, 1, factor))
-    
-    return output
+        raise ValueError(f"Unexpected data shape: {data.shape}")
 
 def prepare_for_model(data: np.ndarray) -> np.ndarray:
     """
-    Prepare data for model input by combining observations
+    Prepare data for model input by adding channel dimension and flattening batch
+    Paper: Input to VAE is (16, 512, 1) per observation
     
     Args:
-        data: Cadence data (batch, 6, time, freq) or (batch, 6, time, freq, 1)
+        data: Cadence data (batch, 6, time, freq)
         
     Returns:
         Combined data (batch*6, time, freq, 1)
     """
     batch_size = data.shape[0]
-    num_obs = data.shape[1]
+    num_obs = data.shape[1]  # 6
+    time_bins = data.shape[2]  # 16
+    freq_bins = data.shape[3]  # 512
     
-    if len(data.shape) == 4:
-        # 4D input: (batch, 6, time, freq) -> add channel dimension
-        new_data = np.zeros((batch_size * num_obs, data.shape[2], data.shape[3], 1))
-        for i in range(batch_size):
-            new_data[i*num_obs:(i+1)*num_obs, :, :, 0] = data[i, :, :, :]
-    else:
-        # 5D input: (batch, 6, time, freq, 1)
-        new_data = np.zeros((batch_size * num_obs, data.shape[2], data.shape[3], data.shape[4]))
-        for i in range(batch_size):
-            new_data[i*num_obs:(i+1)*num_obs, :, :, :] = data[i, :, :, :, :]
+    # Flatten batch and observations, add channel dimension
+    # Output: (batch*6, 16, 512, 1)
+    new_data = np.zeros((batch_size * num_obs, time_bins, freq_bins, 1))
+    
+    for i in range(batch_size):
+        for j in range(num_obs):
+            new_data[i*num_obs + j, :, :, 0] = data[i, j, :, :]
     
     return new_data
 
@@ -139,30 +156,31 @@ class DataPreprocessor:
     
     def __init__(self, config):
         self.config = config
-        self.width_bin = config.data.width_bin
-        self.downsample_factor = config.data.downsample_factor
+        self.width_bin = config.data.width_bin  # 4096
+        self.downsample_factor = config.data.downsample_factor  # 8
         
     def preprocess_cadence(self, observations: List[np.ndarray]) -> np.ndarray:
         """
         Preprocess a full cadence of observations
         
         Args:
-            observations: List of 6 observation arrays
+            observations: List of 6 observation arrays, each (16, 2, freq_channels)
             
         Returns:
-            Preprocessed cadence data
+            Preprocessed cadence data (num_snippets, 6, 16, 512)
         """
         if len(observations) != 6:
             raise ValueError(f"Expected 6 observations, got {len(observations)}")
         
-        # Shape each observation
+        # Shape each observation into snippets
         shaped_obs = []
         for obs in observations:
+            # obs shape: (16, 2, total_freq) -> (num_snippets, 16, 4096)
             shaped = shape_observation_data(obs, self.width_bin)
-            downsampled = downscale_local_mean(shaped, (1, 1, self.downsample_factor, 1))
-            shaped_obs.append(downsampled)
+            shaped_obs.append(shaped)
         
-        # Combine into cadence
+        # Combine into cadence with downsampling
+        # Returns: (num_snippets, 6, 16, 512)
         combined = combine_cadence_observations(
             *shaped_obs, 
             self.width_bin, 
@@ -176,32 +194,35 @@ class DataPreprocessor:
         Prepare batch of cadences for model input
         
         Args:
-            cadences: Batch of cadence data
+            cadences: Batch of cadence data (batch, 6, 16, 512)
             
         Returns:
-            Data ready for model input
+            Data ready for model input (batch*6, 16, 512, 1)
         """
         return prepare_for_model(cadences)
     
-    def downsample_frequency(self, data: np.ndarray, factor: int = 8) -> np.ndarray:
+    def downsample_frequency(self, data: np.ndarray, factor: Optional[int] = None) -> np.ndarray:
         """
         Downsample data in frequency dimension
         
         Args:
             data: Input data
-            factor: Downsampling factor
+            factor: Downsampling factor (default: 8)
             
         Returns:
             Downsampled data
         """
+        if factor is None:
+            factor = self.downsample_factor
         return downsample_frequency(data, factor)
     
     def extract_snippets_with_overlap(self, data: np.ndarray, overlap: float = 0.5) -> List[np.ndarray]:
         """
         Extract overlapping snippets from continuous data
+        Paper: 50% overlap for better coverage
         
         Args:
-            data: Continuous observation data
+            data: Continuous observation data (time, freq)
             overlap: Overlap factor (0.5 = 50% overlap)
             
         Returns:
@@ -211,7 +232,9 @@ class DataPreprocessor:
         step_size = int(snippet_size * (1 - overlap))
         
         snippets = []
-        for start in range(0, data.shape[-1] - snippet_size + 1, step_size):
+        freq_dimension = data.shape[-1]
+        
+        for start in range(0, freq_dimension - snippet_size + 1, step_size):
             snippet = data[..., start:start + snippet_size]
             snippets.append(snippet)
         

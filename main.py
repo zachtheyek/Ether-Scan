@@ -19,13 +19,14 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('seti_pipeline.log'),
+        logging.FileHandler('/output/seti/seti_pipeline.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 
 logger = logging.getLogger(__name__)
 
+# NOTE: handle GPU stuff later
 def setup_gpu_config():
     """Configure GPU memory growth"""
     import tensorflow as tf
@@ -147,7 +148,7 @@ def train_command(args):
     pipeline = train_full_pipeline(
         config,
         background_data,
-        n_rounds=args.rounds
+        n_rounds=args.rounds # NOTE: why is this separate from epochs & batch_size overrides? 
     )
     logger.info("train_full_pipeline completed")
     
@@ -158,6 +159,7 @@ def train_command(args):
     
     logger.info("Training completed successfully")
 
+# NOTE: come back to inference later
 def inference_command(args):
     """Execute inference command"""
     logger.info("Starting inference pipeline...")
@@ -196,6 +198,7 @@ def inference_command(args):
     
     logger.info(f"Inference completed. Results saved to {output_path}")
 
+# NOTE: come back to evaluation later
 def evaluate_command(args):
     """Execute evaluation command"""
     logger.info("Starting model evaluation...")
@@ -218,6 +221,7 @@ def main():
     train_parser.add_argument('--rounds', type=int, default=20, help='Number of training rounds')
     train_parser.add_argument('--batch-size', type=int, help='Training batch size')
     
+    # NOTE: come back to inference later
     # Inference command
     inf_parser = subparsers.add_parser('inference', help='Run inference')
     inf_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
@@ -226,6 +230,7 @@ def main():
     inf_parser.add_argument('--n-bands', type=int, default=16, help='Number of frequency bands')
     inf_parser.add_argument('--output', type=str, help='Output file path')
     
+    # NOTE: come back to evaluation later
     # Evaluation command
     eval_parser = subparsers.add_parser('evaluate', help='Evaluate models')
     eval_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')

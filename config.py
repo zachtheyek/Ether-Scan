@@ -52,6 +52,7 @@ class DataConfig:
                 'real_filtered_LARGE_test_HIP15638.npy'
             ]
         
+        # NOTE: figure out why Peter sliced along these indices
         if self.file_subsets is None:
             self.file_subsets = {
                 'real_filtered_LARGE_HIP110750.npy': (8000, None),  # Skip first 8000
@@ -68,8 +69,8 @@ class TrainingConfig:
     num_training_rounds: int = 20
     
     # Data generation parameters  
-    num_samples_train: int = 1000  # Reduced from 6000 to avoid OOM
-    num_samples_test: int = 500    # Reduced from 1000
+    num_samples_train: int = 6000
+    num_samples_test: int = 1000
     snr_base: int = 10
     snr_range: int = 40
     
