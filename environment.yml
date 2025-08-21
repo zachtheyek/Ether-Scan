@@ -19,9 +19,11 @@ dependencies:
   - psutil=5.9.*
   - h5py=3.9.*
   - scipy=1.11.*
+  - cuda-runtime=12.3.*
+  - cudnn=8.9.*
   - pip
   - pip:
-    - tensorflow==2.13.*
+    - tensorflow==2.16.*
     - setigen
     - blimpy
     - pyyaml
