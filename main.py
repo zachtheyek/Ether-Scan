@@ -22,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/output/seti/seti_pipeline.log'),
+        logging.FileHandler('/output/seti/train_pipeline.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -35,7 +35,7 @@ def setup_gpu_config():
     
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
-        try:
+        try
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
             logger.info(f"Configured {len(gpus)} GPUs with memory growth enabled")

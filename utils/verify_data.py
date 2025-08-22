@@ -163,11 +163,11 @@ def main():
     
     # Verify training data
     print("\n=== Training Data ===")
-    training_info = verify_data_format('/data/seti/training/')
+    training_info = verify_data_format('/datax/scratch/zachy/data/etherscan/training')
     
     # Verify test data
     print("\n\n=== Test Data ===")
-    test_info = verify_data_format('/data/seti/testing/')
+    test_info = verify_data_format('/datax/scratch/zachy/data/etherscan/testing')
     
     # Print summaries
     print_summary(training_info)

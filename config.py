@@ -99,9 +99,9 @@ class Config:
         self.inference = InferenceConfig()
         
         # Paths - can be overridden by environment variables
-        self.data_path = os.environ.get('SETI_DATA_PATH', '/data/seti')
-        self.model_path = os.environ.get('SETI_MODEL_PATH', '/models/seti')
-        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/output/seti')
+        self.data_path = os.environ.get('SETI_DATA_PATH', '/datax/scratch/zachy/data/etherscan')
+        self.model_path = os.environ.get('SETI_MODEL_PATH', '/datax/scratch/zachy/models/etherscan')
+        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/datax/scratch/zachy/output/etherscan')
 
     def get_training_file_path(self, filename: str) -> str:
         """Get full path for a training file"""
