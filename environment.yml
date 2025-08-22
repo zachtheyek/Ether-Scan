@@ -21,6 +21,9 @@ dependencies:
   - scipy=1.11.*
   - cuda-runtime=12.3.*
   - cudnn=8.9.*
+  - jupyterlab=4.4.*
+  - ipykernel=6.29.*
+  - nb_conda_kernels=2.5.*
   - pip
   - pip:
     - tensorflow==2.16.*
