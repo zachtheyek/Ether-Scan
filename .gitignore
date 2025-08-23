@@ -10,3 +10,7 @@ outputs/
 
 # Virtual environment
 venv/
+
+# Temporary
+Dockerfile
+kubernetes.yaml
