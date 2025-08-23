@@ -1,8 +1,8 @@
 name: seti-ml
 channels:
+  - nvidia
   - conda-forge
   - defaults
-  - nvidia
 dependencies:
   - python=3.10
   - numpy=1.23.*
@@ -19,8 +19,8 @@ dependencies:
   - psutil=5.9.*
   - h5py=3.9.*
   - scipy=1.11.*
-  - cuda-runtime=12.3.*
-  - cudnn=8.9.*
+  - nvidia::cuda-runtime=12.2.*
+  - nvidia::cudnn=8.9.*
   - jupyterlab=4.4.*
   - ipykernel=6.29.*
   - nb_conda_kernels=2.5.*
