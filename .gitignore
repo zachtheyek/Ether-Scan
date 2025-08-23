@@ -11,6 +11,6 @@ outputs/
 # Virtual environment
 venv/
 
-# Temporary
+# NOTE: Temporary
 Dockerfile
 kubernetes.yaml
