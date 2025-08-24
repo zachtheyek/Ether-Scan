@@ -159,12 +159,14 @@ class DataPreprocessor:
         self.width_bin = config.data.width_bin  # 4096
         self.downsample_factor = config.data.downsample_factor  # 8
         
-    def preprocess_cadence(self, observations: List[np.ndarray]) -> np.ndarray:
+    def preprocess_cadence(self, observations: List[np.ndarray], 
+                          use_overlap: bool = True) -> np.ndarray:
         """
         Preprocess a full cadence of observations
         
         Args:
             observations: List of 6 observation arrays, each (16, 2, freq_channels)
+            use_overlap: Whether to extract overlapping snippets
             
         Returns:
             Preprocessed cadence data (num_snippets, 6, 16, 512)
@@ -172,15 +174,18 @@ class DataPreprocessor:
         if len(observations) != 6:
             raise ValueError(f"Expected 6 observations, got {len(observations)}")
         
-        # Shape each observation into snippets
         shaped_obs = []
         for obs in observations:
-            # obs shape: (16, 2, total_freq) -> (num_snippets, 16, 4096)
-            shaped = shape_observation_data(obs, self.width_bin)
+            if use_overlap:
+                # Extract with 50% overlap as per paper
+                snippets = self.extract_snippets_with_overlap(obs, overlap=0.5)
+                shaped = np.array(snippets)
+            else:
+                # Original non-overlapping extraction
+                shaped = shape_observation_data(obs, self.width_bin)
             shaped_obs.append(shaped)
         
         # Combine into cadence with downsampling
-        # Returns: (num_snippets, 6, 16, 512)
         combined = combine_cadence_observations(
             *shaped_obs, 
             self.width_bin, 

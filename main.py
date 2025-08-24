@@ -107,7 +107,8 @@ def load_background_data(config: Config) -> np.ndarray:
                 # Process cadence through preprocessor
                 # This will extract snippets and downsample
                 try:
-                    processed_cadence = preprocessor.preprocess_cadence(observations)
+                    # Process cadence through preprocessor WITH overlap for training
+                    processed_cadence = preprocessor.preprocess_cadence(observations, use_overlap=True)
                     # processed_cadence shape: (n_snippets, 6, 16, 512)
                     
                     # Add each snippet as a separate background
