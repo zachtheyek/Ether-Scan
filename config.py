@@ -52,7 +52,7 @@ class DataConfig:
                 'real_filtered_LARGE_test_HIP15638.npy'
             ]
         
-        # NOTE: figure out why Peter sliced along these indices
+        # NOTE: figure out why Peter sliced along these indices specifically
         if self.file_subsets is None:
             self.file_subsets = {
                 'real_filtered_LARGE_HIP110750.npy': (8000, None),  # Skip first 8000
