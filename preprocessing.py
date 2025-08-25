@@ -166,7 +166,7 @@ class DataPreprocessor:
         
         Args:
             observations: List of 6 observation arrays, each (16, 2, freq_channels)
-            use_overlap: Whether to extract overlapping snippets
+            use_overlap: Whether to extract overlapping snippets (for inference only)
             
         Returns:
             Preprocessed cadence data (num_snippets, 6, 16, 512)
@@ -177,11 +177,12 @@ class DataPreprocessor:
         shaped_obs = []
         for obs in observations:
             if use_overlap:
-                # Extract with 50% overlap as per paper
+                # Extract with 50% overlap as per paper (for inference only)
                 snippets = self.extract_snippets_with_overlap(obs, overlap=0.5)
                 shaped = np.array(snippets)
             else:
-                # Original non-overlapping extraction
+                # Original non-overlapping extraction (for training)
+                # obs shape: (16, 2, total_freq) -> (num_snippets, 16, 4096)
                 shaped = shape_observation_data(obs, self.width_bin)
             shaped_obs.append(shaped)
         
