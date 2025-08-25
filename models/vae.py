@@ -66,7 +66,9 @@ class BetaVAE(keras.Model):
                     self.compute_similarity_loss(a1, a3) +
                     self.compute_similarity_loss(a2, a3))
         
-        # ONs should be different from OFFs
+        # We want ONs to be different from OFFs
+        # So, we minimize 1/distance
+        # This encourages larger distances between ON-OFF pairs
         diff_loss = (self.compute_dissimilarity_loss(a1, b) +
                     self.compute_dissimilarity_loss(a1, c) +
                     self.compute_dissimilarity_loss(a1, d) +
