@@ -61,8 +61,8 @@ def inject_signal(data: np.ndarray, snr: float, drift_rate: float,
         start_freq = np.random.randint(freq_bins // 4, 3 * freq_bins // 4)
     
     # Convert drift rate to bins per time step
-    # Paper: 2.79 Hz native resolution, 8x downsample = 22.32 Hz per bin
-    freq_resolution = 22.32  # Hz per downsampled bin
+    # Paper: 2.79 Hz native resolution, 8x downsample = 22.35 Hz per bin
+    freq_resolution = 22.351741790771484  # Hz per downsampled bin
     time_resolution = 18.25361108  # seconds per time step
     drift_bins_per_step = drift_rate * time_resolution / freq_resolution
     

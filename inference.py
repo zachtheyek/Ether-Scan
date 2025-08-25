@@ -281,7 +281,7 @@ class InferencePipeline:
             return pd.DataFrame()
         
         # Calculate actual frequencies
-        freq_resolution = self.config.data.freq_resolution * self.config.data.downsample_factor
+        freq_resolution = self.config.data.freq_resolution * self.config.data.downsample_factor # 2.79 Hz -> 22.35 Hz after downsample
         start_freq = frequency_range[0] * 1e6  # MHz to Hz
         
         df_data = []
