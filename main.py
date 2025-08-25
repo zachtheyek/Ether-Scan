@@ -87,6 +87,16 @@ def load_background_data(config: Config) -> np.ndarray:
             n_cadences = raw_data.shape[0]
             for cadence_idx in range(n_cadences):
                 cadence = raw_data[cadence_idx]  # Shape: (6, 16, total_freq)
+
+                # Time gap filtering check
+                # TODO: Implement when metadata with observation timestamps is available
+                # For now, add a warning that we're not filtering time gaps
+                if cadence_idx == 0:  # Only log once per file
+                    logger.warning("Time gap filtering not implemented - assuming all cadences have <2min gaps between observations")
+                # Future implementation when metadata available:
+                # if observation_time_gaps and max(observation_time_gaps) >= 120:
+                #     logger.info(f"Skipping cadence {cadence_idx} with {max(observation_time_gaps)}s gap")
+                #     continue
                 
                 # Check if we need to reshape (add polarization dimension if missing)
                 if len(cadence.shape) == 3 and cadence.shape[0] == 6:
