@@ -117,8 +117,10 @@ def create_cadence_data(background: np.ndarray, signal_type: str,
     # FIXED: Use uniform distribution for drift rate (no bias)
     drift_rate = np.random.uniform(*drift_range)
     
-    # Width calculation per paper
-    width = np.random.uniform(5, 55)  # Hz
+    # Width calculation per paper: DR×dt + 5 to DR×dt + 55
+    time_resolution = 18.25361108  # seconds per time step
+    drift_width_base = abs(drift_rate) * time_resolution
+    width = np.random.uniform(drift_width_base + 5, drift_width_base + 55)  # Hz
     
     if signal_type == "true":
         # ETI signal: appears only in ON observations (0, 2, 4)
@@ -257,11 +259,27 @@ def create_mixed_training_batch(generator: DataGenerator,
     
     # Add RFI to mixed data
     for i in range(n_each):
-        mixed_data[i] = create_cadence_data(
-            mixed_data[i], "false",
-            snr_range=(10, 30),
-            drift_range=(-5, 5)
-        )
+        # Generate RFI with proper width calculation based on drift rate
+        rfi_drift_rate = np.random.uniform(-5, 5)
+        time_resolution = 18.25361108  # seconds per time step
+        drift_width_base = abs(rfi_drift_rate) * time_resolution
+        rfi_width = np.random.uniform(drift_width_base + 5, drift_width_base + 55)
+        rfi_snr = np.random.uniform(10, 30)
+        
+        # Get random starting frequency for RFI
+        freq_bins = mixed_data[i, 0].shape[1]  # Get freq dimension
+        rfi_start_freq = np.random.randint(freq_bins // 4, 3 * freq_bins // 4)
+        
+        # Inject RFI into all 6 observations with same parameters
+        for obs_idx in range(6):
+            mixed_data[i, obs_idx] = inject_signal(
+                mixed_data[i, obs_idx], 
+                rfi_snr, 
+                rfi_drift_rate, 
+                start_freq=rfi_start_freq,
+                width=rfi_width
+            )[0]  # inject_signal returns (data, slope, intercept), we only need data
+    
     
     # Concatenate for main input
     concatenated = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)
