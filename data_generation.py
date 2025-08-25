@@ -198,7 +198,10 @@ class DataGenerator:
             Dictionary with different data types
         """
         # Per paper: 120,000 samples for main training
-        n_samples = 120000
+        # n_samples = 120000
+        # Reduce by 4x to avoid OOM
+        # Compensate by running for 4x more epochs
+        n_samples = 30000
         
         logger.info(f"Generating training set with {n_samples} samples per category...")
         
