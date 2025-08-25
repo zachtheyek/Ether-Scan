@@ -22,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/output/seti/train_pipeline.log'),
+        logging.FileHandler('/datax/scratch/zachy/output/etherscan/train_pipeline.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
