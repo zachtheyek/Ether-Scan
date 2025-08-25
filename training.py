@@ -209,10 +209,9 @@ class TrainingPipeline:
     def iterative_training(self, n_rounds: Optional[int] = None) -> None:
         """
         Perform iterative training with varying SNR
-        Paper: 20 rounds, varying SNR from 10 to 50
-        
-        Args:
-            n_rounds: Number of training rounds (default: 20)
+        Paper: 20 rounds, SNR range 10-50 with curriculum learning
+        Start with EASIER (full range including strong signals)
+        Progress to HARDER (only weak signals)
         """
         if n_rounds is None:
             n_rounds = self.config.training.num_training_rounds
@@ -224,12 +223,27 @@ class TrainingPipeline:
             logger.info(f"Training round {round_idx + 1}/{n_rounds}")
             logger.info(f"{'='*50}")
             
-            # Vary SNR for each round (gradually increase difficulty)
-            # Start with easier signals (higher SNR) and progress to harder ones
-            snr_progression = 50 - (round_idx * 2)  # 50, 48, 46, ... 12, 10
-            self.config.training.snr_base = max(10, snr_progression)
+            # Curriculum learning: gradually reduce the MAXIMUM SNR
+            # This forces the model to learn from progressively weaker signals
             
-            logger.info(f"SNR base for this round: {self.config.training.snr_base}")
+            # Round 1: SNR 10-50 (full range - easy, includes strong signals)
+            # Round 10: SNR 10-40 (medium difficulty)  
+            # Round 20: SNR 10-30 (hard - only weak signals)
+            
+            min_snr = 10  # Always start at 10 (paper's minimum)
+            
+            # Linearly decrease max SNR from 50 to 30 over 20 rounds
+            max_snr = 50 - round_idx * (20/n_rounds)  # 50→30
+            max_snr = max(30, max_snr)  # Don't go below 30
+            
+            # Update the config parameters
+            self.config.training.snr_base = min_snr
+            self.config.training.snr_range = max_snr - min_snr
+            
+            logger.info(f"SNR range for this round: {min_snr}-{max_snr}")
+            logger.info(f"  Easy signals (SNR>40): {max_snr>40}")
+            logger.info(f"  Medium signals (SNR 20-40): Always included")  
+            logger.info(f"  Hard signals (SNR 10-20): Always included")
             
             # Train VAE
             self.train_vae(epochs=self.config.training.epochs_per_round)
