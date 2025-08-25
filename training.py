@@ -132,7 +132,6 @@ class TrainingPipeline:
         logger.info(f"Training VAE for {epochs} epochs...")
 
         # Before preparing data, clear memory to avoid OOM
-        # NOTE: return to this to verify it's working as intended
         import gc
         gc.collect()
         tf.keras.backend.clear_session()
