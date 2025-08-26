@@ -166,13 +166,13 @@ def load_background_data(config: Config) -> np.ndarray:
     return background_array
 
 def train_command(args):
-    """Execute training command"""
+    """Execute training command with distributed strategy"""
     logger.info("="*60)
     logger.info("Starting SETI ML Training Pipeline")
     logger.info("="*60)
     
-    # Setup GPU
-    setup_gpu_config()
+    # Setup GPU and get strategy
+    strategy = setup_gpu_config()
     
     # Load configuration
     config = Config()
@@ -209,7 +209,8 @@ def train_command(args):
         pipeline = train_full_pipeline(
             config,
             background_data,
-            n_rounds=config.training.num_training_rounds
+            n_rounds=config.training.num_training_rounds, 
+            strategy=strategy
         )
     except Exception as e:
         logger.error(f"Training failed: {e}")

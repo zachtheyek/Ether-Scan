@@ -62,15 +62,19 @@ class DataConfig:
     
 @dataclass
 class TrainingConfig:
-    """Training configuration"""
-    batch_size: int = 1000
-    validation_batch_size: int = 6000
+    """Training configuration optimized for 4 GPUs"""
+    batch_size: int = 256 # Must be divisible by num_gpus (4)
+    validation_batch_size: int = 512 # Must be divisible by num_gpus (4)
     epochs_per_round: int = 100
     num_training_rounds: int = 20
+
+    # IMPORTANT: These control memory usage
+    samples_per_generator_call: int = 32  # How many samples to generate at once
+    prefetch_buffer: int = 2  # How many batches to prefetch
     
     # Data generation parameters  
-    num_samples_train: int = 6000
-    num_samples_test: int = 1000
+    num_samples_train: int = 30000 # Total samples per epoch
+    num_samples_test: int = 8000
     snr_base: int = 10
     snr_range: int = 40
     

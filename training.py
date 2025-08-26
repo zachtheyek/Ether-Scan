@@ -33,24 +33,13 @@ class TrainingPipeline:
         """
         logger.info("Initializing TrainingPipeline...")
         self.config = config
+
         self.strategy = strategy or tf.distribute.get_strategy()
+        logger.info(f"Using strategy: {self.strategy.__class__.__name__} with {self.strategy.num_replicas_in_sync} replicas")
 
         # Convert background data to float32
+        logger.info("Converting background data to float32...")
         self.background_data = background_data.astype(np.float32)
-        
-        # Create models within strategy scope
-        with self.strategy.scope():
-            self.preprocessor = DataPreprocessor(config)
-            self.data_generator = DataGenerator(config, self.background_data)
-            
-            logger.info("Creating VAE model within distributed scope...")
-            self.vae = create_vae_model(config)
-            
-            # Scale learning rate by number of replicas
-            scaled_lr = config.model.learning_rate * self.strategy.num_replicas_in_sync
-            self.vae.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=scaled_lr)
-            )
         
         logger.info("Creating DataPreprocessor...")
         self.preprocessor = DataPreprocessor(config)
@@ -59,10 +48,20 @@ class TrainingPipeline:
         logger.info("Creating DataGenerator...")
         self.data_generator = DataGenerator(config, background_data)
         
-        # Initialize models
-        logger.info("Creating VAE model...")
-        self.vae = create_vae_model(config)
-        logger.info("VAE model created successfully")
+        # Create models within strategy scope for distributed training
+        with self.strategy.scope():
+            logger.info("Creating VAE model within distributed scope...")
+            self.vae = create_vae_model(config)
+            
+            # Scale learning rate by number of replicas
+            scaled_lr = config.model.learning_rate * self.strategy.num_replicas_in_sync
+            logger.info(f"Scaling learning rate from {config.model.learning_rate} to {scaled_lr}")
+            
+            # Recompile with scaled learning rate
+            self.vae.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=scaled_lr)
+            )
+            logger.info("VAE model created and compiled for distributed training")
         
         self.rf_model = None
         
@@ -86,62 +85,108 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets using generators
+        Prepare training and validation datasets using memory-efficient generators
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
         logger.info("Preparing training data with memory-efficient generators...")
+
+        # Calculate steps per epoch
+        steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
+        val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
         def data_generator():
-            """Generator that yields batches on-the-fly"""
+            """Generator that yields single samples for training"""
             while True:
-                # Generate small batches dynamically
-                batch_size = 32  # Small batch to generate at once
-                concatenated, true_data, false_data = create_mixed_training_batch(
-                    self.data_generator, batch_size
-                )
+                # Generate a small batch to work with
+                batch_size = self.config.training.samples_per_generator_call
                 
-                # Convert to float32 to save memory
-                concatenated = concatenated.astype(np.float32)
-                true_data = true_data.astype(np.float32)
-                false_data = false_data.astype(np.float32)
+                # Use existing data generation methods
+                concatenated = self.data_generator.generate_batch(batch_size, "none")
+                true_data = self.data_generator.generate_batch(batch_size, "true") 
+                false_data = self.data_generator.generate_batch(batch_size, "false")
                 
-                # Prepare for model
-                concatenated_flat = self.preprocessor.prepare_batch(concatenated)
+                # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
+                mixed_batch = np.zeros((batch_size * 4, 6, 16, 512), dtype=np.float32)
+                mixed_batch[:batch_size] = concatenated
+                mixed_batch[batch_size:2*batch_size] = true_data
+                mixed_batch[2*batch_size:3*batch_size] = false_data
                 
+                # Create mixed true+RFI for last quarter
+                mixed_data = true_data.copy()
                 for i in range(batch_size):
-                    yield ((concatenated_flat[i*6:(i+1)*6], 
-                           true_data[i], 
-                           false_data[i]), 
-                          concatenated_flat[i*6:(i+1)*6])
+                    # Add RFI signal
+                    mixed_data[i] = create_cadence_data(
+                        mixed_data[i], "false",
+                        snr_range=(10, 30),
+                        drift_range=(-5, 5)
+                    )
+                mixed_batch[3*batch_size:] = mixed_data
+                
+                # Prepare batch for model (add channel dimension)
+                mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
+                true_flat = self.preprocessor.prepare_batch(true_data)
+                false_flat = self.preprocessor.prepare_batch(false_data)
+                
+                # Yield individual samples
+                for i in range(len(mixed_batch)):
+                    # Get the 6 observations for this sample
+                    sample_mixed = mixed_flat[i*6:(i+1)*6]
+                    
+                    # For clustering loss, use corresponding true/false samples
+                    idx = i % batch_size
+                    sample_true = true_flat[idx*6:(idx+1)*6]
+                    sample_false = false_flat[idx*6:(idx+1)*6]
+                    
+                    yield ((sample_mixed, sample_true, sample_false), sample_mixed)
         
-        # Create dataset from generator
+        def val_generator():
+            """Generator for validation data"""
+            while True:
+                # Similar to train_generator but simpler
+                batch_size = self.config.training.samples_per_generator_call
+                val_data = self.data_generator.generate_batch(batch_size, "true")
+                val_flat = self.preprocessor.prepare_batch(val_data)
+                
+                for i in range(len(val_data)):
+                    sample = val_flat[i*6:(i+1)*6]
+                    # For validation, use same data for all inputs
+                    yield ((sample, sample, sample), sample)
+        
+        # Define output signature for the generators
         output_signature = (
-            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),
-             tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32),
-             tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32)),
-            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)
+            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # concatenated
+             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # true
+             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)), # false
+            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)   # target
         )
         
+        # Create datasets from generators
         train_dataset = tf.data.Dataset.from_generator(
-            data_generator,
+            train_generator,
             output_signature=output_signature
         )
         
-        # Batch and prefetch
-        train_dataset = train_dataset.batch(self.config.training.batch_size // 32)
-        train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+        val_dataset = tf.data.Dataset.from_generator(
+            val_generator,
+            output_signature=output_signature
+        )
         
-        # Similar for validation
-        val_dataset = train_dataset.take(100)  # Use subset for validation
+        # Batch and optimize
+        train_dataset = train_dataset.batch(self.config.training.batch_size)
+        train_dataset = train_dataset.prefetch(self.config.training.prefetch_buffer)
+        
+        val_dataset = val_dataset.batch(self.config.training.validation_batch_size)
+        val_dataset = val_dataset.take(val_steps)  # Limit validation size
+        val_dataset = val_dataset.prefetch(self.config.training.prefetch_buffer)
         
         return train_dataset, val_dataset
     
     def train_vae(self, epochs: Optional[int] = None, 
                  save_checkpoints: bool = True) -> Dict:
         """
-        Train the VAE model with mixed precision
+        Train the VAE model with mixed precision and distributed strategy
         
         Args:
             epochs: Number of epochs (uses config if None)
@@ -159,13 +204,17 @@ class TrainingPipeline:
             
         logger.info(f"Training VAE for {epochs} epochs with mixed precision...")
 
-        # Before preparing data, clear memory to avoid OOM
+        # Clear memory before preparing data
         import gc
         gc.collect()
         tf.keras.backend.clear_session()
         
-        # Prepare data
+        # Prepare distributed datasets
         train_dataset, val_dataset = self.prepare_training_data()
+
+        # Distribute datasets across GPUs
+        train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
+        val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
         
         # Callbacks
         callbacks = []
@@ -418,10 +467,9 @@ class TrainingPipeline:
         logger.info(f"Saved VAE checkpoint to {checkpoint_path}")
 
 def train_full_pipeline(config, background_data: np.ndarray,
-                       n_rounds: int = 20) -> TrainingPipeline:
+                       n_rounds: int = 20, strategy=None) -> TrainingPipeline:
     """
-    Train the complete SETI ML pipeline
-    Paper: 20 rounds of training with 100 epochs each
+    Train the complete SETI ML pipeline with distributed strategy
     
     Args:
         config: Configuration object
@@ -433,7 +481,7 @@ def train_full_pipeline(config, background_data: np.ndarray,
     """
     # Create pipeline
     logger.info("Creating TrainingPipeline...")
-    pipeline = TrainingPipeline(config, background_data)
+    pipeline = TrainingPipeline(config, background_data, strategy=strategy)
     logger.info("TrainingPipeline created successfully")
     
     # Train iteratively
