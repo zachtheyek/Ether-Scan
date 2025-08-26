@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_gpu_config():
-    """Configure GPU memory growth to prevent OOM"""
+    """Configure GPU memory growth and multi-GPU strategy"""
     import tensorflow as tf
     
     gpus = tf.config.list_physical_devices('GPU')
@@ -38,11 +38,17 @@ def setup_gpu_config():
         try:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"Configured {len(gpus)} GPUs with memory growth enabled")
+            
+            # Create distributed strategy for multi-GPU training
+            strategy = tf.distribute.MirroredStrategy()
+            logger.info(f"Configured {strategy.num_replicas_in_sync} GPUs with MirroredStrategy")
+            return strategy
         except RuntimeError as e:
             logger.error(f"GPU configuration error: {e}")
+            return None
     else:
         logger.warning("No GPUs detected, running on CPU")
+        return None
 
 def load_background_data(config: Config) -> np.ndarray:
     """

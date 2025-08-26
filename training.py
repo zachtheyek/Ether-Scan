@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 class TrainingPipeline:
     """Main training pipeline for SETI models"""
     
-    def __init__(self, config, background_data: np.ndarray):
+    def __init__(self, config, background_data: np.ndarray, strategy=None):
         """
-        Initialize training pipeline
+        Initialize training pipeline with distributed strategy support
         
         Args:
             config: Configuration object
@@ -33,6 +33,24 @@ class TrainingPipeline:
         """
         logger.info("Initializing TrainingPipeline...")
         self.config = config
+        self.strategy = strategy or tf.distribute.get_strategy()
+
+        # Convert background data to float32
+        self.background_data = background_data.astype(np.float32)
+        
+        # Create models within strategy scope
+        with self.strategy.scope():
+            self.preprocessor = DataPreprocessor(config)
+            self.data_generator = DataGenerator(config, self.background_data)
+            
+            logger.info("Creating VAE model within distributed scope...")
+            self.vae = create_vae_model(config)
+            
+            # Scale learning rate by number of replicas
+            scaled_lr = config.model.learning_rate * self.strategy.num_replicas_in_sync
+            self.vae.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=scaled_lr)
+            )
         
         logger.info("Creating DataPreprocessor...")
         self.preprocessor = DataPreprocessor(config)
@@ -68,56 +86,62 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets
-        Paper: 120,000 samples for training, 24,000 for validation
+        Prepare training and validation datasets using generators
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
-        logger.info("Preparing training data...")
+        logger.info("Preparing training data with memory-efficient generators...")
         
-        # Generate full training set as per paper
-        train_data = self.data_generator.generate_training_set()
-        val_data = self.data_generator.generate_test_set()
+        def data_generator():
+            """Generator that yields batches on-the-fly"""
+            while True:
+                # Generate small batches dynamically
+                batch_size = 32  # Small batch to generate at once
+                concatenated, true_data, false_data = create_mixed_training_batch(
+                    self.data_generator, batch_size
+                )
+                
+                # Convert to float32 to save memory
+                concatenated = concatenated.astype(np.float32)
+                true_data = true_data.astype(np.float32)
+                false_data = false_data.astype(np.float32)
+                
+                # Prepare for model
+                concatenated_flat = self.preprocessor.prepare_batch(concatenated)
+                
+                for i in range(batch_size):
+                    yield ((concatenated_flat[i*6:(i+1)*6], 
+                           true_data[i], 
+                           false_data[i]), 
+                          concatenated_flat[i*6:(i+1)*6])
         
-        # Create TF datasets
-        def create_dataset(data_dict, shuffle=True):
-            """Helper to create TF dataset from dictionary"""
-            concatenated = data_dict.get('concatenated', data_dict.get('true'))
-            true_data = data_dict['true']
-            false_data = data_dict['false']
-            
-            # Prepare for model input (add channel dimension and flatten batch)
-            concatenated_flat = self.preprocessor.prepare_batch(concatenated)
-            
-            # Create dataset
-            dataset = tf.data.Dataset.from_tensor_slices((
-                (concatenated_flat, true_data, false_data),
-                concatenated_flat  # Target is same as input for autoencoder
-            ))
-            
-            if shuffle:
-                dataset = dataset.shuffle(buffer_size=10000)
-            
-            return dataset
+        # Create dataset from generator
+        output_signature = (
+            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),
+             tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(6, 16, 512), dtype=tf.float32)),
+            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)
+        )
         
-        train_dataset = create_dataset(train_data, shuffle=True)
-        val_dataset = create_dataset(val_data, shuffle=False)
+        train_dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_signature=output_signature
+        )
         
         # Batch and prefetch
-        train_dataset = train_dataset.batch(self.config.training.batch_size)
+        train_dataset = train_dataset.batch(self.config.training.batch_size // 32)
         train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
         
-        val_dataset = val_dataset.batch(self.config.training.validation_batch_size)
-        val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+        # Similar for validation
+        val_dataset = train_dataset.take(100)  # Use subset for validation
         
         return train_dataset, val_dataset
     
     def train_vae(self, epochs: Optional[int] = None, 
                  save_checkpoints: bool = True) -> Dict:
         """
-        Train the VAE model
-        Paper: 100 epochs per round, 20 rounds total
+        Train the VAE model with mixed precision
         
         Args:
             epochs: Number of epochs (uses config if None)
@@ -126,10 +150,14 @@ class TrainingPipeline:
         Returns:
             Training history
         """
+        # Enable mixed precision training
+        policy = tf.keras.mixed_precision.Policy('mixed_float16')
+        tf.keras.mixed_precision.set_global_policy(policy)
+
         if epochs is None:
             epochs = self.config.training.epochs_per_round
             
-        logger.info(f"Training VAE for {epochs} epochs...")
+        logger.info(f"Training VAE for {epochs} epochs with mixed precision...")
 
         # Before preparing data, clear memory to avoid OOM
         import gc
