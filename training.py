@@ -96,7 +96,7 @@ class TrainingPipeline:
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
-        def data_generator():
+        def train_generator():
             """Generator that yields single samples for training"""
             while True:
                 # Generate a small batch to work with
