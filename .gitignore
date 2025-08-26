@@ -2,7 +2,7 @@
 2301.12670v1.pdf
 
 # Outputs & logs
-outputs/
+output/
 *.log
 
 # Artifacts
