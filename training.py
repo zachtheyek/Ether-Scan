@@ -85,154 +85,177 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets using pre-generated batches for distributed training stability
+        Prepare training and validation datasets using memory-efficient on-demand generation
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
-        logger.info("Preparing training data with pre-generated batches for distributed training...")
+        logger.info("Preparing training data with memory-efficient on-demand generation...")
 
-        # Calculate total data needed
+        # Calculate steps per epoch
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
-        total_train_samples = steps_per_epoch * self.config.training.batch_size
-        total_val_samples = val_steps * self.config.training.validation_batch_size
+        logger.info(f"Training: {steps_per_epoch} steps/epoch, Validation: {val_steps} steps")
         
-        logger.info(f"Pre-generating {total_train_samples} training samples and {total_val_samples} validation samples...")
-        
-        # Pre-generate training data
-        train_inputs = []
-        train_targets = []
-        
-        samples_per_batch = self.config.training.samples_per_generator_call
-        train_batches_needed = (total_train_samples + samples_per_batch - 1) // samples_per_batch
-        
-        for batch_idx in range(train_batches_needed):
-            logger.info(f"Generating training batch {batch_idx + 1}/{train_batches_needed}")
+        def create_training_batch():
+            """Create a single training batch on demand with memory management"""
+            batch_size = self.config.training.batch_size
+            quarter_size = max(1, batch_size // 4)
             
-            # Generate current batch size (handle remainder)
-            remaining_samples = total_train_samples - batch_idx * samples_per_batch
-            current_batch_size = min(samples_per_batch, remaining_samples)
-            
-            # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
-            quarter_size = max(1, current_batch_size // 4)
-            
-            none_data = self.data_generator.generate_batch(quarter_size, "none")
-            true_data = self.data_generator.generate_batch(quarter_size, "true")  
-            false_data = self.data_generator.generate_batch(quarter_size, "false")
-            
-            # For mixed data, add RFI to true signals
-            mixed_data = self.data_generator.generate_batch(quarter_size, "true")
-            
-            # Add RFI signals to mixed_data
-            for i in range(quarter_size):
-                for obs_idx in range(6):
-                    rfi_snr = np.random.uniform(10, 30)
-                    rfi_drift_rate = np.random.uniform(-5, 5)
+            try:
+                # Generate data types
+                none_data = self.data_generator.generate_batch(quarter_size, "none")
+                true_data = self.data_generator.generate_batch(quarter_size, "true")
+                false_data = self.data_generator.generate_batch(quarter_size, "false")
+                
+                # Mixed data: true signals + RFI
+                mixed_data = self.data_generator.generate_batch(quarter_size, "true")
+                for i in range(quarter_size):
+                    for obs_idx in range(6):
+                        rfi_snr = np.random.uniform(10, 30)
+                        rfi_drift_rate = np.random.uniform(-5, 5)
+                        
+                        from data_generation import inject_signal
+                        mixed_data[i, obs_idx], _, _ = inject_signal(
+                            mixed_data[i, obs_idx], rfi_snr, rfi_drift_rate
+                        )
+                
+                # Combine all data
+                combined_data = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
+                
+                # Prepare for model with explicit memory management
+                combined_flat = self.preprocessor.prepare_batch(combined_data)
+                true_flat = self.preprocessor.prepare_batch(true_data)
+                false_flat = self.preprocessor.prepare_batch(false_data)
+                
+                # Clear intermediate arrays immediately
+                del combined_data, none_data, true_data, false_data, mixed_data
+                
+                # Format for model input: ((mixed, true, false), target)
+                batch_mixed = []
+                batch_true = []  
+                batch_false = []
+                batch_targets = []
+                
+                for i in range(batch_size):
+                    sample_mixed = combined_flat[i*6:(i+1)*6]
+                    idx = i % quarter_size
+                    sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_flat)//6 else sample_mixed
+                    sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_flat)//6 else sample_mixed
                     
-                    from data_generation import inject_signal
-                    mixed_data[i, obs_idx], _, _ = inject_signal(
-                        mixed_data[i, obs_idx], rfi_snr, rfi_drift_rate
-                    )
-            
-            # Combine all data types
-            mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
-            
-            # Trim to exact size needed
-            if len(mixed_batch) > current_batch_size:
-                mixed_batch = mixed_batch[:current_batch_size]
-            
-            # Prepare batch for model
-            mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
-            true_flat = self.preprocessor.prepare_batch(true_data)
-            false_flat = self.preprocessor.prepare_batch(false_data)
-            
-            # Create samples with clustering format
-            for i in range(len(mixed_batch)):
-                sample_mixed = mixed_flat[i*6:(i+1)*6]
+                    batch_mixed.append(sample_mixed)
+                    batch_true.append(sample_true)
+                    batch_false.append(sample_false)
+                    batch_targets.append(sample_mixed)
                 
-                # For clustering loss, cycle through true/false samples  
-                idx = i % quarter_size
-                sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_data) else sample_mixed
-                sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_data) else sample_mixed
+                # Convert to arrays with explicit dtype
+                mixed_array = np.array(batch_mixed, dtype=np.float32)
+                true_array = np.array(batch_true, dtype=np.float32)
+                false_array = np.array(batch_false, dtype=np.float32)
+                target_array = np.array(batch_targets, dtype=np.float32)
                 
-                train_inputs.append((sample_mixed, sample_true, sample_false))
-                train_targets.append(sample_mixed)
+                # Clean up intermediate data
+                del combined_flat, true_flat, false_flat
+                del batch_mixed, batch_true, batch_false, batch_targets
+                
+                return ((mixed_array, true_array, false_array), target_array)
+                
+            except Exception as e:
+                logger.error(f"Error in create_training_batch: {e}")
+                raise
+        
+        def create_validation_batch():
+            """Create a single validation batch on demand with memory management"""
+            batch_size = self.config.training.validation_batch_size
             
-            # Memory cleanup
+            try:
+                val_data = self.data_generator.generate_batch(batch_size, "true")
+                val_flat = self.preprocessor.prepare_batch(val_data)
+                
+                # Clear intermediate data
+                del val_data
+                
+                # Format for validation (no clustering loss)
+                batch_mixed = []
+                batch_true = []
+                batch_false = []
+                batch_targets = []
+                
+                for i in range(batch_size):
+                    sample = val_flat[i*6:(i+1)*6]
+                    batch_mixed.append(sample)
+                    batch_true.append(sample) 
+                    batch_false.append(sample)
+                    batch_targets.append(sample)
+                
+                # Convert to arrays with explicit dtype
+                mixed_array = np.array(batch_mixed, dtype=np.float32)
+                true_array = np.array(batch_true, dtype=np.float32)
+                false_array = np.array(batch_false, dtype=np.float32)
+                target_array = np.array(batch_targets, dtype=np.float32)
+                
+                # Clean up intermediate data
+                del val_flat, batch_mixed, batch_true, batch_false, batch_targets
+                
+                return ((mixed_array, true_array, false_array), target_array)
+                
+            except Exception as e:
+                logger.error(f"Error in create_validation_batch: {e}")
+                raise
+        
+        # Create datasets using callable for on-demand generation with memory cleanup
+        def train_gen():
             import gc
-            del mixed_batch, mixed_flat, true_flat, false_flat
-            gc.collect()
+            for step in range(steps_per_epoch):
+                batch = create_training_batch()
+                yield batch
+                # Periodic garbage collection to manage memory
+                if step % 10 == 0:
+                    gc.collect()
         
-        # Pre-generate validation data
-        logger.info("Generating validation data...")
-        val_inputs = []
-        val_targets = []
-        
-        val_batches_needed = (total_val_samples + samples_per_batch - 1) // samples_per_batch
-        
-        for batch_idx in range(val_batches_needed):
-            remaining_samples = total_val_samples - batch_idx * samples_per_batch
-            current_batch_size = min(samples_per_batch, remaining_samples)
-            
-            val_data = self.data_generator.generate_batch(current_batch_size, "true")
-            val_flat = self.preprocessor.prepare_batch(val_data)
-            
-            for i in range(len(val_data)):
-                sample = val_flat[i*6:(i+1)*6]
-                val_inputs.append((sample, sample, sample))
-                val_targets.append(sample)
-            
+        def val_gen():
             import gc
-            del val_data, val_flat
-            gc.collect()
+            for step in range(val_steps):
+                batch = create_validation_batch()
+                yield batch
+                if step % 5 == 0:
+                    gc.collect()
         
-        logger.info(f"Generated {len(train_inputs)} training samples, {len(val_inputs)} validation samples")
-        
-        # Convert to tensors (more memory efficient than arrays)
-        logger.info("Converting to TensorFlow datasets...")
-        
-        # Unpack the tuples for dataset creation
-        train_mixed = np.array([x[0] for x in train_inputs], dtype=np.float32)
-        train_true = np.array([x[1] for x in train_inputs], dtype=np.float32) 
-        train_false = np.array([x[2] for x in train_inputs], dtype=np.float32)
-        train_tgt = np.array(train_targets, dtype=np.float32)
-        
-        val_mixed = np.array([x[0] for x in val_inputs], dtype=np.float32)
-        val_true = np.array([x[1] for x in val_inputs], dtype=np.float32)
-        val_false = np.array([x[2] for x in val_inputs], dtype=np.float32)
-        val_tgt = np.array(val_targets, dtype=np.float32)
-        
-        # Data validation and statistics
-        logger.info(f"Training data stats - Mixed: mean={train_mixed.mean():.6f}, std={train_mixed.std():.6f}, range=[{train_mixed.min():.6f}, {train_mixed.max():.6f}]")
-        logger.info(f"Training data shapes - Mixed: {train_mixed.shape}, True: {train_true.shape}, False: {train_false.shape}, Target: {train_tgt.shape}")
-        
-        # Clear intermediate data to free memory
-        del train_inputs, train_targets, val_inputs, val_targets
-        import gc
-        gc.collect()
-        
-        # Create datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices(
-            ((train_mixed, train_true, train_false), train_tgt)
+        # Define output signature
+        output_signature = (
+            (tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32)),
+            tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32)
         )
         
-        val_dataset = tf.data.Dataset.from_tensor_slices(
-            ((val_mixed, val_true, val_false), val_tgt)
+        val_output_signature = (
+            (tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32)),
+            tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32)
         )
         
-        # Batch and optimize for distributed training with memory management
-        train_dataset = train_dataset.batch(self.config.training.batch_size, drop_remainder=True)
-        train_dataset = train_dataset.prefetch(1)  # Reduced prefetch to save memory
-        # Skip caching to avoid OOM with large datasets
+        # Create datasets with proper options for distributed training
+        options = tf.data.Options()
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
         
-        val_dataset = val_dataset.batch(self.config.training.validation_batch_size, drop_remainder=True) 
-        val_dataset = val_dataset.prefetch(1)  # Reduced prefetch to save memory
-        # Skip caching for validation too
+        train_dataset = tf.data.Dataset.from_generator(
+            train_gen, output_signature=output_signature
+        )
+        train_dataset = train_dataset.with_options(options)
         
-        logger.info(f"Training dataset: {train_dataset}")
-        logger.info(f"Validation dataset: {val_dataset}")
+        val_dataset = tf.data.Dataset.from_generator(
+            val_gen, output_signature=val_output_signature  
+        )
+        val_dataset = val_dataset.with_options(options)
+        
+        # Basic optimization - minimal prefetch to avoid memory issues
+        train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+        val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+        
+        logger.info(f"Created on-demand datasets - Training: {steps_per_epoch} batches, Validation: {val_steps} batches")
         
         return train_dataset, val_dataset
     
@@ -265,10 +288,13 @@ class TrainingPipeline:
         # Prepare distributed datasets
         train_dataset, val_dataset = self.prepare_training_data()
 
-        # For distributed training, use the strategy to distribute datasets
-        # Note: Pre-generated datasets are more stable than generators in distributed mode
-        train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
-        val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
+        # Distribute datasets across all 4 GPUs properly
+        # This ensures data is sharded across replicas, not loaded only on GPU 0
+        with self.strategy.scope():
+            train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
+            val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
+            
+        logger.info("Datasets distributed across all GPU replicas for parallel training")
         
         # Callbacks
         callbacks = []
