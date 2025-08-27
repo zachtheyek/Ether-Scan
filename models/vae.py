@@ -260,18 +260,24 @@ class BetaVAE(keras.Model):
         # Update weights with gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
         
-        # Check for NaN/Inf in losses and skip update if found
-        if tf.math.is_finite(total_loss):
+        # Check for NaN/Inf in losses using TensorFlow conditional (graph-mode compatible)
+        def apply_gradients():
             # Clip gradients to prevent explosion
-            grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
-            self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-        else:
+            clipped_grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
+            self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
+            return total_loss
+        
+        def skip_update():
             # Log warning about NaN/Inf loss
             tf.print("Warning: NaN/Inf loss detected, skipping gradient update", 
                     "total_loss:", total_loss,
                     "reconstruction_loss:", reconstruction_loss,
                     "kl_loss:", kl_loss,
                     "clustering_loss:", clustering_loss)
+            return total_loss
+        
+        # Use tf.cond for graph-mode compatible conditional execution
+        final_loss = tf.cond(tf.math.is_finite(total_loss), apply_gradients, skip_update)
         
         # Update metrics
         self.total_loss_tracker.update_state(total_loss)
