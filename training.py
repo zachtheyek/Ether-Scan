@@ -152,32 +152,15 @@ class TrainingPipeline:
             
             try:
                 val_data = self.data_generator.generate_batch(batch_size, "true")
-                val_flat = self.preprocessor.prepare_batch(val_data)
                 
-                # Clear intermediate data
-                del val_data
-                
-                # Format for validation (no clustering loss)
-                batch_mixed = []
-                batch_true = []
-                batch_false = []
-                batch_targets = []
-                
-                for i in range(batch_size):
-                    sample = val_flat[i*6:(i+1)*6]
-                    batch_mixed.append(sample)
-                    batch_true.append(sample) 
-                    batch_false.append(sample)
-                    batch_targets.append(sample)
-                
-                # Convert to arrays with explicit dtype
-                mixed_array = np.array(batch_mixed, dtype=np.float32)
-                true_array = np.array(batch_true, dtype=np.float32)
-                false_array = np.array(batch_false, dtype=np.float32)
-                target_array = np.array(batch_targets, dtype=np.float32)
+                # Keep data in cadence format (batch, 6, 16, 512) - consistent with training
+                mixed_array = val_data.astype(np.float32)
+                true_array = val_data.astype(np.float32) 
+                false_array = val_data.astype(np.float32)
+                target_array = val_data.astype(np.float32)
                 
                 # Clean up intermediate data
-                del val_flat, batch_mixed, batch_true, batch_false, batch_targets
+                del val_data
                 
                 return ((mixed_array, true_array, false_array), target_array)
                 
@@ -203,19 +186,19 @@ class TrainingPipeline:
                 if step % 5 == 0:
                     gc.collect()
         
-        # Define output signature
+        # Define output signature - updated to match 4D cadence format
         output_signature = (
-            (tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32)),
-            tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512, 1), dtype=tf.float32)
+            (tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32)),
+            tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32)
         )
         
         val_output_signature = (
-            (tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32)),
-            tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32)
+            (tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32)),
+            tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32)
         )
         
         # Use repeating dataset with on-demand callable for stability 
