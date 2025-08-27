@@ -85,12 +85,12 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets using memory-efficient on-demand generation
+        Prepare training and validation datasets using stable distributed-training compatible approach
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
-        logger.info("Preparing training data with memory-efficient on-demand generation...")
+        logger.info("Preparing training data with distributed-training stable generation...")
 
         # Calculate steps per epoch
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
@@ -168,23 +168,36 @@ class TrainingPipeline:
                 logger.error(f"Error in create_validation_batch: {e}")
                 raise
         
-        # Create datasets using callable for on-demand generation with memory cleanup
-        def train_gen():
-            import gc
-            for step in range(steps_per_epoch):
-                batch = create_training_batch()
-                yield batch
-                # Periodic garbage collection to manage memory
-                if step % 10 == 0:
-                    gc.collect()
+        # Pre-generate a fixed set of training and validation batches to avoid iterator issues
+        # This approach is more memory intensive but ensures stable distributed training
+        logger.info("Pre-generating training batches for stable distributed training...")
         
-        def val_gen():
-            import gc
-            for step in range(val_steps):
-                batch = create_validation_batch()
+        train_batches = []
+        import gc
+        for i in range(steps_per_epoch):
+            batch = create_training_batch()
+            train_batches.append(batch)
+            if i % 10 == 0:
+                gc.collect()
+                logger.info(f"Generated {i+1}/{steps_per_epoch} training batches")
+        
+        logger.info("Pre-generating validation batches...")
+        val_batches = []
+        for i in range(val_steps):
+            batch = create_validation_batch()
+            val_batches.append(batch)
+            if i % 5 == 0:
+                gc.collect()
+                logger.info(f"Generated {i+1}/{val_steps} validation batches")
+        
+        # Create datasets from pre-generated batches
+        def train_generator():
+            for batch in train_batches:
                 yield batch
-                if step % 5 == 0:
-                    gc.collect()
+                
+        def val_generator():
+            for batch in val_batches:
+                yield batch
         
         # Define output signature - updated to match 4D cadence format
         output_signature = (
@@ -201,53 +214,29 @@ class TrainingPipeline:
             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32)
         )
         
-        # Use repeating dataset with on-demand callable for stability 
-        # This avoids generator iterator corruption in distributed training
-        def make_train_callable():
-            return lambda: create_training_batch()
+        # Create datasets from generators - this is more stable for distributed training
+        train_dataset = tf.data.Dataset.from_generator(
+            train_generator,
+            output_signature=output_signature
+        )
         
-        def make_val_callable():
-            return lambda: create_validation_batch()
+        val_dataset = tf.data.Dataset.from_generator(
+            val_generator,
+            output_signature=val_output_signature
+        )
         
-        # Create stable datasets using py_function calls with proper shapes
-        def train_py_func(_):
-            batch = create_training_batch()
-            return batch[0][0], batch[0][1], batch[0][2], batch[1]  # Unpack tuple structure
-            
-        def val_py_func(_):
-            batch = create_validation_batch()  
-            return batch[0][0], batch[0][1], batch[0][2], batch[1]  # Unpack tuple structure
+        # Repeat the datasets for multiple epochs (required for distributed training stability)
+        train_dataset = train_dataset.repeat()
+        val_dataset = val_dataset.repeat()
         
-        train_dataset = tf.data.Dataset.range(steps_per_epoch).map(
-            lambda x: tf.py_function(
-                train_py_func,
-                [x],
-                Tout=[tf.float32, tf.float32, tf.float32, tf.float32]
-            ),
-            num_parallel_calls=1  # Reduced to avoid race conditions
-        ).map(lambda t1, t2, t3, t4: ((t1, t2, t3), t4))
-        
-        val_dataset = tf.data.Dataset.range(val_steps).map(
-            lambda x: tf.py_function(
-                val_py_func,
-                [x], 
-                Tout=[tf.float32, tf.float32, tf.float32, tf.float32]
-            ),
-            num_parallel_calls=1  # Reduced to avoid race conditions
-        ).map(lambda t1, t2, t3, t4: ((t1, t2, t3), t4))
-        
-        # Add proper distribution options
+        # Add proper distribution options for multi-GPU training
         options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF  # Changed to OFF to avoid sharding issues
         
         train_dataset = train_dataset.with_options(options)
         val_dataset = val_dataset.with_options(options)
         
-        # Basic optimization - minimal prefetch to avoid memory issues
-        train_dataset = train_dataset.prefetch(1)
-        val_dataset = val_dataset.prefetch(1)
-        
-        logger.info(f"Created on-demand datasets - Training: {steps_per_epoch} batches, Validation: {val_steps} batches")
+        logger.info(f"Created stable datasets - Training: {steps_per_epoch} batches, Validation: {val_steps} batches")
         
         return train_dataset, val_dataset
     
@@ -277,16 +266,10 @@ class TrainingPipeline:
         gc.collect()
         tf.keras.backend.clear_session()
         
-        # Prepare distributed datasets
+        # Prepare datasets - using stable approach for distributed training
         train_dataset, val_dataset = self.prepare_training_data()
-
-        # Distribute datasets across all 4 GPUs properly
-        # This ensures data is sharded across replicas, not loaded only on GPU 0
-        with self.strategy.scope():
-            train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
-            val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
-            
-        logger.info("Datasets distributed across all GPU replicas for parallel training")
+        
+        logger.info("Datasets prepared for distributed training (auto-sharding disabled for stability)")
         
         # Callbacks
         callbacks = []
@@ -316,11 +299,17 @@ class TrainingPipeline:
             )
         )
         
+        # Calculate steps for repeating datasets
+        steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
+        validation_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
+        
         # Train
         history = self.vae.fit(
             train_dataset,
             epochs=epochs,
+            steps_per_epoch=steps_per_epoch,
             validation_data=val_dataset,
+            validation_steps=validation_steps,
             callbacks=callbacks,
             verbose=1
         )
