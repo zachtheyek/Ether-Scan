@@ -85,107 +85,154 @@ class TrainingPipeline:
         
     def prepare_training_data(self) -> Tuple[tf.data.Dataset, tf.data.Dataset]:
         """
-        Prepare training and validation datasets using memory-efficient generators
+        Prepare training and validation datasets using pre-generated batches for distributed training stability
         
         Returns:
             Training and validation tf.data.Dataset objects
         """
-        logger.info("Preparing training data with memory-efficient generators...")
+        logger.info("Preparing training data with pre-generated batches for distributed training...")
 
-        # Calculate steps per epoch
+        # Calculate total data needed
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
-        def train_generator():
-            """Generator that yields single samples for training"""
-            while True:
-                # Generate a small batch to work with
-                batch_size = self.config.training.samples_per_generator_call
-                
-                # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
-                quarter_size = batch_size // 4
-                
-                none_data = self.data_generator.generate_batch(quarter_size, "none")
-                true_data = self.data_generator.generate_batch(quarter_size, "true")
-                false_data = self.data_generator.generate_batch(quarter_size, "false")
-                
-                # For mixed data, we need to add RFI to true signals
-                mixed_data = self.data_generator.generate_batch(quarter_size, "true")
-                
-                # Add RFI signals to the mixed_data
-                for i in range(quarter_size):
-                    for obs_idx in range(6):  # Add RFI to all 6 observations
-                        # Generate RFI parameters
-                        rfi_snr = np.random.uniform(10, 30)
-                        rfi_drift_rate = np.random.uniform(-5, 5)
-                        
-                        from data_generation import inject_signal
-                        mixed_data[i, obs_idx], _, _ = inject_signal(
-                            mixed_data[i, obs_idx], 
-                            rfi_snr, 
-                            rfi_drift_rate
-                        )
-                
-                # Combine all data types
-                mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
-                
-                # Prepare batch for model (add channel dimension and flatten)
-                mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
-                true_flat = self.preprocessor.prepare_batch(true_data)
-                false_flat = self.preprocessor.prepare_batch(false_data)
-                
-                # Yield individual samples with proper format for clustering loss
-                for i in range(len(mixed_batch)):
-                    # Get the 6 observations for this sample
-                    sample_mixed = mixed_flat[i*6:(i+1)*6]
+        total_train_samples = steps_per_epoch * self.config.training.batch_size
+        total_val_samples = val_steps * self.config.training.validation_batch_size
+        
+        logger.info(f"Pre-generating {total_train_samples} training samples and {total_val_samples} validation samples...")
+        
+        # Pre-generate training data
+        train_inputs = []
+        train_targets = []
+        
+        samples_per_batch = self.config.training.samples_per_generator_call
+        train_batches_needed = (total_train_samples + samples_per_batch - 1) // samples_per_batch
+        
+        for batch_idx in range(train_batches_needed):
+            logger.info(f"Generating training batch {batch_idx + 1}/{train_batches_needed}")
+            
+            # Generate current batch size (handle remainder)
+            remaining_samples = total_train_samples - batch_idx * samples_per_batch
+            current_batch_size = min(samples_per_batch, remaining_samples)
+            
+            # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
+            quarter_size = max(1, current_batch_size // 4)
+            
+            none_data = self.data_generator.generate_batch(quarter_size, "none")
+            true_data = self.data_generator.generate_batch(quarter_size, "true")  
+            false_data = self.data_generator.generate_batch(quarter_size, "false")
+            
+            # For mixed data, add RFI to true signals
+            mixed_data = self.data_generator.generate_batch(quarter_size, "true")
+            
+            # Add RFI signals to mixed_data
+            for i in range(quarter_size):
+                for obs_idx in range(6):
+                    rfi_snr = np.random.uniform(10, 30)
+                    rfi_drift_rate = np.random.uniform(-5, 5)
                     
-                    # For clustering loss, cycle through true/false samples
-                    idx = i % quarter_size
-                    sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_data) else sample_mixed
-                    sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_data) else sample_mixed
-                    
-                    # Original format: ((concatenated_input, true_cadence, false_cadence), target)
-                    yield ((sample_mixed, sample_true, sample_false), sample_mixed)
-        
-        def val_generator():
-            """Generator for validation data"""
-            while True:
-                # Similar to train_generator but simpler
-                batch_size = self.config.training.samples_per_generator_call
-                val_data = self.data_generator.generate_batch(batch_size, "true")
-                val_flat = self.preprocessor.prepare_batch(val_data)
+                    from data_generation import inject_signal
+                    mixed_data[i, obs_idx], _, _ = inject_signal(
+                        mixed_data[i, obs_idx], rfi_snr, rfi_drift_rate
+                    )
+            
+            # Combine all data types
+            mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
+            
+            # Trim to exact size needed
+            if len(mixed_batch) > current_batch_size:
+                mixed_batch = mixed_batch[:current_batch_size]
+            
+            # Prepare batch for model
+            mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
+            true_flat = self.preprocessor.prepare_batch(true_data)
+            false_flat = self.preprocessor.prepare_batch(false_data)
+            
+            # Create samples with clustering format
+            for i in range(len(mixed_batch)):
+                sample_mixed = mixed_flat[i*6:(i+1)*6]
                 
-                for i in range(len(val_data)):
-                    sample = val_flat[i*6:(i+1)*6]
-                    # For validation, use same data for all inputs (no clustering loss in validation)
-                    yield ((sample, sample, sample), sample)
+                # For clustering loss, cycle through true/false samples  
+                idx = i % quarter_size
+                sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_data) else sample_mixed
+                sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_data) else sample_mixed
+                
+                train_inputs.append((sample_mixed, sample_true, sample_false))
+                train_targets.append(sample_mixed)
+            
+            # Memory cleanup
+            import gc
+            del mixed_batch, mixed_flat, true_flat, false_flat
+            gc.collect()
         
-        # Define output signature for the generators
-        output_signature = (
-            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # concatenated
-             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # true
-             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)), # false
-            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)   # target
+        # Pre-generate validation data
+        logger.info("Generating validation data...")
+        val_inputs = []
+        val_targets = []
+        
+        val_batches_needed = (total_val_samples + samples_per_batch - 1) // samples_per_batch
+        
+        for batch_idx in range(val_batches_needed):
+            remaining_samples = total_val_samples - batch_idx * samples_per_batch
+            current_batch_size = min(samples_per_batch, remaining_samples)
+            
+            val_data = self.data_generator.generate_batch(current_batch_size, "true")
+            val_flat = self.preprocessor.prepare_batch(val_data)
+            
+            for i in range(len(val_data)):
+                sample = val_flat[i*6:(i+1)*6]
+                val_inputs.append((sample, sample, sample))
+                val_targets.append(sample)
+            
+            import gc
+            del val_data, val_flat
+            gc.collect()
+        
+        logger.info(f"Generated {len(train_inputs)} training samples, {len(val_inputs)} validation samples")
+        
+        # Convert to tensors (more memory efficient than arrays)
+        logger.info("Converting to TensorFlow datasets...")
+        
+        # Unpack the tuples for dataset creation
+        train_mixed = np.array([x[0] for x in train_inputs], dtype=np.float32)
+        train_true = np.array([x[1] for x in train_inputs], dtype=np.float32) 
+        train_false = np.array([x[2] for x in train_inputs], dtype=np.float32)
+        train_tgt = np.array(train_targets, dtype=np.float32)
+        
+        val_mixed = np.array([x[0] for x in val_inputs], dtype=np.float32)
+        val_true = np.array([x[1] for x in val_inputs], dtype=np.float32)
+        val_false = np.array([x[2] for x in val_inputs], dtype=np.float32)
+        val_tgt = np.array(val_targets, dtype=np.float32)
+        
+        # Data validation and statistics
+        logger.info(f"Training data stats - Mixed: mean={train_mixed.mean():.6f}, std={train_mixed.std():.6f}, range=[{train_mixed.min():.6f}, {train_mixed.max():.6f}]")
+        logger.info(f"Training data shapes - Mixed: {train_mixed.shape}, True: {train_true.shape}, False: {train_false.shape}, Target: {train_tgt.shape}")
+        
+        # Clear intermediate data to free memory
+        del train_inputs, train_targets, val_inputs, val_targets
+        import gc
+        gc.collect()
+        
+        # Create datasets
+        train_dataset = tf.data.Dataset.from_tensor_slices(
+            ((train_mixed, train_true, train_false), train_tgt)
         )
         
-        # Create datasets from generators
-        train_dataset = tf.data.Dataset.from_generator(
-            train_generator,
-            output_signature=output_signature
+        val_dataset = tf.data.Dataset.from_tensor_slices(
+            ((val_mixed, val_true, val_false), val_tgt)
         )
         
-        val_dataset = tf.data.Dataset.from_generator(
-            val_generator,
-            output_signature=output_signature
-        )
+        # Batch and optimize for distributed training with memory management
+        train_dataset = train_dataset.batch(self.config.training.batch_size, drop_remainder=True)
+        train_dataset = train_dataset.prefetch(1)  # Reduced prefetch to save memory
+        # Skip caching to avoid OOM with large datasets
         
-        # Batch and optimize
-        train_dataset = train_dataset.batch(self.config.training.batch_size)
-        train_dataset = train_dataset.prefetch(self.config.training.prefetch_buffer)
+        val_dataset = val_dataset.batch(self.config.training.validation_batch_size, drop_remainder=True) 
+        val_dataset = val_dataset.prefetch(1)  # Reduced prefetch to save memory
+        # Skip caching for validation too
         
-        val_dataset = val_dataset.batch(self.config.training.validation_batch_size)
-        val_dataset = val_dataset.take(val_steps)  # Limit validation size
-        val_dataset = val_dataset.prefetch(self.config.training.prefetch_buffer)
+        logger.info(f"Training dataset: {train_dataset}")
+        logger.info(f"Validation dataset: {val_dataset}")
         
         return train_dataset, val_dataset
     
@@ -218,7 +265,8 @@ class TrainingPipeline:
         # Prepare distributed datasets
         train_dataset, val_dataset = self.prepare_training_data()
 
-        # Distribute datasets across GPUs
+        # For distributed training, use the strategy to distribute datasets
+        # Note: Pre-generated datasets are more stable than generators in distributed mode
         train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
         
