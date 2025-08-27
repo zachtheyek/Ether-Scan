@@ -129,16 +129,16 @@ class TrainingPipeline:
                 # Combine all data types
                 mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
                 
-                # Prepare batch for model (add channel dimension and flatten)
-                batch_prepared = self.preprocessor.prepare_batch(mixed_batch)
-                
-                # Yield individual samples - simplified format
+                # Yield individual cadence samples in the correct format
                 for i in range(len(mixed_batch)):
-                    # Get the 6 observations for this sample
-                    sample_data = batch_prepared[i*6:(i+1)*6]
+                    # Get the cadence data for this sample: (6, 16, 512)
+                    cadence_data = mixed_batch[i]  # Shape: (6, 16, 512)
                     
-                    # Simple input/target format - model will handle reconstruction
-                    yield (sample_data, sample_data)
+                    # Add channel dimension: (6, 16, 512, 1)
+                    cadence_with_channels = np.expand_dims(cadence_data, axis=-1)
+                    
+                    # Simple input/target format - model will handle reshaping
+                    yield (cadence_with_channels, cadence_with_channels)
         
         def val_generator():
             """Generator for validation data"""
@@ -146,12 +146,16 @@ class TrainingPipeline:
                 # Similar to train_generator but simpler
                 batch_size = self.config.training.samples_per_generator_call
                 val_data = self.data_generator.generate_batch(batch_size, "true")
-                val_prepared = self.preprocessor.prepare_batch(val_data)
                 
                 for i in range(len(val_data)):
-                    sample = val_prepared[i*6:(i+1)*6]
+                    # Get the cadence data for this sample: (6, 16, 512)
+                    cadence_data = val_data[i]  # Shape: (6, 16, 512)
+                    
+                    # Add channel dimension: (6, 16, 512, 1)
+                    cadence_with_channels = np.expand_dims(cadence_data, axis=-1)
+                    
                     # Simple input/target format for validation
-                    yield (sample, sample)
+                    yield (cadence_with_channels, cadence_with_channels)
         
         # Define output signature for the generators - simplified
         output_signature = (
