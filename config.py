@@ -63,10 +63,10 @@ class DataConfig:
 @dataclass
 class TrainingConfig:
     """Training configuration optimized for 4 GPUs"""
-    batch_size: int = 256 # Must be divisible by num_gpus (4)
-    validation_batch_size: int = 512 # Must be divisible by num_gpus (4)
-    epochs_per_round: int = 100
-    num_training_rounds: int = 20
+    batch_size: int = 128 # Must be divisible by num_gpus (4)
+    validation_batch_size: int = 256 # Must be divisible by num_gpus (4)
+    epochs_per_round: int = 50
+    num_training_rounds: int = 40
 
     # IMPORTANT: These control memory usage
     samples_per_generator_call: int = 32  # How many samples to generate at once

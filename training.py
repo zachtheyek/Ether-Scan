@@ -92,6 +92,8 @@ class TrainingPipeline:
         """
         logger.info("Preparing training data with memory-efficient generators...")
 
+        from data_generation import create_cadence_data
+
         # Calculate steps per epoch
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
@@ -108,21 +110,37 @@ class TrainingPipeline:
                 false_data = self.data_generator.generate_batch(batch_size, "false")
                 
                 # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
-                mixed_batch = np.zeros((batch_size * 4, 6, 16, 512), dtype=np.float32)
-                mixed_batch[:batch_size] = concatenated
-                mixed_batch[batch_size:2*batch_size] = true_data
-                mixed_batch[2*batch_size:3*batch_size] = false_data
+                none_data = self.data_generator.generate_batch(batch_size, "none")
+                true_data = self.data_generator.generate_batch(batch_size, "true")
+                false_data = self.data_generator.generate_batch(batch_size, "false")
                 
-                # Create mixed true+RFI for last quarter
-                mixed_data = true_data.copy()
+                # For mixed data, we need to add RFI to true signals
+                # First generate true signals, then add RFI on top
+                mixed_data = self.data_generator.generate_batch(batch_size, "true")
+                
+                # Now add RFI signals to the mixed_data
+                # Note: generate_batch already creates proper cadences, we just need to add RFI
                 for i in range(batch_size):
-                    # Add RFI signal
-                    mixed_data[i] = create_cadence_data(
-                        mixed_data[i], "false",
-                        snr_range=(10, 30),
-                        drift_range=(-5, 5)
-                    )
-                mixed_batch[3*batch_size:] = mixed_data
+                    # Get a random background for this mixed sample
+                    bg_idx = np.random.randint(len(self.data_generator.backgrounds))
+                    
+                    # Add RFI signal on top of existing true signal
+                    # The mixed_data[i] already has true signals, now we add RFI
+                    for obs_idx in range(6):  # Add RFI to all 6 observations
+                        # Generate RFI parameters
+                        rfi_snr = np.random.uniform(10, 30)
+                        rfi_drift_rate = np.random.uniform(-5, 5)
+                        
+                        # Use inject_signal directly since create_cadence_data would overwrite
+                        from data_generation import inject_signal
+                        mixed_data[i, obs_idx], _, _ = inject_signal(
+                            mixed_data[i, obs_idx], 
+                            rfi_snr, 
+                            rfi_drift_rate
+                        )
+                
+                # Combine all data types
+                mixed_batch = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)
                 
                 # Prepare batch for model (add channel dimension)
                 mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
@@ -134,7 +152,7 @@ class TrainingPipeline:
                     # Get the 6 observations for this sample
                     sample_mixed = mixed_flat[i*6:(i+1)*6]
                     
-                    # For clustering loss, use corresponding true/false samples
+                    # For clustering loss, cycle through true/false samples
                     idx = i % batch_size
                     sample_true = true_flat[idx*6:(idx+1)*6]
                     sample_false = false_flat[idx*6:(idx+1)*6]
