@@ -129,16 +129,23 @@ class TrainingPipeline:
                 # Combine all data types
                 mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
                 
-                # Yield individual cadence samples in the correct format
+                # Prepare batch for model (add channel dimension and flatten)
+                mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
+                true_flat = self.preprocessor.prepare_batch(true_data)
+                false_flat = self.preprocessor.prepare_batch(false_data)
+                
+                # Yield individual samples with proper format for clustering loss
                 for i in range(len(mixed_batch)):
-                    # Get the cadence data for this sample: (6, 16, 512)
-                    cadence_data = mixed_batch[i]  # Shape: (6, 16, 512)
+                    # Get the 6 observations for this sample
+                    sample_mixed = mixed_flat[i*6:(i+1)*6]
                     
-                    # Add channel dimension: (6, 16, 512, 1)
-                    cadence_with_channels = np.expand_dims(cadence_data, axis=-1)
+                    # For clustering loss, cycle through true/false samples
+                    idx = i % quarter_size
+                    sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_data) else sample_mixed
+                    sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_data) else sample_mixed
                     
-                    # Simple input/target format - model will handle reshaping
-                    yield (cadence_with_channels, cadence_with_channels)
+                    # Original format: ((concatenated_input, true_cadence, false_cadence), target)
+                    yield ((sample_mixed, sample_true, sample_false), sample_mixed)
         
         def val_generator():
             """Generator for validation data"""
@@ -146,20 +153,18 @@ class TrainingPipeline:
                 # Similar to train_generator but simpler
                 batch_size = self.config.training.samples_per_generator_call
                 val_data = self.data_generator.generate_batch(batch_size, "true")
+                val_flat = self.preprocessor.prepare_batch(val_data)
                 
                 for i in range(len(val_data)):
-                    # Get the cadence data for this sample: (6, 16, 512)
-                    cadence_data = val_data[i]  # Shape: (6, 16, 512)
-                    
-                    # Add channel dimension: (6, 16, 512, 1)
-                    cadence_with_channels = np.expand_dims(cadence_data, axis=-1)
-                    
-                    # Simple input/target format for validation
-                    yield (cadence_with_channels, cadence_with_channels)
+                    sample = val_flat[i*6:(i+1)*6]
+                    # For validation, use same data for all inputs (no clustering loss in validation)
+                    yield ((sample, sample, sample), sample)
         
-        # Define output signature for the generators - simplified
+        # Define output signature for the generators
         output_signature = (
-            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # input
+            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # concatenated
+             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # true
+             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)), # false
             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)   # target
         )
         
