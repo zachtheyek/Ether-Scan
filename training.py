@@ -92,8 +92,6 @@ class TrainingPipeline:
         """
         logger.info("Preparing training data with memory-efficient generators...")
 
-        from data_generation import create_cadence_data
-
         # Calculate steps per epoch
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
@@ -104,34 +102,23 @@ class TrainingPipeline:
                 # Generate a small batch to work with
                 batch_size = self.config.training.samples_per_generator_call
                 
-                # Use existing data generation methods
-                concatenated = self.data_generator.generate_batch(batch_size, "none")
-                true_data = self.data_generator.generate_batch(batch_size, "true") 
-                false_data = self.data_generator.generate_batch(batch_size, "false")
-                
                 # Mix the data (1/4 none, 1/4 true, 1/4 false, 1/4 mixed)
-                none_data = self.data_generator.generate_batch(batch_size, "none")
-                true_data = self.data_generator.generate_batch(batch_size, "true")
-                false_data = self.data_generator.generate_batch(batch_size, "false")
+                quarter_size = batch_size // 4
+                
+                none_data = self.data_generator.generate_batch(quarter_size, "none")
+                true_data = self.data_generator.generate_batch(quarter_size, "true")
+                false_data = self.data_generator.generate_batch(quarter_size, "false")
                 
                 # For mixed data, we need to add RFI to true signals
-                # First generate true signals, then add RFI on top
-                mixed_data = self.data_generator.generate_batch(batch_size, "true")
+                mixed_data = self.data_generator.generate_batch(quarter_size, "true")
                 
-                # Now add RFI signals to the mixed_data
-                # Note: generate_batch already creates proper cadences, we just need to add RFI
-                for i in range(batch_size):
-                    # Get a random background for this mixed sample
-                    bg_idx = np.random.randint(len(self.data_generator.backgrounds))
-                    
-                    # Add RFI signal on top of existing true signal
-                    # The mixed_data[i] already has true signals, now we add RFI
+                # Add RFI signals to the mixed_data
+                for i in range(quarter_size):
                     for obs_idx in range(6):  # Add RFI to all 6 observations
                         # Generate RFI parameters
                         rfi_snr = np.random.uniform(10, 30)
                         rfi_drift_rate = np.random.uniform(-5, 5)
                         
-                        # Use inject_signal directly since create_cadence_data would overwrite
                         from data_generation import inject_signal
                         mixed_data[i, obs_idx], _, _ = inject_signal(
                             mixed_data[i, obs_idx], 
@@ -140,24 +127,18 @@ class TrainingPipeline:
                         )
                 
                 # Combine all data types
-                mixed_batch = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)
+                mixed_batch = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
                 
-                # Prepare batch for model (add channel dimension)
-                mixed_flat = self.preprocessor.prepare_batch(mixed_batch)
-                true_flat = self.preprocessor.prepare_batch(true_data)
-                false_flat = self.preprocessor.prepare_batch(false_data)
+                # Prepare batch for model (add channel dimension and flatten)
+                batch_prepared = self.preprocessor.prepare_batch(mixed_batch)
                 
-                # Yield individual samples
+                # Yield individual samples - simplified format
                 for i in range(len(mixed_batch)):
                     # Get the 6 observations for this sample
-                    sample_mixed = mixed_flat[i*6:(i+1)*6]
+                    sample_data = batch_prepared[i*6:(i+1)*6]
                     
-                    # For clustering loss, cycle through true/false samples
-                    idx = i % batch_size
-                    sample_true = true_flat[idx*6:(idx+1)*6]
-                    sample_false = false_flat[idx*6:(idx+1)*6]
-                    
-                    yield ((sample_mixed, sample_true, sample_false), sample_mixed)
+                    # Simple input/target format - model will handle reconstruction
+                    yield (sample_data, sample_data)
         
         def val_generator():
             """Generator for validation data"""
@@ -165,18 +146,16 @@ class TrainingPipeline:
                 # Similar to train_generator but simpler
                 batch_size = self.config.training.samples_per_generator_call
                 val_data = self.data_generator.generate_batch(batch_size, "true")
-                val_flat = self.preprocessor.prepare_batch(val_data)
+                val_prepared = self.preprocessor.prepare_batch(val_data)
                 
                 for i in range(len(val_data)):
-                    sample = val_flat[i*6:(i+1)*6]
-                    # For validation, use same data for all inputs
-                    yield ((sample, sample, sample), sample)
+                    sample = val_prepared[i*6:(i+1)*6]
+                    # Simple input/target format for validation
+                    yield (sample, sample)
         
-        # Define output signature for the generators
+        # Define output signature for the generators - simplified
         output_signature = (
-            (tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # concatenated
-             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # true
-             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)), # false
+            tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32),  # input
             tf.TensorSpec(shape=(6, 16, 512, 1), dtype=tf.float32)   # target
         )
         

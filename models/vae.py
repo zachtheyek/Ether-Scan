@@ -98,14 +98,36 @@ class BetaVAE(keras.Model):
     
     def call(self, inputs, training=None):
         """Forward pass through VAE"""
-        z_mean, z_log_var, z = self.encoder(inputs, training=training)
+        if isinstance(inputs, tuple) or isinstance(inputs, list):
+            # Handle case where inputs is a tuple/list of tensors
+            main_input = inputs[0]
+        else:
+            # Handle case where inputs is a single tensor
+            main_input = inputs
+        
+        z_mean, z_log_var, z = self.encoder(main_input, training=training)
         reconstruction = self.decoder(z, training=training)
         return reconstruction
     
     def train_step(self, data):
         """Custom training step with all loss components"""
-        # Unpack data
-        (concatenated_input, true_cadence, false_cadence), target = data
+        # Unpack data - handle both tuple and single tensor inputs
+        if isinstance(data, tuple) and len(data) == 2:
+            inputs, target = data
+            if isinstance(inputs, tuple) and len(inputs) == 3:
+                # Data format: ((concatenated_input, true_cadence, false_cadence), target)
+                concatenated_input, true_cadence, false_cadence = inputs
+            else:
+                # Simple format: (input, target) - use input for all components
+                concatenated_input = inputs
+                true_cadence = inputs
+                false_cadence = inputs
+        else:
+            # Fallback - use data as both input and target
+            concatenated_input = data
+            target = data
+            true_cadence = data
+            false_cadence = data
         
         with tf.GradientTape() as tape:
             # Forward pass on main input
@@ -124,30 +146,42 @@ class BetaVAE(keras.Model):
             kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
-            # Process true and false cadences for clustering loss
-            # true_cadence shape: (batch, 6, 16, 512)
-            # Need to encode each observation separately
-            
-            batch_size = tf.shape(true_cadence)[0]
-            true_latents = []
-            false_latents = []
-            
-            for obs_idx in range(6):
-                # Extract observation and add channel dimension
-                true_obs = tf.expand_dims(true_cadence[:, obs_idx, :, :], -1)
-                false_obs = tf.expand_dims(false_cadence[:, obs_idx, :, :], -1)
+            # Clustering loss only if we have separate true/false cadences
+            clustering_loss = 0.0
+            if true_cadence is not None and false_cadence is not None and len(tf.shape(true_cadence)) >= 4:
+                # Process true and false cadences for clustering loss
+                # true_cadence shape: (batch, 6, 16, 512) or (batch*6, 16, 512, 1)
+                batch_size = tf.shape(true_cadence)[0]
                 
-                # Encode
-                _, _, true_z = self.encoder(true_obs, training=True)
-                _, _, false_z = self.encoder(false_obs, training=True)
+                # Reshape if needed - from (batch*6, 16, 512, 1) to (batch, 6, 16, 512)
+                if len(tf.shape(true_cadence)) == 4 and tf.shape(true_cadence)[-1] == 1:
+                    # Input is already flattened - reshape to cadence format
+                    true_cadence_reshaped = tf.reshape(true_cadence, (-1, 6, 16, 512))
+                    false_cadence_reshaped = tf.reshape(false_cadence, (-1, 6, 16, 512))
+                else:
+                    true_cadence_reshaped = true_cadence
+                    false_cadence_reshaped = false_cadence
                 
-                true_latents.append(true_z)
-                false_latents.append(false_z)
-            
-            # Compute clustering losses
-            true_clustering_loss = self.compute_clustering_loss_true(true_latents)
-            false_clustering_loss = self.compute_clustering_loss_false(false_latents)
-            clustering_loss = true_clustering_loss + false_clustering_loss
+                actual_batch_size = tf.shape(true_cadence_reshaped)[0]
+                true_latents = []
+                false_latents = []
+                
+                for obs_idx in range(6):
+                    # Extract observation and add channel dimension
+                    true_obs = tf.expand_dims(true_cadence_reshaped[:, obs_idx, :, :], -1)
+                    false_obs = tf.expand_dims(false_cadence_reshaped[:, obs_idx, :, :], -1)
+                    
+                    # Encode
+                    _, _, true_z = self.encoder(true_obs, training=True)
+                    _, _, false_z = self.encoder(false_obs, training=True)
+                    
+                    true_latents.append(true_z)
+                    false_latents.append(false_z)
+                
+                # Compute clustering losses
+                true_clustering_loss = self.compute_clustering_loss_true(true_latents)
+                false_clustering_loss = self.compute_clustering_loss_false(false_latents)
+                clustering_loss = true_clustering_loss + false_clustering_loss
             
             # Total loss (Equation 6 from paper)
             total_loss = (reconstruction_loss + 
