@@ -237,23 +237,51 @@ class TrainingPipeline:
             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512, 1), dtype=tf.float32)
         )
         
-        # Create datasets with proper options for distributed training
+        # Use repeating dataset with on-demand callable for stability 
+        # This avoids generator iterator corruption in distributed training
+        def make_train_callable():
+            return lambda: create_training_batch()
+        
+        def make_val_callable():
+            return lambda: create_validation_batch()
+        
+        # Create stable datasets using py_function calls with proper shapes
+        def train_py_func(_):
+            batch = create_training_batch()
+            return batch[0][0], batch[0][1], batch[0][2], batch[1]  # Unpack tuple structure
+            
+        def val_py_func(_):
+            batch = create_validation_batch()  
+            return batch[0][0], batch[0][1], batch[0][2], batch[1]  # Unpack tuple structure
+        
+        train_dataset = tf.data.Dataset.range(steps_per_epoch).map(
+            lambda x: tf.py_function(
+                train_py_func,
+                [x],
+                Tout=[tf.float32, tf.float32, tf.float32, tf.float32]
+            ),
+            num_parallel_calls=1  # Reduced to avoid race conditions
+        ).map(lambda t1, t2, t3, t4: ((t1, t2, t3), t4))
+        
+        val_dataset = tf.data.Dataset.range(val_steps).map(
+            lambda x: tf.py_function(
+                val_py_func,
+                [x], 
+                Tout=[tf.float32, tf.float32, tf.float32, tf.float32]
+            ),
+            num_parallel_calls=1  # Reduced to avoid race conditions
+        ).map(lambda t1, t2, t3, t4: ((t1, t2, t3), t4))
+        
+        # Add proper distribution options
         options = tf.data.Options()
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
         
-        train_dataset = tf.data.Dataset.from_generator(
-            train_gen, output_signature=output_signature
-        )
         train_dataset = train_dataset.with_options(options)
-        
-        val_dataset = tf.data.Dataset.from_generator(
-            val_gen, output_signature=val_output_signature  
-        )
         val_dataset = val_dataset.with_options(options)
         
         # Basic optimization - minimal prefetch to avoid memory issues
-        train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
-        val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
+        train_dataset = train_dataset.prefetch(1)
+        val_dataset = val_dataset.prefetch(1)
         
         logger.info(f"Created on-demand datasets - Training: {steps_per_epoch} batches, Validation: {val_steps} batches")
         

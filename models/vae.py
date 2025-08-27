@@ -166,13 +166,10 @@ class BetaVAE(keras.Model):
             # Reshape reconstruction back to (batch, 6, 16, 512, 1)
             reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512, 1))
             
-            # Reconstruction loss (binary crossentropy as per paper)
-            reconstruction_loss = tf.reduce_mean(
-                tf.reduce_sum(
-                    keras.losses.binary_crossentropy(target, reconstruction),
-                    axis=(1, 2, 3)
-                )
-            )
+            # Reconstruction loss - use MSE for stability with normalized spectrograms
+            # Apply sigmoid to reconstruction to ensure [0,1] range if needed
+            reconstruction_sigmoid = tf.sigmoid(reconstruction)
+            reconstruction_loss = tf.reduce_mean(tf.square(target - reconstruction_sigmoid))
             
             # KL divergence loss
             kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
@@ -212,8 +209,10 @@ class BetaVAE(keras.Model):
                          self.beta * kl_loss +
                          self.alpha * clustering_loss)
         
-        # Update weights
+        # Update weights with gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
+        # Clip gradients to prevent explosion
+        grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         
         # Update metrics
@@ -289,40 +288,43 @@ def build_decoder(latent_dim: int = 8,
                  dense_size: int = 512,
                  kernel_size: Tuple[int, int] = (3, 3)) -> keras.Model:
     """
-    Build decoder network (inverse of encoder)
+    Build decoder network - EXACT MIRROR of encoder for proper VAE architecture
+    
+    Encoder path: (16,512,1) → (8,256,16) → (4,128,32) → (2,64,64) → (1,32,128) → flatten → dense
+    Decoder path: dense → (1,32,128) → (2,64,64) → (4,128,32) → (8,256,16) → (16,512,1)
     """
     
     latent_inputs = keras.Input(shape=(latent_dim,), name="decoder_input")
     
-    # Dense layers
+    # Dense layers - inverse of encoder
     x = layers.Dense(dense_size, activation="relu",
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(latent_inputs)
     
-    # Calculate the size needed before reshape
-    # After 4 stride-2 convolutions: 16/16=1, 512/16=32
+    # Calculate the size after encoder: 4 stride-2 convolutions: (16,512) → (1,32)
+    # Last encoder conv layer has 256 filters, so we need 1*32*256
     x = layers.Dense(1 * 32 * 256, activation="relu",
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(x)
     
-    # Reshape for transposed convolutions
+    # Reshape to match encoder output before flattening: (1, 32, 256)
     x = layers.Reshape((1, 32, 256))(x)
     
-    # Transposed convolutional layers (reverse of encoder)
-    x = layers.Conv2DTranspose(256, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=2, padding="same")(x)
-    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=1, padding="same")(x)
-    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=2, padding="same")(x)
+    # Transposed convolutional layers - EXACT REVERSE of encoder
+    # Encoder: Conv2D(256, stride=2) was the last, so decoder starts with ConvTranspose(128, stride=2)
+    x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=2, padding="same")(x)  # → (2, 64, 128)
+    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (2, 64, 64)
+    x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=2, padding="same")(x)   # → (4, 128, 64)
+    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (4, 128, 32)
+    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (4, 128, 32)
+    x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=2, padding="same")(x)   # → (8, 256, 32)
+    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (8, 256, 16)
+    x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=2, padding="same")(x)   # → (16, 512, 16)
     
-    # Output layer with sigmoid activation
-    decoder_outputs = layers.Conv2DTranspose(1, kernel_size, activation="sigmoid", padding="same")(x)
+    # Output layer - no activation since we apply sigmoid in train_step
+    decoder_outputs = layers.Conv2DTranspose(1, kernel_size, activation=None, padding="same")(x)  # → (16, 512, 1)
     
     decoder = keras.Model(latent_inputs, decoder_outputs, name="decoder")
     
