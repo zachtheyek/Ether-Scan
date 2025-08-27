@@ -101,10 +101,14 @@ class TrainingPipeline:
         def create_training_batch():
             """Create a single training batch on demand with memory management"""
             batch_size = self.config.training.batch_size
-            quarter_size = max(1, batch_size // 4)
+            # Ensure quarter_size creates exactly batch_size samples when combined
+            quarter_size = batch_size // 4
+            if quarter_size == 0:
+                quarter_size = 1
+                batch_size = 4  # Minimum batch size
             
             try:
-                # Generate data types
+                # Generate data types - each generates quarter_size samples
                 none_data = self.data_generator.generate_batch(quarter_size, "none")
                 true_data = self.data_generator.generate_batch(quarter_size, "true")
                 false_data = self.data_generator.generate_batch(quarter_size, "false")
@@ -124,40 +128,17 @@ class TrainingPipeline:
                 # Combine all data
                 combined_data = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
                 
-                # Prepare for model with explicit memory management
-                combined_flat = self.preprocessor.prepare_batch(combined_data)
-                true_flat = self.preprocessor.prepare_batch(true_data)
-                false_flat = self.preprocessor.prepare_batch(false_data)
+                # Keep data in cadence format (batch, 6, 16, 512) - don't flatten yet
+                # The VAE model will handle individual observations internally
                 
-                # Clear intermediate arrays immediately
-                del combined_data, none_data, true_data, false_data, mixed_data
-                
-                # Format for model input: ((mixed, true, false), target)
-                batch_mixed = []
-                batch_true = []  
-                batch_false = []
-                batch_targets = []
-                
-                for i in range(batch_size):
-                    sample_mixed = combined_flat[i*6:(i+1)*6]
-                    idx = i % quarter_size
-                    sample_true = true_flat[idx*6:(idx+1)*6] if idx < len(true_flat)//6 else sample_mixed
-                    sample_false = false_flat[idx*6:(idx+1)*6] if idx < len(false_flat)//6 else sample_mixed
-                    
-                    batch_mixed.append(sample_mixed)
-                    batch_true.append(sample_true)
-                    batch_false.append(sample_false)
-                    batch_targets.append(sample_mixed)
-                
-                # Convert to arrays with explicit dtype
-                mixed_array = np.array(batch_mixed, dtype=np.float32)
-                true_array = np.array(batch_true, dtype=np.float32)
-                false_array = np.array(batch_false, dtype=np.float32)
-                target_array = np.array(batch_targets, dtype=np.float32)
+                # Format for model input: maintain original cadence structure
+                mixed_array = combined_data.astype(np.float32)
+                true_array = true_data.astype(np.float32)  
+                false_array = false_data.astype(np.float32)
+                target_array = combined_data.astype(np.float32)  # Autoencoder target
                 
                 # Clean up intermediate data
-                del combined_flat, true_flat, false_flat
-                del batch_mixed, batch_true, batch_false, batch_targets
+                del combined_data, none_data, true_data, false_data, mixed_data
                 
                 return ((mixed_array, true_array, false_array), target_array)
                 

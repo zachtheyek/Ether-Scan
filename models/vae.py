@@ -154,17 +154,35 @@ class BetaVAE(keras.Model):
         
         with tf.GradientTape() as tape:
             # Forward pass on main input - reshape for encoder
-            # concatenated_input shape: (batch, 6, 16, 512, 1)
+            # concatenated_input shape: (batch, 6, 16, 512)
             input_shape = tf.shape(concatenated_input)
             batch_size = input_shape[0]
             
-            # Reshape to (batch*6, 16, 512, 1) for encoder
-            encoder_input = tf.reshape(concatenated_input, (batch_size * 6, 16, 512, 1))
+            # Debug: Assert expected input shape
+            tf.debugging.assert_equal(tf.rank(concatenated_input), 4, 
+                                    message="Expected 4D input (batch, 6, 16, 512)")
+            tf.debugging.assert_equal(input_shape[1], 6, 
+                                    message="Expected 6 observations per cadence")
+            tf.debugging.assert_equal(input_shape[2], 16, 
+                                    message="Expected 16 time bins")
+            tf.debugging.assert_equal(input_shape[3], 512, 
+                                    message="Expected 512 frequency bins")
+            
+            # Reshape to (batch*6, 16, 512) and add channel dimension for encoder
+            encoder_input = tf.reshape(concatenated_input, (batch_size * 6, 16, 512))
+            encoder_input = tf.expand_dims(encoder_input, axis=-1)  # (batch*6, 16, 512, 1)
+            
+            # Debug: Assert encoder input shape
+            expected_encoder_shape = tf.stack([batch_size * 6, 16, 512, 1])
+            tf.debugging.assert_equal(tf.shape(encoder_input), expected_encoder_shape,
+                                    message="Encoder input shape mismatch")
+            
             z_mean, z_log_var, z = self.encoder(encoder_input, training=True)
             reconstruction = self.decoder(z, training=True)
             
-            # Reshape reconstruction back to (batch, 6, 16, 512, 1)
-            reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512, 1))
+            # Remove channel dimension and reshape back to (batch, 6, 16, 512)
+            reconstruction = tf.squeeze(reconstruction, axis=-1)  # Remove channel
+            reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
             
             # Reconstruction loss - use MSE for stability with normalized spectrograms
             # Apply sigmoid to reconstruction to ensure [0,1] range if needed
@@ -188,9 +206,19 @@ class BetaVAE(keras.Model):
                 false_latents = []
                 
                 for obs_idx in range(6):
-                    # Extract observation from cadences
-                    true_obs = true_cadence[:, obs_idx, :, :, :]  # (batch, 16, 512, 1)
-                    false_obs = false_cadence[:, obs_idx, :, :, :]  # (batch, 16, 512, 1)
+                    # Extract observation from cadences and add channel dimension
+                    true_obs = true_cadence[:, obs_idx, :, :]  # (batch, 16, 512)
+                    false_obs = false_cadence[:, obs_idx, :, :]  # (batch, 16, 512)
+                    
+                    # Debug: Assert extracted observation shapes
+                    tf.debugging.assert_equal(tf.rank(true_obs), 3,
+                                            message=f"true_obs obs_idx {obs_idx} should be 3D")
+                    tf.debugging.assert_equal(tf.rank(false_obs), 3,
+                                            message=f"false_obs obs_idx {obs_idx} should be 3D")
+                    
+                    # Add channel dimension for encoder input
+                    true_obs = tf.expand_dims(true_obs, axis=-1)  # (batch, 16, 512, 1)
+                    false_obs = tf.expand_dims(false_obs, axis=-1)  # (batch, 16, 512, 1)
                     
                     # Encode observations
                     _, _, true_z = self.encoder(true_obs, training=True)

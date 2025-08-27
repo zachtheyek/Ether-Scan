@@ -11,6 +11,9 @@ output/
 # Virtual environment
 venv/
 
+# Claude settings
+.claude/
+
 # NOTE: Temporary
 Dockerfile
 kubernetes.yaml
