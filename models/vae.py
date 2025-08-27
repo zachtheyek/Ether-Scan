@@ -43,14 +43,22 @@ class BetaVAE(keras.Model):
         
     @tf.function
     def compute_similarity_loss(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
-        """Compute Euclidean distance between latent vectors"""
-        return tf.reduce_mean(tf.norm(a - b, axis=1))
+        """Compute Euclidean distance between latent vectors (numerically stable)"""
+        diff = a - b
+        # Clamp to prevent extreme values
+        diff = tf.clip_by_value(diff, -10.0, 10.0)
+        distance = tf.norm(diff, axis=1)
+        # Ensure distance is always positive and bounded
+        distance = tf.clip_by_value(distance, 1e-8, 10.0)
+        return tf.reduce_mean(distance)
     
     @tf.function
     def compute_dissimilarity_loss(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
-        """Compute inverse similarity for encouraging separation"""
+        """Compute dissimilarity loss for encouraging separation (numerically stable)"""
         similarity = self.compute_similarity_loss(a, b)
-        return 1.0 / (similarity + 1e-8)
+        # Use negative log for numerical stability instead of 1/x
+        # This encourages larger distances without numerical explosion
+        return -tf.math.log(similarity + 1e-8)
     
     @tf.function
     def compute_clustering_loss_true(self, latent_vectors: List[tf.Tensor]) -> tf.Tensor:
@@ -251,9 +259,19 @@ class BetaVAE(keras.Model):
         
         # Update weights with gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
-        # Clip gradients to prevent explosion
-        grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        
+        # Check for NaN/Inf in losses and skip update if found
+        if tf.math.is_finite(total_loss):
+            # Clip gradients to prevent explosion
+            grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
+            self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        else:
+            # Log warning about NaN/Inf loss
+            tf.print("Warning: NaN/Inf loss detected, skipping gradient update", 
+                    "total_loss:", total_loss,
+                    "reconstruction_loss:", reconstruction_loss,
+                    "kl_loss:", kl_loss,
+                    "clustering_loss:", clustering_loss)
         
         # Update metrics
         self.total_loss_tracker.update_state(total_loss)
