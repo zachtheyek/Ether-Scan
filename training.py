@@ -94,7 +94,7 @@ class TrainingPipeline:
 
         # Calculate steps per epoch
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
-        val_steps = self.config.training.num_samples_test // self.config.training.batch_size  # Use same batch size
+        val_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
         logger.info(f"Training: {steps_per_epoch} steps/epoch, Validation: {val_steps} steps")
         
@@ -148,7 +148,7 @@ class TrainingPipeline:
         
         def create_validation_batch():
             """Create a single validation batch on demand with memory management"""
-            batch_size = self.config.training.batch_size  # Use same batch size as training for consistency
+            batch_size = self.config.training.validation_batch_size  # Use validation batch size
             
             try:
                 val_data = self.data_generator.generate_batch(batch_size, "true")
@@ -208,10 +208,10 @@ class TrainingPipeline:
         )
         
         val_output_signature = (
-            (tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32),
-             tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32)),
-            tf.TensorSpec(shape=(self.config.training.batch_size, 6, 16, 512), dtype=tf.float32)
+            (tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32),
+             tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32)),
+            tf.TensorSpec(shape=(self.config.training.validation_batch_size, 6, 16, 512), dtype=tf.float32)
         )
         
         # Create datasets from generators - this is more stable for distributed training
@@ -301,7 +301,7 @@ class TrainingPipeline:
         
         # Calculate steps for repeating datasets
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
-        validation_steps = self.config.training.num_samples_test // self.config.training.batch_size
+        validation_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
         # Train
         history = self.vae.fit(
