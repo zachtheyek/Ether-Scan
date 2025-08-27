@@ -177,8 +177,14 @@ class BetaVAE(keras.Model):
             tf.debugging.assert_equal(tf.shape(encoder_input), expected_encoder_shape,
                                     message="Encoder input shape mismatch")
             
+            # Force shape inference for distributed training compatibility
+            encoder_input.set_shape([None, 16, 512, 1])
+            
             z_mean, z_log_var, z = self.encoder(encoder_input, training=True)
             reconstruction = self.decoder(z, training=True)
+            
+            # Force shape for decoder output before reshaping
+            reconstruction.set_shape([None, 16, 512, 1])
             
             # Remove channel dimension and reshape back to (batch, 6, 16, 512)
             reconstruction = tf.squeeze(reconstruction, axis=-1)  # Remove channel
@@ -219,6 +225,12 @@ class BetaVAE(keras.Model):
                     # Add channel dimension for encoder input
                     true_obs = tf.expand_dims(true_obs, axis=-1)  # (batch, 16, 512, 1)
                     false_obs = tf.expand_dims(false_obs, axis=-1)  # (batch, 16, 512, 1)
+                    
+                    # Force shape inference by explicitly setting shape
+                    true_batch_size = tf.shape(true_obs)[0]
+                    false_batch_size = tf.shape(false_obs)[0]
+                    true_obs.set_shape([None, 16, 512, 1])
+                    false_obs.set_shape([None, 16, 512, 1])
                     
                     # Encode observations
                     _, _, true_z = self.encoder(true_obs, training=True)
