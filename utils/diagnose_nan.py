@@ -17,7 +17,7 @@ from config import Config
 from preprocessing import DataPreprocessor, normalize_log
 from data_generation import DataGenerator
 from training import TrainingPipeline
-from models.vae import VAE
+from models.vae import BetaVAE
 
 # Setup logging to see everything
 logging.basicConfig(
@@ -289,7 +289,7 @@ def test_model_inference_pipeline(background_data):
             
             strategy = tf.distribute.get_strategy()
             with strategy.scope():
-                vae = VAE(config)
+                vae = BetaVAE(config)
                 print("✅ VAE model created successfully")
         
         # Generate a small test batch
