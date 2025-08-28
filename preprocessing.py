@@ -12,10 +12,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@njit(nopython=True)
+@jit(nopython=False)  # Changed to support numpy operations for numerical stability
 def normalize_log(data: np.ndarray) -> np.ndarray:
     """
-    Apply log normalization to data as per paper
+    Apply log normalization to data as per paper with numerical stability
     
     Args:
         data: Input array
@@ -23,13 +23,29 @@ def normalize_log(data: np.ndarray) -> np.ndarray:
     Returns:
         Normalized array between 0 and 1
     """
-    # Add small epsilon to avoid log(0)
-    data_log = np.log(data + 1e-10)
+    # Ensure data is positive and add small epsilon to avoid log(0)
+    data_safe = np.maximum(data, 1e-15)  # Ensure positive values
+    data_log = np.log(data_safe + 1e-10)
+    
+    # Check for valid range
+    if np.any(np.isnan(data_log)) or np.any(np.isinf(data_log)):
+        # Fallback: use original data with simple min-max normalization
+        data_range = data.max() - data.min()
+        if data_range > 0:
+            return (data - data.min()) / data_range
+        else:
+            return np.zeros_like(data)
+    
     data_shifted = data_log - data_log.min()
-    if data_shifted.max() > 0:
-        data_normalized = data_shifted / data_shifted.max()
+    max_val = data_shifted.max()
+    
+    if max_val > 1e-15:  # Avoid division by very small numbers
+        data_normalized = data_shifted / max_val
     else:
-        data_normalized = data_shifted
+        data_normalized = np.zeros_like(data_shifted)
+    
+    # Final safety check
+    data_normalized = np.clip(data_normalized, 0.0, 1.0)
     return data_normalized
 
 @jit(nopython=False)  # Changed because we need numpy operations that njit doesn't support

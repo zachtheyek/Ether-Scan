@@ -368,8 +368,8 @@ def main():
                             help='Epochs per training round (default: 100)')
     train_parser.add_argument('--rounds', type=int, default=20,
                             help='Number of training rounds (default: 20)')
-    train_parser.add_argument('--batch-size', type=int, default=1000,
-                            help='Training batch size (default: 1000)')
+    train_parser.add_argument('--batch-size', type=int, default=None,
+                            help='Training batch size (uses config default if not specified)')
     
     # Inference command
     inf_parser = subparsers.add_parser('inference', help='Run inference on data')

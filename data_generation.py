@@ -293,14 +293,25 @@ def create_mixed_training_batch(generator: DataGenerator,
     # Apply log normalization to all data after signal injection
     # This is critical for numerical stability 
     from preprocessing import normalize_log
+    import logging
+    
+    logger = logging.getLogger(__name__)
     
     # Normalize each cadence in each data type
     for i in range(n_each):
         for obs_idx in range(6):
+            # Store original stats for debugging
+            orig_none_min, orig_none_max = none_data[i, obs_idx].min(), none_data[i, obs_idx].max()
+            
             none_data[i, obs_idx] = normalize_log(none_data[i, obs_idx])
             true_data[i, obs_idx] = normalize_log(true_data[i, obs_idx])
             mixed_data[i, obs_idx] = normalize_log(mixed_data[i, obs_idx])
             false_data[i, obs_idx] = normalize_log(false_data[i, obs_idx])
+            
+            # Check for normalization issues on first sample only
+            if i == 0 and obs_idx == 0:
+                norm_min, norm_max = none_data[i, obs_idx].min(), none_data[i, obs_idx].max()
+                logger.debug(f"Normalization: orig range [{orig_none_min:.2e}, {orig_none_max:.2e}] -> [{norm_min:.4f}, {norm_max:.4f}]")
     
     # Concatenate for main input
     concatenated = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)

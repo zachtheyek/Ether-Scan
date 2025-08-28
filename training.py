@@ -53,12 +53,10 @@ class TrainingPipeline:
             logger.info("Creating VAE model within distributed scope...")
             self.vae = create_vae_model(config)
             
-            # Scale learning rate by number of replicas (conservative scaling for stability)
-            # Use sqrt scaling instead of linear scaling to prevent instability
-            import math
-            scaling_factor = math.sqrt(self.strategy.num_replicas_in_sync)
-            scaled_lr = config.model.learning_rate * scaling_factor
-            logger.info(f"Scaling learning rate from {config.model.learning_rate} to {scaled_lr} (factor: {scaling_factor:.2f})")
+            # Use very conservative learning rate scaling for initial stability
+            # No scaling initially - can increase later once training is stable
+            scaled_lr = config.model.learning_rate  # No scaling for now
+            logger.info(f"Using conservative learning rate: {scaled_lr} (no distributed scaling for stability)")
             
             # Recompile with scaled learning rate and stability improvements
             self.vae.compile(
@@ -167,9 +165,10 @@ class TrainingPipeline:
                 try:
                     batch = create_training_batch()
                     yield batch
-                    # Clean up after each batch
-                    if hasattr(gc, 'collect'):
-                        gc.collect()
+                    # Aggressive cleanup after each batch to prevent memory spikes
+                    del batch
+                    gc.collect()
+                    # tf.keras.backend.clear_session()  # Too aggressive for distributed training
                 except Exception as e:
                     logger.error(f"Error in train_generator: {e}")
                     raise
@@ -180,9 +179,10 @@ class TrainingPipeline:
                 try:
                     batch = create_validation_batch()
                     yield batch
-                    # Clean up after each batch
-                    if hasattr(gc, 'collect'):
-                        gc.collect()
+                    # Aggressive cleanup after each batch to prevent memory spikes
+                    del batch
+                    gc.collect()
+                    # tf.keras.backend.clear_session()  # Too aggressive for distributed training
                 except Exception as e:
                     logger.error(f"Error in val_generator: {e}")
                     raise
@@ -222,8 +222,8 @@ class TrainingPipeline:
         # Add proper distribution options for multi-GPU training
         options = tf.data.Options()
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF  # OFF to avoid sharding issues
-        options.experimental_threading.max_intra_op_parallelism = 1  # Reduce threading for stability
-        options.experimental_threading.private_threadpool_size = 1  # Reduce thread pool
+        options.threading.max_intra_op_parallelism = tf.data.AUTOTUNE  # Let TensorFlow optimize
+        options.threading.private_threadpool_size = tf.data.AUTOTUNE  # Let TensorFlow optimize
         
         train_dataset = train_dataset.with_options(options)
         val_dataset = val_dataset.with_options(options)
@@ -244,9 +244,10 @@ class TrainingPipeline:
         Returns:
             Training history
         """
-        # Enable mixed precision training
-        policy = tf.keras.mixed_precision.Policy('mixed_float16')
-        tf.keras.mixed_precision.set_global_policy(policy)
+        # Disable mixed precision for now to reduce memory pressure
+        # Can re-enable later once training is stable
+        # policy = tf.keras.mixed_precision.Policy('mixed_float16')
+        # tf.keras.mixed_precision.set_global_policy(policy)
 
         if epochs is None:
             epochs = self.config.training.epochs_per_round
