@@ -62,9 +62,9 @@ class DataConfig:
     
 @dataclass
 class TrainingConfig:
-    """Training configuration optimized for 4 GPUs with memory efficiency"""
-    batch_size: int = 64 # Reduced for memory efficiency - Must be divisible by num_gpus (4)
-    validation_batch_size: int = 128 # Reduced for memory efficiency - Must be divisible by num_gpus (4)
+    """Training configuration optimized for 4 GPUs with aggressive memory efficiency"""
+    batch_size: int = 32 # Further reduced for memory efficiency - Must be divisible by num_gpus (4) 
+    validation_batch_size: int = 64 # Further reduced for memory efficiency - Must be divisible by num_gpus (4)
     epochs_per_round: int = 50
     num_training_rounds: int = 40
 
@@ -73,8 +73,8 @@ class TrainingConfig:
     prefetch_buffer: int = 2  # How many batches to prefetch
     
     # Data generation parameters  
-    num_samples_train: int = 30000 # Total samples per epoch
-    num_samples_test: int = 8000
+    num_samples_train: int = 960 # Adjusted for smaller batch sizes (30 steps * 32 batch_size)
+    num_samples_test: int = 1920 # Adjusted for validation (30 steps * 64 validation_batch_size)
     snr_base: int = 10
     snr_range: int = 40
     

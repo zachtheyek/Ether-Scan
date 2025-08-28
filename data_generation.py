@@ -186,6 +186,12 @@ class DataGenerator:
                 drift_range=(-self.config.inference.max_drift_rate,
                             self.config.inference.max_drift_rate)
             )
+            
+            # Apply log normalization to each observation in the cadence
+            # This is critical for numerical stability with large raw values
+            from preprocessing import normalize_log
+            for obs_idx in range(6):
+                batch[i, obs_idx] = normalize_log(batch[i, obs_idx])
         
         return batch
     
@@ -284,11 +290,29 @@ def create_mixed_training_batch(generator: DataGenerator,
             )[0]  # inject_signal returns (data, slope, intercept), we only need data
     
     
+    # Apply log normalization to all data after signal injection
+    # This is critical for numerical stability 
+    from preprocessing import normalize_log
+    
+    # Normalize each cadence in each data type
+    for i in range(n_each):
+        for obs_idx in range(6):
+            none_data[i, obs_idx] = normalize_log(none_data[i, obs_idx])
+            true_data[i, obs_idx] = normalize_log(true_data[i, obs_idx])
+            mixed_data[i, obs_idx] = normalize_log(mixed_data[i, obs_idx])
+            false_data[i, obs_idx] = normalize_log(false_data[i, obs_idx])
+    
     # Concatenate for main input
     concatenated = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)
     
-    # Additional true/false for clustering loss
+    # Additional true/false for clustering loss - also need normalization
     true_clustering = generator.generate_batch(batch_size, "true")
     false_clustering = generator.generate_batch(batch_size, "false")
+    
+    # Apply log normalization to clustering data too
+    for i in range(batch_size):
+        for obs_idx in range(6):
+            true_clustering[i, obs_idx] = normalize_log(true_clustering[i, obs_idx])
+            false_clustering[i, obs_idx] = normalize_log(false_clustering[i, obs_idx])
     
     return concatenated, true_clustering, false_clustering

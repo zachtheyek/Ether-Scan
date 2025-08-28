@@ -221,7 +221,9 @@ class TrainingPipeline:
         
         # Add proper distribution options for multi-GPU training
         options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF  # Changed to OFF to avoid sharding issues
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF  # OFF to avoid sharding issues
+        options.experimental_threading.max_intra_op_parallelism = 1  # Reduce threading for stability
+        options.experimental_threading.private_threadpool_size = 1  # Reduce thread pool
         
         train_dataset = train_dataset.with_options(options)
         val_dataset = val_dataset.with_options(options)
@@ -293,16 +295,34 @@ class TrainingPipeline:
         steps_per_epoch = self.config.training.num_samples_train // self.config.training.batch_size
         validation_steps = self.config.training.num_samples_test // self.config.training.validation_batch_size
         
-        # Train
-        history = self.vae.fit(
-            train_dataset,
-            epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            validation_data=val_dataset,
-            validation_steps=validation_steps,
-            callbacks=callbacks,
-            verbose=1
-        )
+        # Train with error recovery
+        try:
+            history = self.vae.fit(
+                train_dataset,
+                epochs=epochs,
+                steps_per_epoch=steps_per_epoch,
+                validation_data=val_dataset,
+                validation_steps=validation_steps,
+                callbacks=callbacks,
+                verbose=1
+            )
+        except tf.errors.InvalidArgumentError as e:
+            logger.error(f"Distributed training failed with invalid argument: {e}")
+            logger.info("Attempting to recreate datasets and retry...")
+            # Recreate datasets and try once more
+            train_dataset, val_dataset = self.prepare_training_data()
+            history = self.vae.fit(
+                train_dataset,
+                epochs=epochs,
+                steps_per_epoch=steps_per_epoch,
+                validation_data=val_dataset,
+                validation_steps=validation_steps,
+                callbacks=callbacks,
+                verbose=1
+            )
+        except Exception as e:
+            logger.error(f"Training failed with unexpected error: {e}")
+            raise
         
         # Update history
         for key in self.history:
