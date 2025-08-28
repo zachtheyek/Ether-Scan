@@ -131,9 +131,8 @@ def load_background_data(config: Config) -> np.ndarray:
                     # Add each snippet as a separate background
                     for snippet_idx in range(processed_cadence.shape[0]):
                         all_backgrounds.append(processed_cadence[snippet_idx])
-                        
-                    if (cadence_idx + 1) % 10 == 0:
-                        logger.info(f"  Processed {cadence_idx + 1}/{n_cadences} cadences")
+
+                    logger.info(f"  Processed {n_cadences} cadences")
                         
                 except Exception as e:
                     logger.warning(f"  Error processing cadence {cadence_idx}: {e}")
@@ -364,9 +363,9 @@ def main():
     # Training command
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('--data-path', type=str, help='Path to training data')
-    train_parser.add_argument('--epochs', type=int, default=100,
+    train_parser.add_argument('--epochs', type=int, default=None,
                             help='Epochs per training round (default: 100)')
-    train_parser.add_argument('--rounds', type=int, default=20,
+    train_parser.add_argument('--rounds', type=int, default=None,
                             help='Number of training rounds (default: 20)')
     train_parser.add_argument('--batch-size', type=int, default=None,
                             help='Training batch size (uses config default if not specified)')

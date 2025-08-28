@@ -16,7 +16,7 @@ from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
-@jit(parallel=True)
+@jit(nopython=True, parallel=True)
 def extract_overlapping_snippets(data: np.ndarray, 
                                snippet_size: int,
                                overlap: float = 0.5) -> List[Tuple[int, np.ndarray]]:
