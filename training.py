@@ -101,35 +101,12 @@ class TrainingPipeline:
         def create_training_batch():
             """Create a single training batch on demand with memory management"""
             batch_size = self.config.training.batch_size
-            # Ensure quarter_size creates exactly batch_size samples when combined
-            quarter_size = batch_size // 4
-            if quarter_size == 0:
-                quarter_size = 1
-                batch_size = 4  # Minimum batch size
             
             try:
-                # Generate data types - each generates quarter_size samples
-                none_data = self.data_generator.generate_batch(quarter_size, "none")
-                true_data = self.data_generator.generate_batch(quarter_size, "true")
-                false_data = self.data_generator.generate_batch(quarter_size, "false")
-                
-                # Mixed data: true signals + RFI
-                mixed_data = self.data_generator.generate_batch(quarter_size, "true")
-                for i in range(quarter_size):
-                    for obs_idx in range(6):
-                        rfi_snr = np.random.uniform(10, 30)
-                        rfi_drift_rate = np.random.uniform(-5, 5)
-                        
-                        from data_generation import inject_signal
-                        mixed_data[i, obs_idx], _, _ = inject_signal(
-                            mixed_data[i, obs_idx], rfi_snr, rfi_drift_rate
-                        )
-                
-                # Combine all data
-                combined_data = np.concatenate([none_data, true_data, false_data, mixed_data], axis=0)
-                
-                # Keep data in cadence format (batch, 6, 16, 512) - don't flatten yet
-                # The VAE model will handle individual observations internally
+                # Use the proper mixed training batch function
+                combined_data, true_data, false_data = create_mixed_training_batch(
+                    self.data_generator, batch_size
+                )
                 
                 # Format for model input: maintain original cadence structure
                 mixed_array = combined_data.astype(np.float32)
@@ -138,7 +115,7 @@ class TrainingPipeline:
                 target_array = combined_data.astype(np.float32)  # Autoencoder target
                 
                 # Clean up intermediate data
-                del combined_data, none_data, true_data, false_data, mixed_data
+                del combined_data, true_data, false_data
                 
                 return ((mixed_array, true_array, false_array), target_array)
                 
@@ -148,19 +125,22 @@ class TrainingPipeline:
         
         def create_validation_batch():
             """Create a single validation batch on demand with memory management"""
-            batch_size = self.config.training.validation_batch_size  # Use validation batch size
+            batch_size = self.config.training.validation_batch_size
             
             try:
-                val_data = self.data_generator.generate_batch(batch_size, "true")
+                # Generate validation data with mixed types for proper evaluation
+                combined_data, true_data, false_data = create_mixed_training_batch(
+                    self.data_generator, batch_size
+                )
                 
-                # Keep data in cadence format (batch, 6, 16, 512) - consistent with training
-                mixed_array = val_data.astype(np.float32)
-                true_array = val_data.astype(np.float32) 
-                false_array = val_data.astype(np.float32)
-                target_array = val_data.astype(np.float32)
+                # Format for model input: maintain original cadence structure  
+                mixed_array = combined_data.astype(np.float32)
+                true_array = true_data.astype(np.float32)
+                false_array = false_data.astype(np.float32)
+                target_array = combined_data.astype(np.float32)  # Autoencoder target
                 
                 # Clean up intermediate data
-                del val_data
+                del combined_data, true_data, false_data
                 
                 return ((mixed_array, true_array, false_array), target_array)
                 
