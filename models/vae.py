@@ -128,14 +128,15 @@ class BetaVAE(keras.Model):
         z_mean, z_log_var, z = self.encoder(main_input, training=training)
         reconstruction = self.decoder(z, training=training)
         
-        # Reshape reconstruction back to cadence format if needed
-        if len(inputs.shape) == 5 and inputs.shape[1] == 6:
+        # Reshape reconstruction back to cadence format if needed  
+        # Use main_input instead of inputs since inputs might be a tuple
+        if len(main_input.shape) == 5 and main_input.shape[1] == 6:
             # Reshape back to (batch_size, 6, 16, 512, 1)
-            recon_batch_size = tf.shape(inputs)[0]
+            recon_batch_size = tf.shape(main_input)[0]
             reconstruction = tf.reshape(reconstruction, (recon_batch_size, 6, 16, 512, 1))
-        elif len(inputs.shape) == 4 and inputs.shape[1] == 6:
+        elif len(main_input.shape) == 4 and main_input.shape[1] == 6:
             # Reshape back to (batch_size, 6, 16, 512)
-            recon_batch_size = tf.shape(inputs)[0]
+            recon_batch_size = tf.shape(main_input)[0]
             reconstruction = tf.reshape(reconstruction, (recon_batch_size, 6, 16, 512, 1))
         
         return reconstruction

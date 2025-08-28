@@ -53,13 +53,20 @@ class TrainingPipeline:
             logger.info("Creating VAE model within distributed scope...")
             self.vae = create_vae_model(config)
             
-            # Scale learning rate by number of replicas
-            scaled_lr = config.model.learning_rate * self.strategy.num_replicas_in_sync
-            logger.info(f"Scaling learning rate from {config.model.learning_rate} to {scaled_lr}")
+            # Scale learning rate by number of replicas (conservative scaling for stability)
+            # Use sqrt scaling instead of linear scaling to prevent instability
+            import math
+            scaling_factor = math.sqrt(self.strategy.num_replicas_in_sync)
+            scaled_lr = config.model.learning_rate * scaling_factor
+            logger.info(f"Scaling learning rate from {config.model.learning_rate} to {scaled_lr} (factor: {scaling_factor:.2f})")
             
-            # Recompile with scaled learning rate
+            # Recompile with scaled learning rate and stability improvements
             self.vae.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=scaled_lr)
+                optimizer=tf.keras.optimizers.Adam(
+                    learning_rate=scaled_lr,
+                    clipnorm=1.0,  # Gradient clipping for stability
+                    epsilon=1e-7   # Increased epsilon for numerical stability
+                )
             )
             logger.info("VAE model created and compiled for distributed training")
         
@@ -148,36 +155,37 @@ class TrainingPipeline:
                 logger.error(f"Error in create_validation_batch: {e}")
                 raise
         
-        # Pre-generate a fixed set of training and validation batches to avoid iterator issues
-        # This approach is more memory intensive but ensures stable distributed training
-        logger.info("Pre-generating training batches for stable distributed training...")
+        # Use memory-efficient streaming approach instead of pre-generation
+        logger.info("Creating streaming datasets for memory-efficient training...")
         
-        train_batches = []
         import gc
-        for i in range(steps_per_epoch):
-            batch = create_training_batch()
-            train_batches.append(batch)
-            if i % 5 == 0:
-                gc.collect()
-            logger.info(f"Generated {i+1}/{steps_per_epoch} training batches")
         
-        logger.info("Pre-generating validation batches...")
-        val_batches = []
-        for i in range(val_steps):
-            batch = create_validation_batch()
-            val_batches.append(batch)
-            if i % 5 == 0:
-                gc.collect()
-            logger.info(f"Generated {i+1}/{val_steps} validation batches")
-        
-        # Create datasets from pre-generated batches
+        # Create streaming generators that create batches on-demand
         def train_generator():
-            for batch in train_batches:
-                yield batch
+            """Memory-efficient training batch generator"""
+            while True:  # Infinite generator for repeating dataset
+                try:
+                    batch = create_training_batch()
+                    yield batch
+                    # Clean up after each batch
+                    if hasattr(gc, 'collect'):
+                        gc.collect()
+                except Exception as e:
+                    logger.error(f"Error in train_generator: {e}")
+                    raise
                 
         def val_generator():
-            for batch in val_batches:
-                yield batch
+            """Memory-efficient validation batch generator"""
+            while True:  # Infinite generator for repeating dataset  
+                try:
+                    batch = create_validation_batch()
+                    yield batch
+                    # Clean up after each batch
+                    if hasattr(gc, 'collect'):
+                        gc.collect()
+                except Exception as e:
+                    logger.error(f"Error in val_generator: {e}")
+                    raise
         
         # Define output signature - updated to match 4D cadence format
         output_signature = (
@@ -205,9 +213,11 @@ class TrainingPipeline:
             output_signature=val_output_signature
         )
         
-        # Repeat the datasets for multiple epochs (required for distributed training stability)
-        train_dataset = train_dataset.repeat()
-        val_dataset = val_dataset.repeat()
+        # No need to repeat() since generators are already infinite
+        
+        # Add prefetching for performance with conservative buffer size
+        train_dataset = train_dataset.prefetch(buffer_size=2)
+        val_dataset = val_dataset.prefetch(buffer_size=2)
         
         # Add proper distribution options for multi-GPU training
         options = tf.data.Options()
