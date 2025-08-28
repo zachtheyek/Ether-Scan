@@ -201,12 +201,23 @@ class BetaVAE(keras.Model):
             
             # Reconstruction loss - use MSE for stability with normalized spectrograms
             # Apply sigmoid to reconstruction to ensure [0,1] range if needed
-            reconstruction_sigmoid = tf.sigmoid(reconstruction)
+            # Clamp reconstruction to prevent numerical instability
+            reconstruction_clamped = tf.clip_by_value(reconstruction, -10.0, 10.0)
+            reconstruction_sigmoid = tf.sigmoid(reconstruction_clamped)
             reconstruction_loss = tf.reduce_mean(tf.square(target - reconstruction_sigmoid))
             
-            # KL divergence loss
-            kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+            # Additional safety check for reconstruction loss
+            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 1e6)
+            
+            # KL divergence loss with numerical stability
+            # Clamp both z_mean and z_log_var to prevent numerical explosion
+            z_mean_clamped = tf.clip_by_value(z_mean, -10.0, 10.0)
+            z_log_var_clamped = tf.clip_by_value(z_log_var, -20.0, 10.0)
+            kl_loss = -0.5 * (1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+            
+            # Additional safety check for KL loss
+            kl_loss = tf.clip_by_value(kl_loss, -1e6, 1e6)
             
             # Clustering loss computation
             clustering_loss = 0.0
