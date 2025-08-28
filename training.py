@@ -157,9 +157,9 @@ class TrainingPipeline:
         for i in range(steps_per_epoch):
             batch = create_training_batch()
             train_batches.append(batch)
-            if i % 10 == 0:
+            if i % 5 == 0:
                 gc.collect()
-                logger.info(f"Generated {i+1}/{steps_per_epoch} training batches")
+            logger.info(f"Generated {i}/{steps_per_epoch} training batches")
         
         logger.info("Pre-generating validation batches...")
         val_batches = []
@@ -168,7 +168,7 @@ class TrainingPipeline:
             val_batches.append(batch)
             if i % 5 == 0:
                 gc.collect()
-                logger.info(f"Generated {i+1}/{val_steps} validation batches")
+            logger.info(f"Generated {i}/{val_steps} validation batches")
         
         # Create datasets from pre-generated batches
         def train_generator():
