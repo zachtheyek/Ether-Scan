@@ -209,15 +209,15 @@ class BetaVAE(keras.Model):
             # Additional safety check for reconstruction loss
             reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 1e6)
             
-            # KL divergence loss with numerical stability
-            # Clamp both z_mean and z_log_var to prevent numerical explosion
-            z_mean_clamped = tf.clip_by_value(z_mean, -10.0, 10.0)
-            z_log_var_clamped = tf.clip_by_value(z_log_var, -20.0, 10.0)
+            # KL divergence loss with aggressive numerical stability
+            # Much more aggressive clamping to prevent any explosion
+            z_mean_clamped = tf.clip_by_value(z_mean, -5.0, 5.0)
+            z_log_var_clamped = tf.clip_by_value(z_log_var, -10.0, 2.0)
             kl_loss = -0.5 * (1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
-            # Additional safety check for KL loss
-            kl_loss = tf.clip_by_value(kl_loss, -1e6, 1e6)
+            # Additional safety check for KL loss - aggressive bounds
+            kl_loss = tf.clip_by_value(kl_loss, -50.0, 50.0)
             
             # Clustering loss computation
             clustering_loss = 0.0
@@ -259,10 +259,18 @@ class BetaVAE(keras.Model):
                     true_latents.append(true_z)
                     false_latents.append(false_z)
                 
-                # Compute clustering losses as per paper
+                # Compute clustering losses as per paper with numerical stability
                 true_clustering_loss = self.compute_clustering_loss_true(true_latents)
                 false_clustering_loss = self.compute_clustering_loss_false(false_latents)
+                
+                # Clip individual clustering losses to prevent explosion
+                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 100.0)
+                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 100.0)
+                
                 clustering_loss = true_clustering_loss + false_clustering_loss
+                
+                # Final safety check for total clustering loss
+                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 200.0)
             
             # Total loss (Equation 6 from paper)
             total_loss = (reconstruction_loss + 
