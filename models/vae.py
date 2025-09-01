@@ -204,17 +204,16 @@ class BetaVAE(keras.Model):
             reconstruction = tf.squeeze(reconstruction, axis=-1)  # Remove channel
             reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
             
-            # Reconstruction loss with enhanced stability
-            # Clamp reconstruction to reasonable bounds before sigmoid
-            reconstruction_clamped = tf.clip_by_value(reconstruction, -5.0, 5.0)  # Tighter clipping
+            # Reconstruction loss with EMERGENCY stability measures
+            # Much more aggressive clamping
+            reconstruction_clamped = tf.clip_by_value(reconstruction, -2.0, 2.0)  # Emergency tight
             reconstruction_sigmoid = tf.sigmoid(reconstruction_clamped)
             
-            # Use Huber loss for better robustness to outliers
-            diff = target - reconstruction_sigmoid
-            reconstruction_loss = tf.reduce_mean(tf.keras.losses.huber(target, reconstruction_sigmoid, delta=0.1))
+            # Use simpler MSE loss to eliminate any Huber complexity
+            reconstruction_loss = tf.reduce_mean(tf.square(target - reconstruction_sigmoid))
             
-            # Safety bounds for reconstruction loss
-            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 10.0)
+            # EMERGENCY: Ultra-tight bounds for reconstruction loss
+            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 1.0)  # Emergency bound
             
             # KL divergence loss with ultra-conservative numerical stability
             # Extremely tight clamping to prevent any explosion in distributed training
@@ -277,26 +276,32 @@ class BetaVAE(keras.Model):
                 true_clustering_loss = self.compute_clustering_loss_true(true_latents)
                 false_clustering_loss = self.compute_clustering_loss_false(false_latents)
                 
-                # Clip individual clustering losses with ultra-tight bounds for distributed training
-                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 5.0)  # Ultra-tight
-                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 5.0)  # Ultra-tight
+                # EMERGENCY: Ultra-aggressive bounds to prevent any explosion
+                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 1.0)  # Emergency tight
+                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 1.0)  # Emergency tight
                 
                 clustering_loss = true_clustering_loss + false_clustering_loss
                 
-                # Final safety check for total clustering loss
-                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 10.0)  # Much safer upper bound
+                # Final emergency bounds for total clustering loss
+                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 2.0)  # Emergency tight
             
-            # Total loss (Equation 6 from paper) with distributed training safety
-            total_loss = (reconstruction_loss + 
-                         self.beta * kl_loss +
-                         self.alpha * clustering_loss)
+            # Total loss (Equation 6 from paper) with ultra-aggressive bounds
+            # Apply bounds to weighted terms BEFORE summing to prevent explosion
+            weighted_kl = tf.clip_by_value(self.beta * kl_loss, 0.0, 1.0)  # Emergency tight
+            weighted_clustering = tf.clip_by_value(self.alpha * clustering_loss, 0.0, 1.0)  # Emergency tight
             
-            # Critical: Final safety check for total loss before gradient computation
-            # This prevents NaN propagation in distributed training
-            total_loss = tf.clip_by_value(total_loss, 1e-6, 20.0)
+            total_loss = reconstruction_loss + weighted_kl + weighted_clustering
             
-            # Additional distributed training safety: check for NaN/Inf before proceeding
+            # EMERGENCY: Ultra-tight total loss bounds BEFORE gradient computation
+            total_loss = tf.clip_by_value(total_loss, 1e-6, 3.0)  # Emergency tight
+            
+            # Additional safety: replace any non-finite values immediately
             total_loss = tf.where(tf.math.is_finite(total_loss), total_loss, 1e-3)
+            
+            # EMERGENCY DEBUG: Print loss components to diagnose explosion
+            tf.print("DEBUG - recon:", reconstruction_loss, "kl:", kl_loss, "clust:", clustering_loss, 
+                    "weighted_kl:", weighted_kl, "weighted_clust:", weighted_clustering, 
+                    "total:", total_loss, summarize=-1)
         
         # Update weights with enhanced gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
