@@ -58,14 +58,14 @@ class TrainingPipeline:
             scaled_lr = config.model.learning_rate  # No scaling for now
             logger.info(f"Using conservative learning rate: {scaled_lr} (no distributed scaling for stability)")
             
-            # Recompile with scaled learning rate and enhanced stability
+            # Recompile with ultra-conservative parameters for distributed training stability
             self.vae.compile(
                 optimizer=tf.keras.optimizers.Adam(
-                    learning_rate=scaled_lr * 0.1,  # Much more conservative learning rate
-                    clipnorm=0.5,   # More aggressive gradient clipping
-                    epsilon=1e-8,   # Standard epsilon
-                    beta_1=0.9,     # Standard momentum
-                    beta_2=0.999,   # Standard second moment decay
+                    learning_rate=scaled_lr * 0.01,  # Ultra-conservative learning rate for distributed training
+                    clipnorm=0.1,   # Ultra-aggressive gradient clipping to match VAE model
+                    epsilon=1e-7,   # Slightly larger epsilon for numerical stability
+                    beta_1=0.8,     # Lower momentum to reduce accumulation of unstable gradients
+                    beta_2=0.99,    # Lower second moment decay for stability
                     amsgrad=True    # Use AMSGrad variant for better convergence
                 )
             )

@@ -56,12 +56,14 @@ class BetaVAE(keras.Model):
     def compute_dissimilarity_loss(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
         """Compute dissimilarity loss for encouraging separation (numerically stable)"""
         diff = a - b
-        diff = tf.clip_by_value(diff, -5.0, 5.0)  # Tighter clipping
+        diff = tf.clip_by_value(diff, -3.0, 3.0)  # Much tighter clipping
         distance = tf.norm(diff, axis=1)
-        distance = tf.clip_by_value(distance, 1e-6, 5.0)  # Tighter bounds
+        distance = tf.clip_by_value(distance, 0.1, 3.0)  # Avoid small distances that explode in log
         mean_distance = tf.reduce_mean(distance)
-        # Use negative log with better numerical stability
-        return -tf.math.log(tf.maximum(mean_distance, 1e-6))
+        # Use much safer formulation: instead of -log(d), use 1/(1+d) which is bounded
+        # This encourages larger distances without the explosive behavior of negative log
+        safe_dissimilarity = 1.0 / (1.0 + mean_distance)
+        return tf.clip_by_value(safe_dissimilarity, 0.0, 1.0)
     
     @tf.function
     def compute_clustering_loss_true(self, latent_vectors: List[tf.Tensor]) -> tf.Tensor:
@@ -214,17 +216,22 @@ class BetaVAE(keras.Model):
             # Safety bounds for reconstruction loss
             reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 10.0)
             
-            # KL divergence loss with enhanced numerical stability
-            # More conservative clamping to prevent any explosion
-            z_mean_clamped = tf.clip_by_value(z_mean, -3.0, 3.0)  # Tighter bounds
-            z_log_var_clamped = tf.clip_by_value(z_log_var, -6.0, 1.0)  # Much tighter variance bounds
+            # KL divergence loss with ultra-conservative numerical stability
+            # Extremely tight clamping to prevent any explosion in distributed training
+            z_mean_clamped = tf.clip_by_value(z_mean, -2.0, 2.0)  # Very tight bounds
+            z_log_var_clamped = tf.clip_by_value(z_log_var, -4.0, 0.0)  # Ultra-tight variance bounds
             
-            # Compute KL divergence with stability checks
-            kl_per_dim = -0.5 * (1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped))
+            # Compute KL divergence with enhanced stability checks
+            # Clamp intermediate computations to prevent overflow
+            z_mean_sq = tf.clip_by_value(tf.square(z_mean_clamped), 0.0, 4.0)
+            z_exp = tf.clip_by_value(tf.exp(z_log_var_clamped), 1e-6, 1.0)
+            
+            kl_per_dim = -0.5 * (1 + z_log_var_clamped - z_mean_sq - z_exp)
+            kl_per_dim = tf.clip_by_value(kl_per_dim, 0.0, 5.0)  # Clamp per-dimension KL
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_per_dim, axis=1))
             
             # Final safety bounds for KL loss
-            kl_loss = tf.clip_by_value(kl_loss, 0.0, 10.0)
+            kl_loss = tf.clip_by_value(kl_loss, 0.0, 5.0)  # Much tighter upper bound
             
             # Clustering loss computation
             clustering_loss = 0.0
@@ -270,28 +277,45 @@ class BetaVAE(keras.Model):
                 true_clustering_loss = self.compute_clustering_loss_true(true_latents)
                 false_clustering_loss = self.compute_clustering_loss_false(false_latents)
                 
-                # Clip individual clustering losses with tighter bounds
-                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 20.0)  # Much tighter
-                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 20.0)  # Much tighter
+                # Clip individual clustering losses with ultra-tight bounds for distributed training
+                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 5.0)  # Ultra-tight
+                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 5.0)  # Ultra-tight
                 
                 clustering_loss = true_clustering_loss + false_clustering_loss
                 
                 # Final safety check for total clustering loss
-                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 40.0)
+                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 10.0)  # Much safer upper bound
             
-            # Total loss (Equation 6 from paper)
+            # Total loss (Equation 6 from paper) with distributed training safety
             total_loss = (reconstruction_loss + 
                          self.beta * kl_loss +
                          self.alpha * clustering_loss)
+            
+            # Critical: Final safety check for total loss before gradient computation
+            # This prevents NaN propagation in distributed training
+            total_loss = tf.clip_by_value(total_loss, 1e-6, 20.0)
+            
+            # Additional distributed training safety: check for NaN/Inf before proceeding
+            total_loss = tf.where(tf.math.is_finite(total_loss), total_loss, 1e-3)
         
         # Update weights with enhanced gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
         
-        # Apply conservative gradient clipping - TensorFlow handles NaN internally
-        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.5)  # More conservative clipping
+        # Apply ultra-conservative gradient clipping for distributed training stability
+        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.1)  # Ultra-conservative clipping
         
-        # Apply gradients - TensorFlow's optimizer will automatically skip NaN gradients
-        self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
+        # Additional safety: skip gradient update if any gradient contains NaN
+        has_nan = tf.reduce_any([tf.reduce_any(tf.math.is_nan(g)) for g in clipped_grads if g is not None])
+        
+        # Only apply gradients if they're valid
+        def apply_valid_gradients():
+            self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
+            
+        def skip_gradients():
+            tf.print("Skipping gradient update due to NaN gradients")
+            
+        tf.cond(has_nan, skip_gradients, apply_valid_gradients)
+        
         
         # Optional: Uncomment for debugging loss components
         # tf.print("Loss components - total:", total_loss, 
