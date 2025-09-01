@@ -55,10 +55,13 @@ class BetaVAE(keras.Model):
     @tf.function
     def compute_dissimilarity_loss(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
         """Compute dissimilarity loss for encouraging separation (numerically stable)"""
-        similarity = self.compute_similarity_loss(a, b)
-        # Use negative log for numerical stability instead of 1/x
-        # This encourages larger distances without numerical explosion
-        return -tf.math.log(similarity + 1e-8)
+        diff = a - b
+        diff = tf.clip_by_value(diff, -5.0, 5.0)  # Tighter clipping
+        distance = tf.norm(diff, axis=1)
+        distance = tf.clip_by_value(distance, 1e-6, 5.0)  # Tighter bounds
+        mean_distance = tf.reduce_mean(distance)
+        # Use negative log with better numerical stability
+        return -tf.math.log(tf.maximum(mean_distance, 1e-6))
     
     @tf.function
     def compute_clustering_loss_true(self, latent_vectors: List[tf.Tensor]) -> tf.Tensor:
@@ -199,25 +202,29 @@ class BetaVAE(keras.Model):
             reconstruction = tf.squeeze(reconstruction, axis=-1)  # Remove channel
             reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
             
-            # Reconstruction loss - use MSE for stability with normalized spectrograms
-            # Apply sigmoid to reconstruction to ensure [0,1] range if needed
-            # Clamp reconstruction to prevent numerical instability
-            reconstruction_clamped = tf.clip_by_value(reconstruction, -10.0, 10.0)
+            # Reconstruction loss with enhanced stability
+            # Clamp reconstruction to reasonable bounds before sigmoid
+            reconstruction_clamped = tf.clip_by_value(reconstruction, -5.0, 5.0)  # Tighter clipping
             reconstruction_sigmoid = tf.sigmoid(reconstruction_clamped)
-            reconstruction_loss = tf.reduce_mean(tf.square(target - reconstruction_sigmoid))
             
-            # Additional safety check for reconstruction loss
-            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 1e6)
+            # Use Huber loss for better robustness to outliers
+            diff = target - reconstruction_sigmoid
+            reconstruction_loss = tf.reduce_mean(tf.keras.losses.huber(target, reconstruction_sigmoid, delta=0.1))
             
-            # KL divergence loss with aggressive numerical stability
-            # Much more aggressive clamping to prevent any explosion
-            z_mean_clamped = tf.clip_by_value(z_mean, -5.0, 5.0)
-            z_log_var_clamped = tf.clip_by_value(z_log_var, -10.0, 2.0)
-            kl_loss = -0.5 * (1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped))
-            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+            # Safety bounds for reconstruction loss
+            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 10.0)
             
-            # Additional safety check for KL loss - aggressive bounds
-            kl_loss = tf.clip_by_value(kl_loss, -50.0, 50.0)
+            # KL divergence loss with enhanced numerical stability
+            # More conservative clamping to prevent any explosion
+            z_mean_clamped = tf.clip_by_value(z_mean, -3.0, 3.0)  # Tighter bounds
+            z_log_var_clamped = tf.clip_by_value(z_log_var, -6.0, 1.0)  # Much tighter variance bounds
+            
+            # Compute KL divergence with stability checks
+            kl_per_dim = -0.5 * (1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped))
+            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_per_dim, axis=1))
+            
+            # Final safety bounds for KL loss
+            kl_loss = tf.clip_by_value(kl_loss, 0.0, 10.0)
             
             # Clustering loss computation
             clustering_loss = 0.0
@@ -263,29 +270,34 @@ class BetaVAE(keras.Model):
                 true_clustering_loss = self.compute_clustering_loss_true(true_latents)
                 false_clustering_loss = self.compute_clustering_loss_false(false_latents)
                 
-                # Clip individual clustering losses to prevent explosion
-                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 100.0)
-                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 100.0)
+                # Clip individual clustering losses with tighter bounds
+                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 20.0)  # Much tighter
+                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 20.0)  # Much tighter
                 
                 clustering_loss = true_clustering_loss + false_clustering_loss
                 
                 # Final safety check for total clustering loss
-                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 200.0)
+                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 40.0)
             
             # Total loss (Equation 6 from paper)
             total_loss = (reconstruction_loss + 
                          self.beta * kl_loss +
                          self.alpha * clustering_loss)
         
-        # Update weights with gradient clipping for stability
+        # Update weights with enhanced gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
         
-        # Clip gradients to prevent explosion and handle NaN/Inf
-        # TensorFlow's clip_by_global_norm handles NaN gradients automatically
-        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 1.0)
+        # Check for NaN gradients before clipping
+        grad_has_nan = tf.reduce_any([tf.reduce_any(tf.math.is_nan(g)) for g in grads if g is not None])
+        grad_has_inf = tf.reduce_any([tf.reduce_any(tf.math.is_inf(g)) for g in grads if g is not None])
         
-        # Apply gradients (TensorFlow will handle NaN gradients internally)
-        self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
+        # If gradients are clean, apply them with conservative clipping
+        if not grad_has_nan and not grad_has_inf:
+            clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.5)  # More conservative clipping
+            self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
+        else:
+            # Skip this update if gradients are corrupted
+            tf.print("Warning: Skipping gradient update due to NaN/Inf gradients")
         
         # Optional: Uncomment for debugging loss components
         # tf.print("Loss components - total:", total_loss, 

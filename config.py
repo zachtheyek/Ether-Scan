@@ -13,10 +13,10 @@ class ModelConfig:
     latent_dim: int = 8
     dense_layer_size: int = 512
     kernel_size: Tuple[int, int] = (3, 3)
-    alpha: float = 10.0  # Clustering loss weight
-    beta: float = 1.5   # KL divergence weight
+    alpha: float = 1.0   # Reduced clustering loss weight for stability
+    beta: float = 0.5    # Reduced KL divergence weight for stability
     gamma: float = 0.0   # Additional loss weight
-    learning_rate: float = 0.001
+    learning_rate: float = 0.0001  # More conservative learning rate
     
 @dataclass
 class DataConfig:

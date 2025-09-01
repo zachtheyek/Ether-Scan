@@ -58,12 +58,15 @@ class TrainingPipeline:
             scaled_lr = config.model.learning_rate  # No scaling for now
             logger.info(f"Using conservative learning rate: {scaled_lr} (no distributed scaling for stability)")
             
-            # Recompile with scaled learning rate and stability improvements
+            # Recompile with scaled learning rate and enhanced stability
             self.vae.compile(
                 optimizer=tf.keras.optimizers.Adam(
-                    learning_rate=scaled_lr,
-                    clipnorm=1.0,  # Gradient clipping for stability
-                    epsilon=1e-7   # Increased epsilon for numerical stability
+                    learning_rate=scaled_lr * 0.1,  # Much more conservative learning rate
+                    clipnorm=0.5,   # More aggressive gradient clipping
+                    epsilon=1e-8,   # Standard epsilon
+                    beta_1=0.9,     # Standard momentum
+                    beta_2=0.999,   # Standard second moment decay
+                    amsgrad=True    # Use AMSGrad variant for better convergence
                 )
             )
             logger.info("VAE model created and compiled for distributed training")
@@ -282,14 +285,19 @@ class TrainingPipeline:
                 )
             )
             
-        # Early stopping to prevent overfitting
+        # Early stopping with NaN detection
         callbacks.append(
             tf.keras.callbacks.EarlyStopping(
                 monitor='val_loss',
-                patience=10,
+                patience=15,  # More patience for conservative learning rate
                 restore_best_weights=True,
                 verbose=1
             )
+        )
+        
+        # Add NaN termination callback
+        callbacks.append(
+            tf.keras.callbacks.TerminateOnNaN()
         )
         
         # Calculate steps for repeating datasets
