@@ -287,17 +287,11 @@ class BetaVAE(keras.Model):
         # Update weights with enhanced gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
         
-        # Check for NaN gradients before clipping
-        grad_has_nan = tf.reduce_any([tf.reduce_any(tf.math.is_nan(g)) for g in grads if g is not None])
-        grad_has_inf = tf.reduce_any([tf.reduce_any(tf.math.is_inf(g)) for g in grads if g is not None])
+        # Apply conservative gradient clipping - TensorFlow handles NaN internally
+        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.5)  # More conservative clipping
         
-        # If gradients are clean, apply them with conservative clipping
-        if not grad_has_nan and not grad_has_inf:
-            clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.5)  # More conservative clipping
-            self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
-        else:
-            # Skip this update if gradients are corrupted
-            tf.print("Warning: Skipping gradient update due to NaN/Inf gradients")
+        # Apply gradients - TensorFlow's optimizer will automatically skip NaN gradients
+        self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
         
         # Optional: Uncomment for debugging loss components
         # tf.print("Loss components - total:", total_loss, 
