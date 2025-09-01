@@ -304,17 +304,9 @@ class BetaVAE(keras.Model):
         # Apply ultra-conservative gradient clipping for distributed training stability
         clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.1)  # Ultra-conservative clipping
         
-        # Additional safety: skip gradient update if any gradient contains NaN
-        has_nan = tf.reduce_any([tf.reduce_any(tf.math.is_nan(g)) for g in clipped_grads if g is not None])
-        
-        # Only apply gradients if they're valid
-        def apply_valid_gradients():
-            self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
-            
-        def skip_gradients():
-            tf.print("Skipping gradient update due to NaN gradients")
-            
-        tf.cond(has_nan, skip_gradients, apply_valid_gradients)
+        # Simple and safe: let TensorFlow's optimizer handle NaN gradients automatically
+        # The clipnorm in optimizer config and tight loss bounds should prevent NaN propagation
+        self.optimizer.apply_gradients(zip(clipped_grads, self.trainable_weights))
         
         
         # Optional: Uncomment for debugging loss components

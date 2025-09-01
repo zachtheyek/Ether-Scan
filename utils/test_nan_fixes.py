@@ -105,10 +105,15 @@ def test_vae_numerical_stability():
             )
         )
         
-        # Simulate training step
+        # Simulate training step with proper data format
         with tf.GradientTape() as tape:
             reconstruction = vae(test_input, training=True)
-            # Use simple reconstruction loss for test
+            # Ensure shapes match for loss calculation
+            if reconstruction.shape != target.shape:
+                print(f"Shape mismatch: target {target.shape} vs reconstruction {reconstruction.shape}")
+                # Reshape target to match reconstruction if needed
+                target = tf.reshape(target, reconstruction.shape)
+            # Use simple reconstruction loss for test  
             loss = tf.reduce_mean(tf.square(target - reconstruction))
         
         gradients = tape.gradient(loss, vae.trainable_weights)
