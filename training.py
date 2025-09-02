@@ -47,6 +47,11 @@ class TrainingPipeline:
         logger.info(f"Background data shape: {background_data.shape}")
         logger.info("Creating DataGenerator...")
         self.data_generator = DataGenerator(config, background_data)
+
+        # NOTE: not sure if this is the right place for normalization assertions. leave in for now
+        assert np.all(np.isfinite(self.background_data)), "Background contains NaN/Inf"
+        assert np.max(self.background_data) <= 1.0, "Background not normalized"
+        assert np.min(self.background_data) >= 0.0, "Background not normalized"
         
         # Create models within strategy scope for distributed training
         with self.strategy.scope():
@@ -58,15 +63,18 @@ class TrainingPipeline:
             scaled_lr = config.model.learning_rate  # No scaling for now
             logger.info(f"Using conservative learning rate: {scaled_lr} (no distributed scaling for stability)")
             
-            # Recompile with ultra-conservative parameters for distributed training stability
+            # NOTE: note sure if this is needed. leave in for now
+            # Start with lower learning rate, then increase
             self.vae.compile(
                 optimizer=tf.keras.optimizers.Adam(
-                    learning_rate=scaled_lr * 0.01,  # Ultra-conservative learning rate for distributed training
-                    clipnorm=0.1,   # Ultra-aggressive gradient clipping to match VAE model
-                    epsilon=1e-7,   # Slightly larger epsilon for numerical stability
-                    beta_1=0.8,     # Lower momentum to reduce accumulation of unstable gradients
-                    beta_2=0.99,    # Lower second moment decay for stability
-                    amsgrad=True    # Use AMSGrad variant for better convergence
+                    learning_rate=tf.keras.optimizers.schedules.ExponentialDecay(
+                        initial_learning_rate=1e-5,  # Start very low
+                        decay_steps=1000,
+                        decay_rate=0.9,
+                        staircase=True
+                    ),
+                    clipnorm=1.0,  # Less aggressive than 0.1
+                    epsilon=1e-7
                 )
             )
             logger.info("VAE model created and compiled for distributed training")

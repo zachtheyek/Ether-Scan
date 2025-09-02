@@ -288,42 +288,12 @@ def create_mixed_training_batch(generator: DataGenerator,
                 start_freq=rfi_start_freq,
                 width=rfi_width
             )[0]  # inject_signal returns (data, slope, intercept), we only need data
-    
-    
-    # Apply log normalization to all data after signal injection
-    # This is critical for numerical stability 
-    from preprocessing import normalize_log
-    import logging
-    
-    logger = logging.getLogger(__name__)
-    
-    # Normalize each cadence in each data type
-    for i in range(n_each):
-        for obs_idx in range(6):
-            # Store original stats for debugging
-            orig_none_min, orig_none_max = none_data[i, obs_idx].min(), none_data[i, obs_idx].max()
-            
-            none_data[i, obs_idx] = normalize_log(none_data[i, obs_idx])
-            true_data[i, obs_idx] = normalize_log(true_data[i, obs_idx])
-            mixed_data[i, obs_idx] = normalize_log(mixed_data[i, obs_idx])
-            false_data[i, obs_idx] = normalize_log(false_data[i, obs_idx])
-            
-            # Check for normalization issues on first sample only
-            if i == 0 and obs_idx == 0:
-                norm_min, norm_max = none_data[i, obs_idx].min(), none_data[i, obs_idx].max()
-                logger.debug(f"Normalization: orig range [{orig_none_min:.2e}, {orig_none_max:.2e}] -> [{norm_min:.4f}, {norm_max:.4f}]")
-    
+
     # Concatenate for main input
     concatenated = np.concatenate([none_data, true_data, mixed_data, false_data], axis=0)
     
-    # Additional true/false for clustering loss - also need normalization
+    # Additional true/false for clustering loss
     true_clustering = generator.generate_batch(batch_size, "true")
     false_clustering = generator.generate_batch(batch_size, "false")
-    
-    # Apply log normalization to clustering data too
-    for i in range(batch_size):
-        for obs_idx in range(6):
-            true_clustering[i, obs_idx] = normalize_log(true_clustering[i, obs_idx])
-            false_clustering[i, obs_idx] = normalize_log(false_clustering[i, obs_idx])
     
     return concatenated, true_clustering, false_clustering

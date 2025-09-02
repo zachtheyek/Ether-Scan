@@ -12,9 +12,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def normalize_log(data: np.ndarray) -> np.ndarray:
+def normalize_log(data: np.ndarray, already_normalized: bool = False) -> np.ndarray:
     """
-    Apply log normalization to data as per paper with enhanced numerical stability
+    Apply log normalization to data as per paper with safety checks
     
     Args:
         data: Input array
@@ -22,48 +22,32 @@ def normalize_log(data: np.ndarray) -> np.ndarray:
     Returns:
         Normalized array between 0 and 1 (guaranteed float32)
     """
+    if already_normalized:
+        return data # Skip if already normalized 
+
     # Convert to float32 for consistent precision
     data = data.astype(np.float32)
-    
-    # Robust handling of negative values and zeros
+
+    # NOTE: not sure if this is needed. leave in for now
+    # Handle the massive raw values from verify_data.log
+    if np.max(data) > 1e6:  # Likely raw telescope data
+        # Scale down first to reasonable range
+        data = data / np.median(data)
+
+    # Ensure positive values
     data_min = np.min(data)
     if data_min <= 0:
-        # Shift data to be strictly positive
         data = data - data_min + 1e-8
     
-    # Add small epsilon to ensure strictly positive values
-    data_safe = data + 1e-8
+    # Single log transform
+    data_log = np.log(data + 1e-8)
     
-    # Apply log transformation with better numerical stability  
-    data_log = np.log(data_safe)
-    
-    # Robust min-max normalization
-    log_min = np.min(data_log)
-    log_max = np.max(data_log)
-    log_range = log_max - log_min
-    
-    if log_range > 1e-10:  # Avoid division by very small numbers
-        data_normalized = (data_log - log_min) / log_range
+    # Normalize to [0, 1]
+    log_min, log_max = np.min(data_log), np.max(data_log)
+    if (log_max - log_min) > 1e-10:
+        return (data_log - log_min) / (log_max - log_min)
     else:
-        # If range is too small, return uniform values
-        data_normalized = np.full_like(data_log, 0.5, dtype=np.float32)
-    
-    # Final clipping and type enforcement
-    data_normalized = np.clip(data_normalized, 0.0, 1.0).astype(np.float32)
-    
-    # Safety check for NaN/Inf values
-    if np.any(np.isnan(data_normalized)) or np.any(np.isinf(data_normalized)):
-        logger.warning("NaN/Inf detected in normalize_log, using fallback normalization")
-        # Fallback: simple min-max on original data
-        orig_min = np.min(data)
-        orig_max = np.max(data)
-        orig_range = orig_max - orig_min
-        if orig_range > 1e-10:
-            return ((data - orig_min) / orig_range).astype(np.float32)
-        else:
-            return np.full_like(data, 0.5, dtype=np.float32)
-    
-    return data_normalized
+        return np.ones_like(data) * 0.5
 
 # Removed @jit decorator to avoid Numba warnings and improve stability
 def shape_observation_data(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:

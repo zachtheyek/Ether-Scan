@@ -54,16 +54,14 @@ class BetaVAE(keras.Model):
     
     @tf.function
     def compute_dissimilarity_loss(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
-        """Compute dissimilarity loss for encouraging separation (numerically stable)"""
+        """Compute dissimilarity loss for encouraging separation"""
         diff = a - b
-        diff = tf.clip_by_value(diff, -3.0, 3.0)  # Much tighter clipping
+        diff = tf.clip_by_value(diff, -5.0, 5.0)
         distance = tf.norm(diff, axis=1)
-        distance = tf.clip_by_value(distance, 0.1, 3.0)  # Avoid small distances that explode in log
+        # Add epsilon for numerical stability BEFORE log
+        distance = tf.maximum(distance, 1e-6)
         mean_distance = tf.reduce_mean(distance)
-        # Use much safer formulation: instead of -log(d), use 1/(1+d) which is bounded
-        # This encourages larger distances without the explosive behavior of negative log
-        safe_dissimilarity = 1.0 / (1.0 + mean_distance)
-        return tf.clip_by_value(safe_dissimilarity, 0.0, 1.0)
+        return -tf.math.log(mean_distance + 1e-8)
     
     @tf.function
     def compute_clustering_loss_true(self, latent_vectors: List[tf.Tensor]) -> tf.Tensor:
@@ -181,6 +179,10 @@ class BetaVAE(keras.Model):
                                     message="Expected 16 time bins")
             tf.debugging.assert_equal(input_shape[3], 512, 
                                     message="Expected 512 frequency bins")
+
+            # Debug: Assert no NaN/Inf values
+            tf.debugging.assert_all_finite(concatenated_input, "Input contains NaN/Inf")
+            tf.debugging.assert_all_finite(target, "Target contains NaN/Inf")
             
             # Reshape to (batch*6, 16, 512) and add channel dimension for encoder
             encoder_input = tf.reshape(concatenated_input, (batch_size * 6, 16, 512))
