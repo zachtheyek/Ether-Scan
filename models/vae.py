@@ -205,34 +205,22 @@ class BetaVAE(keras.Model):
             # Remove channel dimension and reshape back to (batch, 6, 16, 512)
             reconstruction = tf.squeeze(reconstruction, axis=-1)  # Remove channel
             reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
-            
-            # Reconstruction loss with EMERGENCY stability measures
-            # Much more aggressive clamping
-            reconstruction_clamped = tf.clip_by_value(reconstruction, -2.0, 2.0)  # Emergency tight
-            reconstruction_sigmoid = tf.sigmoid(reconstruction_clamped)
-            
-            # Use simpler MSE loss to eliminate any Huber complexity
-            reconstruction_loss = tf.reduce_mean(tf.square(target - reconstruction_sigmoid))
-            
-            # EMERGENCY: Ultra-tight bounds for reconstruction loss
-            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 1.0)  # Emergency bound
-            
-            # KL divergence loss with ultra-conservative numerical stability
-            # Extremely tight clamping to prevent any explosion in distributed training
-            z_mean_clamped = tf.clip_by_value(z_mean, -2.0, 2.0)  # Very tight bounds
-            z_log_var_clamped = tf.clip_by_value(z_log_var, -4.0, 0.0)  # Ultra-tight variance bounds
-            
-            # Compute KL divergence with enhanced stability checks
-            # Clamp intermediate computations to prevent overflow
-            z_mean_sq = tf.clip_by_value(tf.square(z_mean_clamped), 0.0, 4.0)
-            z_exp = tf.clip_by_value(tf.exp(z_log_var_clamped), 1e-6, 1.0)
-            
-            kl_per_dim = -0.5 * (1 + z_log_var_clamped - z_mean_sq - z_exp)
-            kl_per_dim = tf.clip_by_value(kl_per_dim, 0.0, 5.0)  # Clamp per-dimension KL
-            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_per_dim, axis=1))
-            
-            # Final safety bounds for KL loss
-            kl_loss = tf.clip_by_value(kl_loss, 0.0, 5.0)  # Much tighter upper bound
+
+            # Reconstruction loss - using Huber as per standard VAE practice
+            reconstruction_loss = tf.keras.losses.Huber()(target, reconstruction)
+            reconstruction_loss = tf.clip_by_value(reconstruction_loss, 0.0, 10.0)
+
+            # KL divergence with reasonable bounds
+            z_mean_clamped = tf.clip_by_value(z_mean, -5.0, 5.0)  
+            z_log_var_clamped = tf.clip_by_value(z_log_var, -10.0, 2.0)
+
+            # Compute KL divergence
+            kl_loss = -0.5 * tf.reduce_sum(
+                1 + z_log_var_clamped - tf.square(z_mean_clamped) - tf.exp(z_log_var_clamped),
+                axis=1
+            )
+            kl_loss = tf.reduce_mean(kl_loss)
+            kl_loss = tf.clip_by_value(kl_loss, 0.0, 100.0)  # Reasonable upper bound
             
             # Clustering loss computation
             clustering_loss = 0.0
@@ -279,23 +267,19 @@ class BetaVAE(keras.Model):
                 false_clustering_loss = self.compute_clustering_loss_false(false_latents)
                 
                 # EMERGENCY: Ultra-aggressive bounds to prevent any explosion
-                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 1.0)  # Emergency tight
-                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 1.0)  # Emergency tight
+                true_clustering_loss = tf.clip_by_value(true_clustering_loss, 0.0, 5.0)  # Emergency tight
+                false_clustering_loss = tf.clip_by_value(false_clustering_loss, 0.0, 5.0) # Emergency tight
                 
                 clustering_loss = true_clustering_loss + false_clustering_loss
                 
                 # Final emergency bounds for total clustering loss
-                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 2.0)  # Emergency tight
-            
-            # Total loss (Equation 6 from paper) with ultra-aggressive bounds
-            # Apply bounds to weighted terms BEFORE summing to prevent explosion
-            weighted_kl = tf.clip_by_value(self.beta * kl_loss, 0.0, 1.0)  # Emergency tight
-            weighted_clustering = tf.clip_by_value(self.alpha * clustering_loss, 0.0, 1.0)  # Emergency tight
-            
-            total_loss = reconstruction_loss + weighted_kl + weighted_clustering
-            
-            # EMERGENCY: Ultra-tight total loss bounds BEFORE gradient computation
-            total_loss = tf.clip_by_value(total_loss, 1e-6, 3.0)  # Emergency tight
+                clustering_loss = tf.clip_by_value(clustering_loss, 0.0, 10.0)  # Emergency tight
+
+            # Total loss (Equation 6 from paper) with distributed training safety
+            total_loss = (reconstruction_loss + 
+                         self.beta * kl_loss +
+                         self.alpha * clustering_loss)
+            total_loss = tf.clip_by_value(total_loss, 0.0, 100.0)
             
             # Additional safety: replace any non-finite values immediately
             total_loss = tf.where(tf.math.is_finite(total_loss), total_loss, 1e-3)
@@ -309,7 +293,7 @@ class BetaVAE(keras.Model):
         grads = tape.gradient(total_loss, self.trainable_weights)
         
         # Apply ultra-conservative gradient clipping for distributed training stability
-        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 0.1)  # Ultra-conservative clipping
+        clipped_grads, global_norm = tf.clip_by_global_norm(grads, 1.0)
         
         # Simple and safe: let TensorFlow's optimizer handle NaN gradients automatically
         # The clipnorm in optimizer config and tight loss bounds should prevent NaN propagation
@@ -399,7 +383,7 @@ def build_decoder(latent_dim: int = 8,
     """
     Build decoder network - EXACT MIRROR of encoder for proper VAE architecture
     
-    Encoder path: (16,512,1) → (8,256,16) → (4,128,32) → (2,64,64) → (1,32,128) → flatten → dense
+    Encoder path: (16,512,1) → (8,256,16) → (8,256,16) → (4,128,32) → (4,128,32) → (4,128,32) → (2,64,64) → (2,64,64) → (2,64,128) → (1,32,256) → flatten → dense
     Decoder path: dense → (1,32,128) → (2,64,64) → (4,128,32) → (8,256,16) → (16,512,1)
     """
     
@@ -411,19 +395,17 @@ def build_decoder(latent_dim: int = 8,
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(latent_inputs)
     
-    # Calculate the size after encoder: 4 stride-2 convolutions: (16,512) → (1,32)
-    # Last encoder conv layer has 256 filters, so we need 1*32*256
+    # After encoder, we have (1, 32, 256) before flattening
     x = layers.Dense(1 * 32 * 256, activation="relu",
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(x)
     
-    # Reshape to match encoder output before flattening: (1, 32, 256)
     x = layers.Reshape((1, 32, 256))(x)
     
     # Transposed convolutional layers - EXACT REVERSE of encoder
-    # Encoder: Conv2D(256, stride=2) was the last, so decoder starts with ConvTranspose(128, stride=2)
-    x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=2, padding="same")(x)  # → (2, 64, 128)
+    x = layers.Conv2DTranspose(256, kernel_size, activation="relu", strides=2, padding="same")(x)  # → (2, 64, 256)
+    x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=1, padding="same")(x)  # → (2, 64, 128) 
     x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (2, 64, 64)
     x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=2, padding="same")(x)   # → (4, 128, 64)
     x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same")(x)   # → (4, 128, 32)

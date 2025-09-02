@@ -187,12 +187,6 @@ class DataGenerator:
                             self.config.inference.max_drift_rate)
             )
             
-            # Apply log normalization to each observation in the cadence
-            # This is critical for numerical stability with large raw values
-            from preprocessing import normalize_log
-            for obs_idx in range(6):
-                batch[i, obs_idx] = normalize_log(batch[i, obs_idx])
-        
         return batch
     
     def generate_training_set(self) -> Dict[str, np.ndarray]:

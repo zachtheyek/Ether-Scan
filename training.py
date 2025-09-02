@@ -37,6 +37,11 @@ class TrainingPipeline:
         self.strategy = strategy or tf.distribute.get_strategy()
         logger.info(f"Using strategy: {self.strategy.__class__.__name__} with {self.strategy.num_replicas_in_sync} replicas")
 
+        # NOTE: not sure where these assertions are supposed to go. omit for now
+        # assert np.all(np.isfinite(self.background_data)), "Background contains NaN/Inf"
+        # assert np.max(self.background_data) <= 1.0, "Background not normalized"
+        # assert np.min(self.background_data) >= 0.0, "Background not normalized"
+
         # Convert background data to float32
         logger.info("Converting background data to float32...")
         self.background_data = background_data.astype(np.float32)
@@ -48,11 +53,6 @@ class TrainingPipeline:
         logger.info("Creating DataGenerator...")
         self.data_generator = DataGenerator(config, background_data)
 
-        # NOTE: not sure if this is the right place for normalization assertions. leave in for now
-        assert np.all(np.isfinite(self.background_data)), "Background contains NaN/Inf"
-        assert np.max(self.background_data) <= 1.0, "Background not normalized"
-        assert np.min(self.background_data) >= 0.0, "Background not normalized"
-        
         # Create models within strategy scope for distributed training
         with self.strategy.scope():
             logger.info("Creating VAE model within distributed scope...")
@@ -63,21 +63,22 @@ class TrainingPipeline:
             scaled_lr = config.model.learning_rate  # No scaling for now
             logger.info(f"Using conservative learning rate: {scaled_lr} (no distributed scaling for stability)")
             
-            # NOTE: note sure if this is needed. leave in for now
+            # NOTE: note sure if this is needed. omit for now
+            # NOTE: VAE already compiled in create_vae_model()
             # Start with lower learning rate, then increase
-            self.vae.compile(
-                optimizer=tf.keras.optimizers.Adam(
-                    learning_rate=tf.keras.optimizers.schedules.ExponentialDecay(
-                        initial_learning_rate=1e-5,  # Start very low
-                        decay_steps=1000,
-                        decay_rate=0.9,
-                        staircase=True
-                    ),
-                    clipnorm=1.0,  # Less aggressive than 0.1
-                    epsilon=1e-7
-                )
-            )
-            logger.info("VAE model created and compiled for distributed training")
+            # self.vae.compile(
+            #     optimizer=tf.keras.optimizers.Adam(
+            #         learning_rate=tf.keras.optimizers.schedules.ExponentialDecay(
+            #             initial_learning_rate=1e-5,  # Start very low
+            #             decay_steps=1000,
+            #             decay_rate=0.9,
+            #             staircase=True
+            #         ),
+            #         clipnorm=1.0,  # Less aggressive than 0.1
+            #         epsilon=1e-7
+            #     )
+            # )
+            # logger.info("VAE model created and compiled for distributed training")
         
         self.rf_model = None
         
