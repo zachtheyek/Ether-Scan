@@ -284,10 +284,10 @@ class BetaVAE(keras.Model):
             # Additional safety: replace any non-finite values immediately
             total_loss = tf.where(tf.math.is_finite(total_loss), total_loss, 1e-3)
             
-            # EMERGENCY DEBUG: Print loss components to diagnose explosion
-            tf.print("DEBUG - recon:", reconstruction_loss, "kl:", kl_loss, "clust:", clustering_loss, 
-                    "weighted_kl:", weighted_kl, "weighted_clust:", weighted_clustering, 
-                    "total:", total_loss, summarize=-1)
+            # # EMERGENCY DEBUG: Print loss components to diagnose explosion
+            # tf.print("DEBUG - recon:", reconstruction_loss, "kl:", kl_loss, "clust:", clustering_loss, 
+            #         "weighted_kl:", weighted_kl, "weighted_clust:", weighted_clustering, 
+            #         "total:", total_loss, summarize=-1)
         
         # Update weights with enhanced gradient clipping for stability
         grads = tape.gradient(total_loss, self.trainable_weights)
