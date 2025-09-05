@@ -33,7 +33,7 @@ def pre_proc(data: np.ndarray) -> np.ndarray:
         data = data / data.max()
     return data
 
-@jit(parallel=True)
+@jit(nopython=True, parallel=True)
 def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
     """
     Reshape raw observation data into snippets
@@ -64,7 +64,7 @@ def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
     
     return new_data
 
-@jit(parallel=True)
+@jit(nopython=True, parallel=True)
 def combine_cadence(A1, A2, A3, B, C, D) -> np.ndarray:
     """
     Combine 6 observations into cadence array and normalize
@@ -119,7 +119,7 @@ def resize_par(data: np.ndarray, factor: int) -> np.ndarray:
     
     return test
 
-@jit(parallel=True)
+@jit(nopython=True, parallel=True)
 def combine_for_nn(data: np.ndarray) -> np.ndarray:
     """
     Combine batch and observation dimensions for neural network input

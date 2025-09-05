@@ -49,7 +49,8 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
         df=2.7939677238464355*u.Hz,
         dt=18.25361108*u.s,
         fch1=0*u.MHz,
-        data=data
+        data=data,
+        ascending=True
     )
     
     signal = frame.add_signal(
@@ -183,7 +184,7 @@ def create_false(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10
     
     return total
 
-@jit(parallel=True)
+@jit(nopython=True, parallel=True)
 def create_full_cadence(function, samples: int, plate: np.ndarray, 
                         snr_base: float = 300, snr_range: float = 10,
                         factor: float = 1, width_bin: int = 512) -> np.ndarray:
@@ -235,10 +236,11 @@ class DataGenerator:
         self.n_backgrounds = len(background_plates)
         
         # Pre-compute width_bin from config
-        self.width_bin = config.data.width_bin // config.data.downsample_factor  # 512
+        self.width_bin = config.data.width_bin 
         
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
+        logger.info(f"Using full width_bin: {self.width_bin} (will downsample later)")
         
     def generate_training_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """

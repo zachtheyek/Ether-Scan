@@ -53,18 +53,17 @@ def setup_gpu_config():
 
 def load_background_data(config: Config) -> np.ndarray:
     """
-    Load and preprocess background observation data
-    Paper: Uses 14,711 background snippets from 3 cadences
+    Load background observation data at FULL 4096 resolution
+    This matches the original author's approach exactly
     
     Args:
         config: Configuration object with file specifications
         
     Returns:
-        Preprocessed background data (n_backgrounds, 6, 16, 512)
+        Background data at FULL resolution (n_backgrounds, 6, 16, 4096)
     """
     logger.info(f"Loading background data from {config.data_path}")
     
-    preprocessor = DataPreprocessor(config)
     all_backgrounds = []
     
     for filename in config.data.training_files:
@@ -81,7 +80,7 @@ def load_background_data(config: Config) -> np.ndarray:
         
         # Load data using memory mapping to avoid OOM
         try:
-            # Load raw data - expected shape: (n_cadences, 6, 16, total_freq_channels)
+            # Load raw data - expected shape: (n_cadences, 6, 16, 4096)
             raw_data = np.load(filepath, mmap_mode='r')
             
             # Apply subset if specified
@@ -90,54 +89,29 @@ def load_background_data(config: Config) -> np.ndarray:
             
             logger.info(f"  Raw data shape: {raw_data.shape}")
             
-            # Process each cadence
+            # Verify we have 4096 frequency bins (author's approach)
+            if raw_data.shape[-1] != 4096:
+                logger.warning(f"  Expected 4096 frequency bins, got {raw_data.shape[-1]}")
+            
+            # Store each cadence at FULL resolution - NO preprocessing here
             n_cadences = raw_data.shape[0]
             for cadence_idx in range(n_cadences):
-                cadence = raw_data[cadence_idx]  # Shape: (6, 16, total_freq)
+                cadence = raw_data[cadence_idx]  # Shape: (6, 16, 4096)
 
-                # Time gap filtering check
-                # TODO: Implement when metadata with observation timestamps is available
-                # For now, add a warning that we're not filtering time gaps
-                if cadence_idx == 0:  # Only log once per file
-                    logger.warning("Time gap filtering not implemented - assuming all cadences have <2min gaps between observations")
-                # Future implementation when metadata available:
-                # if observation_time_gaps and max(observation_time_gaps) >= 120:
-                #     logger.info(f"Skipping cadence {cadence_idx} with {max(observation_time_gaps)}s gap")
-                #     continue
-                
-                # Check if we need to reshape (add polarization dimension if missing)
-                if len(cadence.shape) == 3 and cadence.shape[0] == 6:
-                    # Shape is (6, 16, freq) - need to add polarization
-                    # Assume single polarization, add dummy dimension
-                    observations = []
-                    for obs_idx in range(6):
-                        obs = cadence[obs_idx]  # (16, freq)
-                        # Add polarization dimension: (16, 2, freq)
-                        obs_with_pol = np.zeros((16, 2, obs.shape[1]))
-                        obs_with_pol[:, 0, :] = obs
-                        obs_with_pol[:, 1, :] = obs  # Duplicate for second pol
-                        observations.append(obs_with_pol)
-                else:
-                    # Already has correct shape
-                    observations = [cadence[i] for i in range(6)]
-                
-                # Process cadence through preprocessor
-                # This will extract snippets and downsample
-                try:
-                    # Process cadence through preprocessor WITHOUT overlap for training
-                    # Overlap is only used during inference
-                    processed_cadence = preprocessor.preprocess_cadence(observations, use_overlap=False)
-                    # processed_cadence shape: (n_snippets, 6, 16, 512)
-                    
-                    # Add each snippet as a separate background
-                    for snippet_idx in range(processed_cadence.shape[0]):
-                        all_backgrounds.append(processed_cadence[snippet_idx])
-                    if (cadence_idx + 1) == n_cadences:
-                        logger.info(f"  Processed {cadence_idx + 1}/{n_cadences} cadences")
-                        
-                except Exception as e:
-                    logger.warning(f"  Error processing cadence {cadence_idx}: {e}")
+                # Simple validation
+                if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)):
+                    logger.warning(f"  Skipping cadence {cadence_idx} with NaN/Inf values")
                     continue
+                    
+                if np.max(cadence) <= 0:
+                    logger.warning(f"  Skipping cadence {cadence_idx} with non-positive values")
+                    continue
+                
+                # Store the full cadence at 4096 resolution - as per original author
+                all_backgrounds.append(cadence.astype(np.float32))
+                    
+                if (cadence_idx + 1) % 1000 == 0:
+                    logger.info(f"  Processed {cadence_idx + 1}/{n_cadences} cadences")
             
             # Clear memory
             del raw_data
@@ -153,7 +127,7 @@ def load_background_data(config: Config) -> np.ndarray:
     # Stack all backgrounds
     background_array = np.array(all_backgrounds, dtype=np.float32)
     
-    logger.info(f"Total background snippets loaded: {background_array.shape[0]}")
+    logger.info(f"Total background cadences loaded: {background_array.shape[0]}")
     logger.info(f"Background array shape: {background_array.shape}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
     
@@ -163,6 +137,12 @@ def load_background_data(config: Config) -> np.ndarray:
         indices = np.random.choice(background_array.shape[0], 14711, replace=False)
         background_array = background_array[indices]
     
+    # Verify final shape matches author's expectations
+    expected_shape = (background_array.shape[0], 6, 16, 4096)
+    if background_array.shape != expected_shape:
+        raise ValueError(f"Background shape {background_array.shape} != expected {expected_shape}")
+    
+    logger.info(f"✓ Background data ready at full 4096 resolution for signal generation")
     return background_array
 
 def train_command(args):
