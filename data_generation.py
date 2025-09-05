@@ -244,80 +244,103 @@ class DataGenerator:
         
     def generate_training_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """
-        Generate training batch following author's exact approach
-        
-        The author creates:
-        - 1/4 false (no signal)
-        - 1/4 true single shot
-        - 1/4 true double shot (with RFI)
-        - 1/4 false (with RFI)
-        
-        Args:
-            n_samples: Total number of samples
-            
-        Returns:
-            Dictionary with concatenated, true, and false data
+        MEMORY-EFFICIENT VERSION: Generate training batch in smaller chunks
+        Replace the existing method in DataGenerator class
         """
-        quarter = n_samples // 4
+        # CRITICAL: Reduce sample count to prevent OOM
+        max_samples_per_chunk = 1000  # Much smaller chunks
+        n_chunks = max(1, (n_samples + max_samples_per_chunk - 1) // max_samples_per_chunk)
         
-        # Generate each type
-        false_no_signal = create_full_cadence(
-            create_false, quarter, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
+        logger.info(f"Generating {n_samples} samples in {n_chunks} chunks to prevent OOM")
         
-        true_single = create_full_cadence(
-            create_true_single_shot, quarter, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
+        all_concatenated = []
+        all_true = []
+        all_false = []
         
-        true_double = create_full_cadence(
-            create_true, quarter, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            factor=1,  # Same intensity for both signals
-            width_bin=self.width_bin
-        )
+        for chunk_idx in range(n_chunks):
+            chunk_size = min(max_samples_per_chunk, n_samples - chunk_idx * max_samples_per_chunk)
+            if chunk_size <= 0:
+                break
+                
+            logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} samples")
+            
+            quarter = max(1, chunk_size // 4)
+            
+            # Generate each type for this chunk
+            false_no_signal = create_full_cadence(
+                create_false, quarter, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            true_single = create_full_cadence(
+                create_true_single_shot, quarter, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            true_double = create_full_cadence(
+                create_true, quarter, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                factor=1,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            false_with_rfi = create_full_cadence(
+                create_false, quarter, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            # Concatenate for main training data
+            chunk_concatenated = np.concatenate([
+                false_no_signal, true_single, true_double, false_with_rfi
+            ], axis=0)
+            
+            # Generate separate true/false for clustering loss
+            chunk_true = create_full_cadence(
+                create_true, chunk_size, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            chunk_false = create_full_cadence(
+                create_false, chunk_size, self.backgrounds,
+                snr_base=self.config.training.snr_base,
+                snr_range=self.config.training.snr_range,
+                width_bin=512  # CRITICAL: Use 512 not 4096
+            )
+            
+            # Store chunks
+            all_concatenated.append(chunk_concatenated.astype(np.float32))
+            all_true.append(chunk_true.astype(np.float32))
+            all_false.append(chunk_false.astype(np.float32))
+            
+            # CRITICAL: Clean up chunk data immediately
+            del false_no_signal, true_single, true_double, false_with_rfi
+            del chunk_concatenated, chunk_true, chunk_false
+            gc.collect()
+            
+            logger.info(f"Chunk {chunk_idx + 1} complete, memory cleared")
         
-        false_with_rfi = create_full_cadence(
-            create_false, quarter, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        # Concatenate for main training data
-        concatenated = np.concatenate([
-            false_no_signal,
-            true_single,
-            true_double,
-            false_with_rfi
-        ], axis=0)
-        
-        # Generate separate true/false for clustering loss
-        true_clustering = create_full_cadence(
-            create_true, n_samples, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        false_clustering = create_full_cadence(
-            create_false, n_samples, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        return {
-            'concatenated': concatenated.astype(np.float32),
-            'true': true_clustering.astype(np.float32),
-            'false': false_clustering.astype(np.float32)
+        # Combine all chunks
+        logger.info("Combining all chunks...")
+        result = {
+            'concatenated': np.concatenate(all_concatenated, axis=0),
+            'true': np.concatenate(all_true, axis=0),
+            'false': np.concatenate(all_false, axis=0)
         }
+        
+        # Final cleanup
+        del all_concatenated, all_true, all_false
+        gc.collect()
+        
+        return result
     
     def generate_test_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """Generate test batch with balanced classes"""

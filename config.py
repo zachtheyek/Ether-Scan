@@ -47,6 +47,19 @@ class DataConfig:
                 'real_filtered_LARGE_testHIP83043.npy'
             ]
 
+
+@dataclass  
+class TrainingConfig:
+    batch_size: int = 128  # REDUCED from 1000
+    validation_batch_size: int = 64  # REDUCED from 500
+    num_training_rounds: int = 20
+    epochs_per_round: int = 100
+    snr_base: int = 10
+    snr_range: int = 40
+    num_samples_train: int = 1000
+    num_samples_test: int = 500
+    num_samples_rf: int = 4000
+
 @dataclass
 class TrainingConfig:
     """Training configuration matching author's approach"""

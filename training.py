@@ -68,13 +68,7 @@ class TrainingPipeline:
     
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        Train one round following author's approach
-        
-        Args:
-            round_idx: Current round index
-            epochs: Number of epochs for this round
-            snr_base: Base SNR value
-            snr_range: SNR range
+        MEMORY-EFFICIENT VERSION: Add this to replace train_round in TrainingPipeline
         """
         logger.info(f"Training round {round_idx} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
@@ -82,13 +76,12 @@ class TrainingPipeline:
         self.config.training.snr_base = snr_base
         self.config.training.snr_range = snr_range
         
-        # Generate training data for this round
-        # Author uses large batches: 5000 samples * 3 types = 15000 total
-        n_samples = 5000
+        # CRITICAL: Reduce sample count to prevent OOM
+        n_samples = 1000  # MUCH smaller than original 5000
         
         logger.info(f"Generating {n_samples*3} training samples...")
         
-        # Generate balanced dataset
+        # Generate training data (will now use chunked generation)
         train_data = self.data_generator.generate_training_batch(n_samples * 3)
         
         # Split into train/validation (80/20)
@@ -102,6 +95,10 @@ class TrainingPipeline:
         val_true = train_data['true'][n_train:]
         val_false = train_data['false'][n_train:]
         
+        # CRITICAL: Clear original data to save memory
+        del train_data
+        gc.collect()
+        
         # Prepare data in format expected by model
         x_train = (train_concat, train_true, train_false)
         y_train = train_concat
@@ -109,8 +106,8 @@ class TrainingPipeline:
         x_val = (val_concat, val_true, val_false)
         y_val = val_concat
         
-        # Train with author's batch sizes (1000-2000)
-        batch_size = 1000
+        # CRITICAL: Use much smaller batch size
+        batch_size = 128  # REDUCED from 1000
         
         history = self.vae.fit(
             x=x_train,
@@ -118,7 +115,7 @@ class TrainingPipeline:
             batch_size=batch_size,
             epochs=epochs,
             validation_data=(x_val, y_val),
-            validation_batch_size=500,
+            validation_batch_size=64,  # Even smaller for validation
             verbose=1
         )
         
@@ -136,9 +133,10 @@ class TrainingPipeline:
         self.vae.encoder.save(checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
         
-        # Clean up memory
-        del train_data, train_concat, train_true, train_false
+        # CRITICAL: Clean up memory aggressively
+        del train_concat, train_true, train_false
         del val_concat, val_true, val_false
+        del x_train, y_train, x_val, y_val
         gc.collect()
     
     def iterative_training(self):

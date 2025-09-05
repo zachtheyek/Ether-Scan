@@ -11,6 +11,7 @@ import numpy as np
 from datetime import datetime
 import json
 import gc
+import psutil
 
 
 from config import Config
@@ -29,6 +30,15 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# NOTE: Add this to various points in main.py:
+# NOTE: logger.info(f"Memory usage: {get_memory_usage():.2f} GB")
+# NOTE: Add after each major operation:
+# NOTE: Force garbage collection: gc.collect()
+def get_memory_usage():
+    """Get current memory usage in GB"""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024 / 1024
 
 def setup_gpu_config():
     """Configure GPU memory growth and multi-GPU strategy"""
@@ -53,18 +63,13 @@ def setup_gpu_config():
 
 def load_background_data(config: Config) -> np.ndarray:
     """
-    Load background observation data at FULL 4096 resolution
-    This matches the original author's approach exactly
-    
-    Args:
-        config: Configuration object with file specifications
-        
-    Returns:
-        Background data at FULL resolution (n_backgrounds, 6, 16, 4096)
+    MEMORY-EFFICIENT VERSION: Load backgrounds at 512 resolution from start
+    Replace the existing function in main.py
     """
-    logger.info(f"Loading background data from {config.data_path}")
+    logger.info(f"Loading background data (efficient) from {config.data_path}")
     
     all_backgrounds = []
+    target_backgrounds = 5000  # REDUCED from 10,567 to save memory
     
     for filename in config.data.training_files:
         filepath = config.get_training_file_path(filename)
@@ -75,47 +80,59 @@ def load_background_data(config: Config) -> np.ndarray:
             
         logger.info(f"Processing {filename}...")
         
-        # Get subset parameters
+        # Get subset parameters  
         start, end = config.get_file_subset(filename)
         
-        # Load data using memory mapping to avoid OOM
         try:
-            # Load raw data - expected shape: (n_cadences, 6, 16, 4096)
+            # Use memory mapping to avoid loading full file
             raw_data = np.load(filepath, mmap_mode='r')
             
-            # Apply subset if specified
+            # Apply subset
             if start is not None or end is not None:
                 raw_data = raw_data[start:end]
             
             logger.info(f"  Raw data shape: {raw_data.shape}")
             
-            # Verify we have 4096 frequency bins (author's approach)
-            if raw_data.shape[-1] != 4096:
-                logger.warning(f"  Expected 4096 frequency bins, got {raw_data.shape[-1]}")
+            # CRITICAL: Process in small chunks to avoid OOM
+            chunk_size = 100  # Very small chunks
+            n_chunks = min(10, (raw_data.shape[0] + chunk_size - 1) // chunk_size)  # Limit chunks too
             
-            # Store each cadence at FULL resolution - NO preprocessing here
-            n_cadences = raw_data.shape[0]
-            for cadence_idx in range(n_cadences):
-                cadence = raw_data[cadence_idx]  # Shape: (6, 16, 4096)
-
-                # Simple validation
-                if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)):
-                    logger.warning(f"  Skipping cadence {cadence_idx} with NaN/Inf values")
-                    continue
-                    
-                if np.max(cadence) <= 0:
-                    logger.warning(f"  Skipping cadence {cadence_idx} with non-positive values")
-                    continue
+            for chunk_idx in range(n_chunks):
+                chunk_start = chunk_idx * chunk_size
+                chunk_end = min((chunk_idx + 1) * chunk_size, raw_data.shape[0])
                 
-                # Store the full cadence at 4096 resolution - as per original author
-                all_backgrounds.append(cadence.astype(np.float32))
+                # Load chunk into memory
+                chunk_data = np.array(raw_data[chunk_start:chunk_end])
+                
+                # Process each cadence in chunk
+                for cadence_idx in range(chunk_data.shape[0]):
+                    if len(all_backgrounds) >= target_backgrounds:
+                        break
+                        
+                    cadence = chunk_data[cadence_idx]  # Shape: (6, 16, 4096)
                     
-                if (cadence_idx + 1) % 1000 == 0:
-                    logger.info(f"  Processed {cadence_idx + 1}/{n_cadences} cadences")
+                    # Skip invalid cadences
+                    if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
+                        continue
+                    
+                    # CRITICAL: Downsample to 512 resolution immediately
+                    from skimage.transform import downscale_local_mean
+                    downsampled_cadence = np.zeros((6, 16, 512), dtype=np.float32)
+                    for obs_idx in range(6):
+                        downsampled_cadence[obs_idx] = downscale_local_mean(
+                            cadence[obs_idx], (1, 8)  # 4096 -> 512
+                        ).astype(np.float32)
+                    
+                    all_backgrounds.append(downsampled_cadence)
+                
+                # Clear chunk from memory
+                del chunk_data
+                gc.collect()
+                
+                if len(all_backgrounds) >= target_backgrounds:
+                    break
             
-            # Clear memory
-            del raw_data
-            gc.collect()
+            logger.info(f"  Processed {len(all_backgrounds)} cadences so far")
             
         except Exception as e:
             logger.error(f"Error loading {filename}: {e}")
@@ -130,19 +147,8 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Total background cadences loaded: {background_array.shape[0]}")
     logger.info(f"Background array shape: {background_array.shape}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
+    logger.info(f"✓ Background data ready at 512 resolution")
     
-    # Paper mentions 14,711 backgrounds - if we have more, subsample
-    if background_array.shape[0] > 14711:
-        logger.info(f"Subsampling to 14,711 backgrounds as per paper")
-        indices = np.random.choice(background_array.shape[0], 14711, replace=False)
-        background_array = background_array[indices]
-    
-    # Verify final shape matches author's expectations
-    expected_shape = (background_array.shape[0], 6, 16, 4096)
-    if background_array.shape != expected_shape:
-        raise ValueError(f"Background shape {background_array.shape} != expected {expected_shape}")
-    
-    logger.info(f"✓ Background data ready at full 4096 resolution for signal generation")
     return background_array
 
 def train_command(args):
