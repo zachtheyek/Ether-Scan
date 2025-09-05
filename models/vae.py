@@ -1,6 +1,6 @@
 """
 Beta-VAE model implementation for SETI ML Pipeline
-Fixed to match paper architecture and loss functions exactly
+Fixed to include proper call() method for model.fit() compatibility
 """
 
 import tensorflow as tf
@@ -25,7 +25,7 @@ class Sampling(layers.Layer):
 class BetaVAE(keras.Model):
     """
     Beta-VAE model with custom loss functions for SETI
-    CRITICAL: Uses author's exact loss formulations
+    FIXED: Added call() method for model.fit() compatibility
     """
     
     def __init__(self, encoder, decoder, alpha=10, beta=1.5, gamma=0, **kwargs):
@@ -43,6 +43,45 @@ class BetaVAE(keras.Model):
         self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
         self.true_loss_tracker = keras.metrics.Mean(name="true_loss")
         self.false_loss_tracker = keras.metrics.Mean(name="false_loss")
+    
+    def call(self, inputs, training=None):
+        """
+        Forward pass through the VAE
+        CRITICAL: This method was missing and caused the training failure
+        
+        Args:
+            inputs: Can be either:
+                - Single tensor: (batch, 6, 16, 512) - for inference
+                - Tuple: (main_input, true_data, false_data) - for training
+            training: Whether in training mode
+            
+        Returns:
+            Reconstructed output
+        """
+        # Handle different input formats
+        if isinstance(inputs, (tuple, list)) and len(inputs) == 3:
+            # Training format: (concatenated, true, false)
+            main_input, true_data, false_data = inputs
+        else:
+            # Inference format: single tensor
+            main_input = inputs
+        
+        # Process main input through encoder-decoder
+        batch_size = tf.shape(main_input)[0]
+        
+        # Reshape for encoder: (batch*6, 16, 512, 1)
+        encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
+        
+        # Encode
+        z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
+        
+        # Decode
+        reconstruction = self.decoder(z, training=training)
+        
+        # Reshape back to cadence format: (batch, 6, 16, 512)
+        reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
+        
+        return reconstruction
     
     @tf.function
     def loss_same(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
