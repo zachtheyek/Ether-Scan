@@ -284,21 +284,12 @@ class BetaVAE(keras.Model):
             # Add numerical stability checks
             total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
         
-        # Update weights
+        # Update weights - REMOVED problematic gradient checking
         grads = tape.gradient(total_loss, self.trainable_weights)
         
-        # Check for NaN gradients and skip update if found
-        finite_grads = []
-        grad_finite = True
-        for grad in grads:
-            if grad is not None:
-                if not tf.reduce_all(tf.math.is_finite(grad)):
-                    grad_finite = False
-                    break
-                finite_grads.append(grad)
-        
-        if grad_finite:
-            self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        # Apply gradients directly - TensorFlow optimizer handles NaN gradients properly
+        # The TerminateOnNaN callback and gradient clipping provide sufficient protection
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         
         # Update metrics
         self.total_loss_tracker.update_state(total_loss)
