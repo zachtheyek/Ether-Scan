@@ -172,7 +172,7 @@ class DataPreprocessor:
         return downsampled
     
     def preprocess_cadence(self, observations: List[np.ndarray], 
-                          use_overlap: bool = False) -> np.ndarray:
+                           use_overlap: bool = False) -> np.ndarray:
         """
         Preprocess a full cadence following author's exact method
         

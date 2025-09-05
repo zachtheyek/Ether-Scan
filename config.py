@@ -29,6 +29,23 @@ class DataConfig:
     # Frequency and time resolution from paper
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
+    
+    # Training data files (as per paper's training data)
+    training_files: List[str] = None
+    test_files: List[str] = None
+    
+    def __post_init__(self):
+        """Set default file lists"""
+        if self.training_files is None:
+            self.training_files = [
+                'real_filtered_LARGE_HIP110750.npy',
+                'real_filtered_LARGE_HIP13402.npy', 
+                'real_filtered_LARGE_HIP8497.npy'
+            ]
+        if self.test_files is None:
+            self.test_files = [
+                'real_filtered_LARGE_testHIP83043.npy'
+            ]
 
 @dataclass
 class TrainingConfig:
@@ -39,6 +56,7 @@ class TrainingConfig:
     
     # Training rounds from paper
     num_training_rounds: int = 20
+    epochs_per_round: int = 100  # Added missing attribute
     
     # SNR parameters - consistent across all rounds
     snr_base: int = 10
@@ -46,7 +64,8 @@ class TrainingConfig:
     
     # Sample counts for data generation
     num_samples_train: int = 5000  # Per type (true/false/single)
-    num_samples_rf: int = 12000   # For Random Forest training
+    num_samples_test: int = 2000   # For validation - added missing attribute
+    num_samples_rf: int = 12000    # For Random Forest training
 
 @dataclass
 class RandomForestConfig:
@@ -76,4 +95,52 @@ class Config:
         self.data_path = os.environ.get('SETI_DATA_PATH', '/datax/scratch/zachy/data/etherscan')
         self.model_path = os.environ.get('SETI_MODEL_PATH', '/datax/scratch/zachy/models/etherscan')
         self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/datax/scratch/zachy/output/etherscan')
-
+    
+    def get_training_file_path(self, filename: str) -> str:
+        """Get full path for training data file"""
+        return os.path.join(self.data_path, 'training', filename)
+    
+    def get_test_file_path(self, filename: str) -> str:
+        """Get full path for test data file"""
+        return os.path.join(self.data_path, 'testing', filename)
+    
+    def get_file_subset(self, filename: str) -> Tuple[Optional[int], Optional[int]]:
+        """Get subset parameters for a file (start, end indices)"""
+        # Define subsets for specific files to manage memory usage
+        subset_map = {
+            'real_filtered_LARGE_HIP110750.npy': (12000, 16000),  # As per original code
+            'real_filtered_LARGE_HIP13402.npy': (None, 4000),     # First 4000
+            'real_filtered_LARGE_HIP8497.npy': (None, 4000),      # First 4000
+            'real_filtered_LARGE_testHIP83043.npy': (None, None)  # Full file
+        }
+        return subset_map.get(filename, (None, None))
+    
+    def to_dict(self) -> Dict:
+        """Convert config to dictionary for serialization"""
+        return {
+            'model': {
+                'latent_dim': self.model.latent_dim,
+                'dense_layer_size': self.model.dense_layer_size,
+                'kernel_size': self.model.kernel_size,
+                'alpha': self.model.alpha,
+                'beta': self.model.beta,
+                'gamma': self.model.gamma,
+                'learning_rate': self.model.learning_rate
+            },
+            'training': {
+                'batch_size': self.training.batch_size,
+                'validation_batch_size': self.training.validation_batch_size,
+                'num_training_rounds': self.training.num_training_rounds,
+                'epochs_per_round': self.training.epochs_per_round,
+                'snr_base': self.training.snr_base,
+                'snr_range': self.training.snr_range,
+                'num_samples_train': self.training.num_samples_train,
+                'num_samples_test': self.training.num_samples_test
+            },
+            'data': {
+                'width_bin': self.data.width_bin,
+                'downsample_factor': self.data.downsample_factor,
+                'freq_resolution': self.data.freq_resolution,
+                'time_resolution': self.data.time_resolution
+            }
+        }

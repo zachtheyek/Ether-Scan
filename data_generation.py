@@ -198,6 +198,26 @@ def create_full_cadence(function, samples: int, plate: np.ndarray,
     
     return data
 
+def create_mixed_training_batch(data_generator, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create a mixed training batch for VAE training
+    Wrapper function to match training pipeline expectations
+    
+    Args:
+        data_generator: DataGenerator instance
+        batch_size: Size of batch to generate
+        
+    Returns:
+        Tuple of (concatenated, true, false) data arrays
+    """
+    batch_data = data_generator.generate_training_batch(batch_size)
+    
+    return (
+        batch_data['concatenated'],
+        batch_data['true'], 
+        batch_data['false']
+    )
+
 class DataGenerator:
     """Synthetic data generator matching author's approach"""
     
