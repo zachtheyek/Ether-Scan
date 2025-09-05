@@ -184,16 +184,16 @@ def create_false(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10
     
     return total
 
-@jit(nopython=True, parallel=True)
 def create_full_cadence(function, samples: int, plate: np.ndarray, 
                         snr_base: float = 300, snr_range: float = 10,
                         factor: float = 1, width_bin: int = 512) -> np.ndarray:
     """
     Create multiple cadences in parallel
+    Note: Cannot use @jit decorator because function arguments are not supported in nopython mode
     """
     data = np.zeros((samples, 6, 16, width_bin))
     
-    for i in prange(samples):
+    for i in range(samples):  # Changed from prange to range since no @jit
         data[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range,
                                    factor=factor, width_bin=width_bin)
     
