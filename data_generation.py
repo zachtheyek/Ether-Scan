@@ -11,6 +11,7 @@ from typing import Tuple, Optional, Dict, List
 import logging
 from random import random
 import math
+import gc
 
 logger = logging.getLogger(__name__)
 
