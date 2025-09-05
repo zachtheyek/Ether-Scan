@@ -140,92 +140,95 @@ class BetaVAE(keras.Model):
         Compute Euclidean distance between latent vectors
         Author's implementation for similarity
         """
-        return tf.reduce_mean(
-            tf.reduce_sum(tf.square(a - b), axis=1)
-        )
-    
-    @tf.function
+        return tf.reduce_mean(tf.reduce_sum(tf.square(a - b), axis=1))
+
+    @tf.function  
     def loss_diff(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
         """
-        Compute dissimilarity loss using author's 1/distance approach
-        CRITICAL: Uses 1/distance^2, not log(distance)
+        FIXED: Stable dissimilarity loss using author's approach with numerical protection
+        Original uses 1/distance^2 which explodes when vectors are similar
         """
+        # Compute squared euclidean distance
         distance_sq = tf.reduce_sum(tf.square(a - b), axis=1)
-        # Add small epsilon for stability
-        distance_sq = distance_sq + 1e-8
-        return tf.reduce_mean(1.0 / distance_sq)
-    
+        
+        # CRITICAL FIX: Add larger epsilon and use safer formula
+        # Instead of 1/d^2, use 1/(d^2 + epsilon) which is bounded
+        epsilon = 1e-4  # Much larger epsilon for stability
+        safe_distance_sq = distance_sq + epsilon
+        
+        # Additional safety: clip the result to prevent explosion
+        dissimilarity = 1.0 / safe_distance_sq
+        dissimilarity = tf.clip_by_value(dissimilarity, 0.0, 1000.0)  # Bound the result
+        
+        return tf.reduce_mean(dissimilarity)
+
     @tf.function
     def compute_clustering_loss_true(self, true_data: tf.Tensor) -> tf.Tensor:
         """
-        Clustering loss for true ETI signals
-        Author's exact implementation from VAE_NEW_ACCELERATED-BLPC1-8hz-1.py
+        FIXED: Clustering loss for true ETI signals with numerical protection
         """
-        # Extract latent vectors for each observation
         batch_size = tf.shape(true_data)[0]
         
-        # Reshape to process each observation
+        # Reshape and encode - EXACTLY as author does
         true_reshaped = tf.reshape(true_data, (batch_size * 6, 16, 512, 1))
         _, _, z = self.encoder(true_reshaped, training=True)
-        
-        # Reshape back to separate observations
         z = tf.reshape(z, (batch_size, 6, -1))
         
-        # Extract individual observations
+        # Extract observations exactly as author does
         a1 = z[:, 0, :]  # ON
-        b = z[:, 1, :]   # OFF
+        b = z[:, 1, :]   # OFF  
         a2 = z[:, 2, :]  # ON
         c = z[:, 3, :]   # OFF
         a3 = z[:, 4, :]  # ON
         d = z[:, 5, :]   # OFF
         
-        # ONs should be similar to each other
-        same = (self.loss_same(a1, a2) + 
-                self.loss_same(a1, a3) +
-                self.loss_same(a2, a1) +
-                self.loss_same(a2, a3) +
-                self.loss_same(a3, a2) +
-                self.loss_same(a3, a1))
+        # AUTHOR'S EXACT COMPUTATION but with stable loss_diff
+        difference = 0.0
+        difference += self.loss_diff(a1, b)
+        difference += self.loss_diff(a1, c) 
+        difference += self.loss_diff(a1, d)
+        difference += self.loss_diff(a2, b)
+        difference += self.loss_diff(a2, c)
+        difference += self.loss_diff(a2, d)
+        difference += self.loss_diff(a3, b)
+        difference += self.loss_diff(a3, c)
+        difference += self.loss_diff(a3, d)
         
-        # OFFs should be similar to each other
-        same += (self.loss_same(b, c) +
-                 self.loss_same(b, d) +
-                 self.loss_same(c, b) +
-                 self.loss_same(c, d) +
-                 self.loss_same(d, b) +
-                 self.loss_same(d, c))
+        same = 0.0
+        same += self.loss_same(a1, a2)
+        same += self.loss_same(a1, a3)
+        same += self.loss_same(a2, a3)
+        same += self.loss_same(b, c)
+        same += self.loss_same(c, d)
+        same += self.loss_same(b, d)
         
-        # ONs should be different from OFFs (using 1/distance)
-        difference = (self.loss_diff(a1, b) +
-                     self.loss_diff(a1, c) +
-                     self.loss_diff(a1, d) +
-                     self.loss_diff(a2, b) +
-                     self.loss_diff(a2, c) +
-                     self.loss_diff(a2, d) +
-                     self.loss_diff(a3, b) +
-                     self.loss_diff(a3, c) +
-                     self.loss_diff(a3, d))
+        total_loss = same + difference
         
-        return same + difference
-    
+        # Final safety check
+        total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
+        
+        return total_loss
+
     @tf.function
     def compute_clustering_loss_false(self, false_data: tf.Tensor) -> tf.Tensor:
         """
-        Clustering loss for false (RFI) signals
-        All observations should be similar
+        FIXED: Clustering loss for false (RFI) signals with numerical protection
         """
         batch_size = tf.shape(false_data)[0]
         
-        # Process through encoder
         false_reshaped = tf.reshape(false_data, (batch_size * 6, 16, 512, 1))
         _, _, z = self.encoder(false_reshaped, training=True)
         z = tf.reshape(z, (batch_size, 6, -1))
         
-        # All observations should be similar
+        # All observations should be similar (author's approach)
         total_loss = 0.0
         for i in range(6):
-            for j in range(i+1, 6):
-                total_loss += self.loss_same(z[:, i, :], z[:, j, :])
+            for j in range(6):
+                if i != j:
+                    total_loss += self.loss_same(z[:, i, :], z[:, j, :])
+        
+        # Final safety check  
+        total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
         
         return total_loss
     

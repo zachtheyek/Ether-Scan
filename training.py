@@ -19,6 +19,26 @@ from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
+def cleanup_memory():
+    """Force memory cleanup for distributed training"""
+    import gc
+    gc.collect()
+    
+    # Clear TensorFlow's session state
+    try:
+        tf.keras.backend.clear_session()
+    except:
+        pass
+    
+    # Force GPU memory cleanup if available
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.reset_memory_growth(gpu)
+        except:
+            pass
+
 class TrainingPipeline:
     """Training pipeline matching author's methodology"""
     
@@ -107,9 +127,16 @@ class TrainingPipeline:
         
         x_val = (val_concat, val_true, val_false)
         y_val = val_concat
+
+       # Add custom callback for memory cleanup
+        class MemoryCleanupCallback(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                cleanup_memory()
         
-        # Add memory-safe callbacks
-        callbacks = []
+        callbacks = [
+            tf.keras.callbacks.TerminateOnNaN(),
+            MemoryCleanupCallback()
+        ]
         
         # Add TerminateOnNaN if in memory efficient mode
         if getattr(self.config.training, 'memory_efficient_mode', True):

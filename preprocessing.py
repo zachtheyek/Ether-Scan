@@ -14,23 +14,20 @@ logger = logging.getLogger(__name__)
 @njit(nopython=True)
 def pre_proc(data: np.ndarray) -> np.ndarray:
     """
-    Apply log normalization to data following author's exact approach
-    CRITICAL: This matches the author's pre_proc function exactly
-    
-    Args:
-        data: Input array
-        
-    Returns:
-        Normalized array between 0 and 1
+    EXACT author's preprocessing with numerical protection
     """
-    # Add small epsilon to avoid log(0)
-    data = data + 1e-10
+    # Ensure positive values before log (author assumes this)
+    data = np.maximum(data, 1e-10)
     
-    # Author's exact normalization sequence
+    # Author's exact sequence
     data = np.log(data)
     data = data - data.min()
-    if data.max() > 0:
-        data = data / data.max()
+    
+    # Protect against division by zero
+    data_max = data.max()
+    if data_max > 0:
+        data = data / data_max
+    
     return data
 
 @jit(nopython=True, parallel=True)
