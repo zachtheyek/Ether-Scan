@@ -245,21 +245,25 @@ class DataGenerator:
         
     def generate_training_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """
-        MEMORY-EFFICIENT VERSION: Generate training batch in smaller chunks
-        Replace the existing method in DataGenerator class
+        Generate training batch using config-specified chunking parameters
         """
-        # CRITICAL: Reduce sample count to prevent OOM
-        max_samples_per_chunk = 1000  # Much smaller chunks
-        n_chunks = max(1, (n_samples + max_samples_per_chunk - 1) // max_samples_per_chunk)
+        # Use config for chunk size, with fallback for memory efficiency
+        max_chunk_size = getattr(self.config.training, 'max_chunk_size', 1000)
         
-        logger.info(f"Generating {n_samples} samples in {n_chunks} chunks to prevent OOM")
+        # If memory efficient mode is enabled, ensure reasonable chunk size
+        if getattr(self.config.training, 'memory_efficient_mode', True):
+            max_chunk_size = min(max_chunk_size, 1000)  # Cap at 1000 for memory safety
+        
+        n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
+        
+        logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
         
         all_concatenated = []
         all_true = []
         all_false = []
         
         for chunk_idx in range(n_chunks):
-            chunk_size = min(max_samples_per_chunk, n_samples - chunk_idx * max_samples_per_chunk)
+            chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
             if chunk_size <= 0:
                 break
                 
@@ -267,19 +271,22 @@ class DataGenerator:
             
             quarter = max(1, chunk_size // 4)
             
+            # Use config values for SNR and width_bin
+            width_bin = self.config.data.width_bin // self.config.data.downsample_factor
+            
             # Generate each type for this chunk
             false_no_signal = create_full_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             true_single = create_full_cadence(
                 create_true_single_shot, quarter, self.backgrounds,
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             true_double = create_full_cadence(
@@ -287,14 +294,14 @@ class DataGenerator:
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
                 factor=1,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             false_with_rfi = create_full_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             # Concatenate for main training data
@@ -307,14 +314,14 @@ class DataGenerator:
                 create_true, chunk_size, self.backgrounds,
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             chunk_false = create_full_cadence(
                 create_false, chunk_size, self.backgrounds,
                 snr_base=self.config.training.snr_base,
                 snr_range=self.config.training.snr_range,
-                width_bin=512  # CRITICAL: Use 512 not 4096
+                width_bin=width_bin
             )
             
             # Store chunks
@@ -322,7 +329,7 @@ class DataGenerator:
             all_true.append(chunk_true.astype(np.float32))
             all_false.append(chunk_false.astype(np.float32))
             
-            # CRITICAL: Clean up chunk data immediately
+            # Clean up chunk data immediately
             del false_no_signal, true_single, true_double, false_with_rfi
             del chunk_concatenated, chunk_true, chunk_false
             gc.collect()

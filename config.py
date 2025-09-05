@@ -29,6 +29,11 @@ class DataConfig:
     # Frequency and time resolution from paper
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
+
+    # NEW: Memory management parameters
+    chunk_size_loading: int = 100  # Cadences to process at once during loading
+    max_chunks_per_file: int = 10  # Limit chunks to prevent excessive processing
+    
     
     # Training data files (as per paper's training data)
     training_files: List[str] = None
@@ -50,35 +55,20 @@ class DataConfig:
 
 @dataclass  
 class TrainingConfig:
-    batch_size: int = 128  # REDUCED from 1000
-    validation_batch_size: int = 64  # REDUCED from 500
+    batch_size: int = 256
+    validation_batch_size: int = 128
     num_training_rounds: int = 20
     epochs_per_round: int = 100
     snr_base: int = 10
     snr_range: int = 40
-    num_samples_train: int = 1000
-    num_samples_test: int = 500
-    num_samples_rf: int = 4000
+    num_samples_train: int = 5000
+    num_samples_test: int = 2000
+    num_samples_rf: int = 10000
 
-@dataclass
-class TrainingConfig:
-    """Training configuration matching author's approach"""
-    # Author uses varying batch sizes 1000-2000
-    batch_size: int = 1000
-    validation_batch_size: int = 500
-    
-    # Training rounds from paper
-    num_training_rounds: int = 20
-    epochs_per_round: int = 100  # Added missing attribute
-    
-    # SNR parameters - consistent across all rounds
-    snr_base: int = 10
-    snr_range: int = 40  # So SNR is 10-50
-    
-    # Sample counts for data generation
-    num_samples_train: int = 5000  # Per type (true/false/single)
-    num_samples_test: int = 2000   # For validation - added missing attribute
-    num_samples_rf: int = 12000    # For Random Forest training
+    # NEW: Memory management parameters
+    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
+    target_backgrounds: int = 8000  # Number of background cadences to load
+    memory_efficient_mode: bool = True  # Enable memory optimizations
 
 @dataclass
 class RandomForestConfig:

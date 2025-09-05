@@ -68,7 +68,7 @@ class TrainingPipeline:
     
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        MEMORY-EFFICIENT VERSION: Add this to replace train_round in TrainingPipeline
+        Train one round using config-specified parameters
         """
         logger.info(f"Training round {round_idx} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
@@ -76,12 +76,14 @@ class TrainingPipeline:
         self.config.training.snr_base = snr_base
         self.config.training.snr_range = snr_range
         
-        # CRITICAL: Reduce sample count to prevent OOM
-        n_samples = 1000  # MUCH smaller than original 5000
+        # Use config values for sample count and batch size
+        n_samples = self.config.training.num_samples_train
+        batch_size = self.config.training.batch_size
+        val_batch_size = self.config.training.validation_batch_size
         
-        logger.info(f"Generating {n_samples*3} training samples...")
+        logger.info(f"Using config values - Samples: {n_samples}, Batch size: {batch_size}")
         
-        # Generate training data (will now use chunked generation)
+        # Generate training data (will use config-specified chunking)
         train_data = self.data_generator.generate_training_batch(n_samples * 3)
         
         # Split into train/validation (80/20)
@@ -95,7 +97,7 @@ class TrainingPipeline:
         val_true = train_data['true'][n_train:]
         val_false = train_data['false'][n_train:]
         
-        # CRITICAL: Clear original data to save memory
+        # Clear original data to save memory
         del train_data
         gc.collect()
         
@@ -106,16 +108,28 @@ class TrainingPipeline:
         x_val = (val_concat, val_true, val_false)
         y_val = val_concat
         
-        # CRITICAL: Use much smaller batch size
-        batch_size = 128  # REDUCED from 1000
+        # Add memory-safe callbacks
+        callbacks = []
+        
+        # Add TerminateOnNaN if in memory efficient mode
+        if getattr(self.config.training, 'memory_efficient_mode', True):
+            callbacks.append(tf.keras.callbacks.TerminateOnNaN())
+            
+            # Reduce learning rate on plateau to prevent instability
+            callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
+            ))
+        
+        logger.info(f"Training with batch_size={batch_size}, val_batch_size={val_batch_size}")
         
         history = self.vae.fit(
             x=x_train,
             y=y_train,
-            batch_size=batch_size,
+            batch_size=batch_size,  # Use config value
             epochs=epochs,
             validation_data=(x_val, y_val),
-            validation_batch_size=64,  # Even smaller for validation
+            validation_batch_size=val_batch_size,  # Use config value
+            callbacks=callbacks,
             verbose=1
         )
         
@@ -133,7 +147,7 @@ class TrainingPipeline:
         self.vae.encoder.save(checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
         
-        # CRITICAL: Clean up memory aggressively
+        # Clean up memory
         del train_concat, train_true, train_false
         del val_concat, val_true, val_false
         del x_train, y_train, x_val, y_val
@@ -180,45 +194,74 @@ class TrainingPipeline:
                 )
     
     def train_random_forest(self):
-        """
-        Train Random Forest after VAE training
-        Uses 24,000 samples as per paper
-        """
+        """Train Random Forest using config-specified parameters"""
         logger.info("Training Random Forest classifier...")
         
-        # Generate RF training data
-        n_samples = 12000  # Will generate equal true/false
+        # Use config values
+        n_samples = self.config.training.num_samples_rf // 2  # Split between true/false
+        max_chunk_size = getattr(self.config.training, 'max_chunk_size', 1000)
         
         logger.info(f"Generating {n_samples*2} samples for Random Forest...")
+        logger.info(f"Using chunk size: {max_chunk_size}")
         
-        # Generate with final SNR range
-        self.config.training.snr_base = 10
-        self.config.training.snr_range = 40
-        
-        rf_data = self.data_generator.generate_training_batch(n_samples * 2)
-        
-        # Separate true and false
-        true_data = rf_data['true']
-        false_data = rf_data['false']
-        
-        # Reshape for encoder
-        true_reshaped = true_data.reshape(-1, 16, 512, 1)
-        false_reshaped = false_data.reshape(-1, 16, 512, 1)
-        
-        # Get latent representations
-        logger.info("Extracting latent representations...")
-        _, _, true_latents = self.vae.encoder.predict(true_reshaped, batch_size=500)
-        _, _, false_latents = self.vae.encoder.predict(false_reshaped, batch_size=500)
-        
-        # Train Random Forest
-        self.rf_model = RandomForestModel(self.config)
-        self.rf_model.train(true_latents, false_latents)
-        
-        logger.info("Random Forest training complete")
-        
-        # Clean up
-        del rf_data, true_data, false_data, true_latents, false_latents
-        gc.collect()
+        try:
+            # Generate RF data with config-specified batching
+            rf_data = self.data_generator.generate_training_batch(n_samples * 2)
+            
+            # Separate true and false
+            true_data = rf_data['true']
+            false_data = rf_data['false']
+            
+            # Use config values for processing chunks
+            chunk_size = min(max_chunk_size, 1000)  # Don't exceed memory limits
+            batch_size = min(self.config.training.batch_size, 100)  # Small batches for encoder
+            
+            true_latents = []
+            false_latents = []
+            
+            # Process true data in chunks
+            logger.info("Processing true data through encoder...")
+            for i in range(0, true_data.shape[0], chunk_size):
+                chunk = true_data[i:i+chunk_size]
+                chunk_reshaped = chunk.reshape(-1, 16, 
+                                             self.config.data.width_bin // self.config.data.downsample_factor, 1)
+                _, _, latents = self.vae.encoder.predict(chunk_reshaped, batch_size=batch_size)
+                true_latents.append(latents)
+                del chunk, chunk_reshaped
+                gc.collect()
+            
+            # Process false data in chunks
+            logger.info("Processing false data through encoder...")
+            for i in range(0, false_data.shape[0], chunk_size):
+                chunk = false_data[i:i+chunk_size]
+                chunk_reshaped = chunk.reshape(-1, 16, 
+                                             self.config.data.width_bin // self.config.data.downsample_factor, 1)
+                _, _, latents = self.vae.encoder.predict(chunk_reshaped, batch_size=batch_size)
+                false_latents.append(latents)
+                del chunk, chunk_reshaped
+                gc.collect()
+            
+            # Combine latents
+            all_true_latents = np.concatenate(true_latents, axis=0)
+            all_false_latents = np.concatenate(false_latents, axis=0)
+            
+            # Clear intermediate data
+            del rf_data, true_data, false_data, true_latents, false_latents
+            gc.collect()
+            
+            # Train Random Forest (uses config values internally)
+            self.rf_model = RandomForestModel(self.config)
+            self.rf_model.train(all_true_latents, all_false_latents)
+            
+            logger.info("Random Forest training complete")
+            
+            # Clean up
+            del all_true_latents, all_false_latents
+            gc.collect()
+            
+        except Exception as e:
+            logger.error(f"Random Forest training failed: {e}")
+            raise
     
     def plot_training_history(self, save_path: Optional[str] = None):
         """Plot training history matching author's style"""

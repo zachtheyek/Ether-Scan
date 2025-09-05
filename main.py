@@ -63,13 +63,22 @@ def setup_gpu_config():
 
 def load_background_data(config: Config) -> np.ndarray:
     """
-    MEMORY-EFFICIENT VERSION: Load backgrounds at 512 resolution from start
-    Replace the existing function in main.py
+    Load background data using config-specified parameters
     """
-    logger.info(f"Loading background data (efficient) from {config.data_path}")
+    logger.info(f"Loading background data from {config.data_path}")
+    
+    # Use config values for memory management
+    target_backgrounds = getattr(config.training, 'target_backgrounds', 8000)
+    chunk_size = getattr(config.data, 'chunk_size_loading', 100)
+    max_chunks = getattr(config.data, 'max_chunks_per_file', 10)
+    downsample_factor = config.data.downsample_factor
+    final_width = config.data.width_bin // downsample_factor
+    
+    logger.info(f"Target backgrounds: {target_backgrounds}")
+    logger.info(f"Processing chunks of: {chunk_size}")
+    logger.info(f"Final resolution: {final_width}")
     
     all_backgrounds = []
-    target_backgrounds = 5000  # REDUCED from 10,567 to save memory
     
     for filename in config.data.training_files:
         filepath = config.get_training_file_path(filename)
@@ -80,22 +89,21 @@ def load_background_data(config: Config) -> np.ndarray:
             
         logger.info(f"Processing {filename}...")
         
-        # Get subset parameters  
+        # Get subset parameters from config
         start, end = config.get_file_subset(filename)
         
         try:
             # Use memory mapping to avoid loading full file
             raw_data = np.load(filepath, mmap_mode='r')
             
-            # Apply subset
+            # Apply subset if specified in config
             if start is not None or end is not None:
                 raw_data = raw_data[start:end]
             
             logger.info(f"  Raw data shape: {raw_data.shape}")
             
-            # CRITICAL: Process in small chunks to avoid OOM
-            chunk_size = 100  # Very small chunks
-            n_chunks = min(10, (raw_data.shape[0] + chunk_size - 1) // chunk_size)  # Limit chunks too
+            # Process in config-specified chunks
+            n_chunks = min(max_chunks, (raw_data.shape[0] + chunk_size - 1) // chunk_size)
             
             for chunk_idx in range(n_chunks):
                 chunk_start = chunk_idx * chunk_size
@@ -115,12 +123,12 @@ def load_background_data(config: Config) -> np.ndarray:
                     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
                         continue
                     
-                    # CRITICAL: Downsample to 512 resolution immediately
+                    # Downsample using config factor
                     from skimage.transform import downscale_local_mean
-                    downsampled_cadence = np.zeros((6, 16, 512), dtype=np.float32)
+                    downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
                     for obs_idx in range(6):
                         downsampled_cadence[obs_idx] = downscale_local_mean(
-                            cadence[obs_idx], (1, 8)  # 4096 -> 512
+                            cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
                     
                     all_backgrounds.append(downsampled_cadence)
@@ -133,6 +141,10 @@ def load_background_data(config: Config) -> np.ndarray:
                     break
             
             logger.info(f"  Processed {len(all_backgrounds)} cadences so far")
+            
+            # Clear raw data reference
+            del raw_data
+            gc.collect()
             
         except Exception as e:
             logger.error(f"Error loading {filename}: {e}")
@@ -147,7 +159,7 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Total background cadences loaded: {background_array.shape[0]}")
     logger.info(f"Background array shape: {background_array.shape}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
-    logger.info(f"✓ Background data ready at 512 resolution")
+    logger.info(f"✓ Background data ready at {final_width} resolution")
     
     return background_array
 
