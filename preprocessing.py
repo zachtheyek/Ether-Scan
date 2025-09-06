@@ -64,16 +64,7 @@ def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
 @jit(nopython=True, parallel=True)
 def combine_cadence(A1, A2, A3, B, C, D) -> np.ndarray:
     """
-    Combine 6 observations into cadence array and normalize
-    CRITICAL: Matches author's combine_cadence function exactly
-    Normalization happens AFTER combining, not before!
-    
-    Args:
-        A1, A2, A3: ON observations (already downsampled)
-        B, C, D: OFF observations (already downsampled)
-        
-    Returns:
-        Combined and normalized array (samples, 6, 16, 512, 1)
+    FIXED: No normalization here since it's done before injection
     """
     samples = A1.shape[0]
     time_bins = A1.shape[1]
@@ -82,17 +73,13 @@ def combine_cadence(A1, A2, A3, B, C, D) -> np.ndarray:
     data = np.zeros((samples, 6, time_bins, freq_bins, 1))
     
     for i in prange(samples):
-        # First combine all observations
+        # Just combine - no normalization needed
         data[i, 0, :, :, :] = A1[i, :, :, :]
         data[i, 1, :, :, :] = B[i, :, :, :]
         data[i, 2, :, :, :] = A2[i, :, :, :]
         data[i, 3, :, :, :] = C[i, :, :, :]
         data[i, 4, :, :, :] = A3[i, :, :, :]
         data[i, 5, :, :, :] = D[i, :, :, :]
-        
-        # CRITICAL: Normalize AFTER combining, as author does
-        # This is applied to the entire cadence at once
-        data[i, :, :, :, :] = pre_proc(data[i, :, :, :, :])
     
     return data
 

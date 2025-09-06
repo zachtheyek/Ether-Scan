@@ -17,16 +17,7 @@ logger = logging.getLogger(__name__)
 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
     """
-    Create a cadence with injected signal following author's approach
-    This matches the author's new_cadence function
-    
-    Args:
-        data: Background data array (96, width_bin) 
-        snr: Signal-to-noise ratio
-        width_bin: Number of frequency bins (512 after downsampling)
-        
-    Returns:
-        Data with injected signal, slope, intercept
+    FIXED: Normalize data BEFORE signal injection
     """
     CONST = 3
     start = int(random() * (width_bin - 1)) + 1
@@ -39,18 +30,21 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
         slope = (true_slope) * (18.25361108/2.7939677238464355) - random()*CONST
     
     drift = -1*(1/slope)
-    
-    # Width calculation as per author
     width = random()*50 + abs(drift)*18./1
-    
     b = 96 - true_slope*(start)
     
-    # Use setigen Frame as the author does
+    # CRITICAL FIX: Normalize data BEFORE creating setigen frame
+    normalized_data = np.zeros_like(data)
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            normalized_data[i, j] = pre_proc(data[i, j])
+    
+    # Now create frame with normalized data
     frame = stg.Frame.from_data(
         df=2.7939677238464355*u.Hz,
         dt=18.25361108*u.s,
         fch1=0*u.MHz,
-        data=data,
+        data=normalized_data,  # Use normalized data
         ascending=True
     )
     
