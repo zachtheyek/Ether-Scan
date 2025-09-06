@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Updated diagnostic script for current training state
-Tests the exact current codebase to isolate remaining NaN sources
+Tests the actual codebase with real data to isolate remaining NaN issues
 """
 
 import sys
@@ -20,448 +20,507 @@ import gc
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def check_data_stats(data, name):
-    """Enhanced data checking with more detailed statistics"""
-    has_nan = np.any(np.isnan(data))
-    has_inf = np.any(np.isinf(data))
-    min_val = np.min(data)
-    max_val = np.max(data)
-    mean_val = np.mean(data)
-    std_val = np.std(data)
-    
-    print(f"\n{name} detailed statistics:")
-    print(f"  Shape: {data.shape}")
-    print(f"  Has NaN: {has_nan}")
-    print(f"  Has Inf: {has_inf}")
-    print(f"  Range: [{min_val:.6e}, {max_val:.6e}]")
-    print(f"  Mean: {mean_val:.6e}")
-    print(f"  Std: {std_val:.6e}")
-    
-    # Check for extreme values that could cause numerical issues
-    if np.any(data > 1e6):
-        print(f"  ⚠️  WARNING: {name} contains very large values (>1e6)")
-    if np.any(data < -1e6):
-        print(f"  ⚠️  WARNING: {name} contains very small values (<-1e6)")
-    if std_val > 1e3:
-        print(f"  ⚠️  WARNING: {name} has very high variance")
-    
-    if has_nan or has_inf:
-        print(f"  ❌ PROBLEM: {name} contains NaN or Inf!")
-        return False
-    else:
-        print(f"  ✅ {name} is numerically clean")
-        return True
-
-def test_current_data_generation():
-    """Test current data generation with setigen fixes"""
-    print("="*60)
-    print("TESTING CURRENT DATA GENERATION")
-    print("="*60)
-    
+def load_current_background_data(n_samples=1000):
+    """Load background data exactly as current main.py does"""
     config = Config()
     
-    # Create small background dataset exactly as in training
-    print("Creating small background dataset...")
-    background_data = np.random.randn(50, 6, 16, 512).astype(np.float32) + 1000.0
+    # Exact loading as in main.py
+    all_backgrounds = []
+    target_backgrounds = n_samples
+    chunk_size = 150
+    downsample_factor = 8
+    final_width = 512
     
-    # Apply the same preprocessing as in training
-    print("Applying background preprocessing...")
-    for i in range(background_data.shape[0]):
-        for j in range(6):
-            background_data[i, j] = pre_proc(background_data[i, j])
+    for filename in config.data.training_files[:1]:  # Just first file for testing
+        filepath = config.get_training_file_path(filename)
+        if not os.path.exists(filepath):
+            continue
+            
+        logger.info(f"Loading {filename}")
+        raw_data = np.load(filepath, mmap_mode='r')
+        
+        # Apply exact subset
+        start, end = config.get_file_subset(filename)
+        if start is not None or end is not None:
+            raw_data = raw_data[start:end]
+        
+        # Process exactly as main.py
+        n_chunks = min(10, (raw_data.shape[0] + chunk_size - 1) // chunk_size)
+        
+        for chunk_idx in range(n_chunks):
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min((chunk_idx + 1) * chunk_size, raw_data.shape[0])
+            
+            chunk_data = np.array(raw_data[chunk_start:chunk_end])
+            
+            for cadence_idx in range(chunk_data.shape[0]):
+                if len(all_backgrounds) >= target_backgrounds:
+                    break
+                    
+                cadence = chunk_data[cadence_idx]
+                
+                # Skip invalid cadences
+                if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
+                    continue
+                
+                # Exact downsampling as in main.py
+                from skimage.transform import downscale_local_mean
+                downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
+                for obs_idx in range(6):
+                    downsampled_cadence[obs_idx] = downscale_local_mean(
+                        cadence[obs_idx], (1, downsample_factor)
+                    ).astype(np.float32)
+                
+                all_backgrounds.append(downsampled_cadence)
+            
+            del chunk_data
+            gc.collect()
+            
+            if len(all_backgrounds) >= target_backgrounds:
+                break
     
-    check_data_stats(background_data, "Preprocessed background")
+    background_array = np.array(all_backgrounds, dtype=np.float32)
+    logger.info(f"Loaded background shape: {background_array.shape}")
     
-    # Test data generator with current implementation
-    print("\n--- Testing current DataGenerator ---")
+    return background_array
+
+def test_signal_injection_fix():
+    """Test if our signal injection fix worked"""
+    logger.info("="*60)
+    logger.info("TESTING SIGNAL INJECTION FIX")
+    logger.info("="*60)
+    
+    config = Config()
+    background_data = load_current_background_data(100)
+    
+    logger.info("Testing data generation with current fixes...")
+    generator = DataGenerator(config, background_data)
+    
+    # Generate small batch to test
     try:
-        generator = DataGenerator(config, background_data)
+        batch_data = generator.generate_training_batch(8)
         
-        # Generate small batch
-        print("Generating training batch...")
-        batch_data = generator.generate_training_batch(12)  # Small batch
-        
-        # Check each component with detailed stats
-        all_clean = True
+        logger.info("Generated data analysis:")
         for key, data in batch_data.items():
-            clean = check_data_stats(data, f"Generated {key}")
-            if not clean:
-                all_clean = False
-        
-        return all_clean
+            has_nan = np.any(np.isnan(data))
+            has_inf = np.any(np.isinf(data))
+            min_val = np.min(data)
+            max_val = np.max(data)
+            mean_val = np.mean(data)
+            
+            logger.info(f"  {key}:")
+            logger.info(f"    Shape: {data.shape}")
+            logger.info(f"    NaN: {has_nan}, Inf: {has_inf}")
+            logger.info(f"    Range: [{min_val:.6f}, {max_val:.6f}]")
+            logger.info(f"    Mean: {mean_val:.6f}")
+            
+            if has_nan or has_inf:
+                logger.error(f"    ❌ {key} still contains NaN/Inf!")
+                return False
+            elif max_val > 1000:  # Check if we still have massive values
+                logger.error(f"    ❌ {key} still has massive values (expected ≤ ~2.0)!")
+                return False
+            else:
+                logger.info(f"    ✅ {key} looks good")
+                
+        return True
         
     except Exception as e:
-        print(f"❌ Data generation failed: {e}")
+        logger.error(f"❌ Signal injection test failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
-def test_current_model_components():
+def test_individual_loss_components():
     """Test each loss component individually with current model"""
-    print("\n" + "="*60)
-    print("TESTING CURRENT MODEL COMPONENTS")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("TESTING INDIVIDUAL LOSS COMPONENTS")
+    logger.info("="*60)
     
     config = Config()
     
-    # Create model with current settings
-    vae = create_vae_model(config)
+    # Create model exactly as in training
+    with tf.distribute.MirroredStrategy().scope():
+        vae = create_vae_model(config)
     
-    print(f"Model created with alpha={vae.alpha}, beta={vae.beta}")
+    # Generate test data with current pipeline
+    background_data = load_current_background_data(50)
+    generator = DataGenerator(config, background_data)
     
-    # Create test data in correct format
-    batch_size = 8
-    test_data = np.random.randn(batch_size, 6, 16, 512).astype(np.float32) * 0.1 + 0.5
-    
-    # Normalize test data
-    for i in range(batch_size):
-        for j in range(6):
-            test_data[i, j] = pre_proc(test_data[i, j])
-    
-    check_data_stats(test_data, "Test input data")
-    
-    print("\n--- Testing Encoder ---")
     try:
-        # Test encoder with proper reshaping
-        encoder_input = test_data.reshape(batch_size * 6, 16, 512, 1)
+        batch_data = generator.generate_training_batch(4)
+        
+        concatenated = batch_data['concatenated']
+        true_data = batch_data['true']
+        false_data = batch_data['false']
+        
+        logger.info(f"Test data shapes:")
+        logger.info(f"  Concatenated: {concatenated.shape}")
+        logger.info(f"  True: {true_data.shape}")
+        logger.info(f"  False: {false_data.shape}")
+        
+        # Test encoder forward pass
+        logger.info("\n--- Testing Encoder ---")
+        batch_size = concatenated.shape[0]
+        encoder_input = tf.reshape(concatenated, (batch_size * 6, 16, 512, 1))
+        
         z_mean, z_log_var, z = vae.encoder(encoder_input, training=False)
         
-        check_data_stats(z_mean.numpy(), "Encoder z_mean")
-        check_data_stats(z_log_var.numpy(), "Encoder z_log_var")
-        check_data_stats(z.numpy(), "Encoder z")
-        
-        # Check for extreme values in latent space
-        if np.any(np.abs(z_log_var.numpy()) > 10):
-            print("  ⚠️  WARNING: z_log_var contains extreme values (>10)")
-        
-    except Exception as e:
-        print(f"❌ Encoder test failed: {e}")
-        return False
-    
-    print("\n--- Testing Decoder ---")
-    try:
-        reconstruction = vae.decoder(z, training=False)
-        check_data_stats(reconstruction.numpy(), "Decoder output")
-        
-    except Exception as e:
-        print(f"❌ Decoder test failed: {e}")
-        return False
-    
-    print("\n--- Testing Individual Loss Components ---")
-    
-    # Test KL Loss (this is showing inf in logs)
-    print("\nTesting KL Loss:")
-    try:
-        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
-        kl_per_sample = tf.reduce_sum(kl_loss, axis=1)
-        kl_total = tf.reduce_mean(kl_per_sample)
-        
-        print(f"  z_log_var range: [{np.min(z_log_var.numpy()):.6f}, {np.max(z_log_var.numpy()):.6f}]")
-        print(f"  exp(z_log_var) range: [{np.min(tf.exp(z_log_var).numpy()):.6e}, {np.max(tf.exp(z_log_var).numpy()):.6e}]")
-        print(f"  KL per sample: {kl_per_sample.numpy()}")
-        print(f"  KL total: {kl_total.numpy():.6f}")
-        
-        if np.isnan(kl_total.numpy()) or np.isinf(kl_total.numpy()):
-            print("  ❌ KL loss is NaN/Inf")
-            return False
-        else:
-            print("  ✅ KL loss is finite")
-            
-    except Exception as e:
-        print(f"❌ KL loss test failed: {e}")
-        return False
-    
-    # Test Reconstruction Loss
-    print("\nTesting Reconstruction Loss:")
-    try:
-        reconstruction_reshaped = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
-        
-        recon_loss = tf.reduce_mean(
-            tf.reduce_sum(
-                tf.keras.losses.binary_crossentropy(test_data, reconstruction_reshaped), 
-                axis=(1, 2)
-            )
-        )
-        
-        print(f"  Reconstruction loss: {recon_loss.numpy():.6f}")
-        print(f"  Target range: [{np.min(test_data):.6f}, {np.max(test_data):.6f}]")
-        print(f"  Output range: [{np.min(reconstruction_reshaped.numpy()):.6f}, {np.max(reconstruction_reshaped.numpy()):.6f}]")
-        
-        if np.isnan(recon_loss.numpy()) or np.isinf(recon_loss.numpy()):
-            print("  ❌ Reconstruction loss is NaN/Inf")
-            return False
-        else:
-            print("  ✅ Reconstruction loss is finite")
-            
-    except Exception as e:
-        print(f"❌ Reconstruction loss test failed: {e}")
-        return False
-    
-    # Test Clustering Losses
-    print("\nTesting Clustering Losses:")
-    try:
-        true_loss = vae.compute_clustering_loss_true(test_data)
-        false_loss = vae.compute_clustering_loss_false(test_data)
-        
-        print(f"  True clustering loss: {true_loss.numpy():.6f}")
-        print(f"  False clustering loss: {false_loss.numpy():.6f}")
-        
-        if np.isnan(true_loss.numpy()) or np.isinf(true_loss.numpy()):
-            print("  ❌ True clustering loss is NaN/Inf")
-            return False
-        if np.isnan(false_loss.numpy()) or np.isinf(false_loss.numpy()):
-            print("  ❌ False clustering loss is NaN/Inf")
-            return False
-        
-        print("  ✅ Clustering losses are finite")
-        
-    except Exception as e:
-        print(f"❌ Clustering loss test failed: {e}")
-        return False
-    
-    # Test Combined Loss (as in training)
-    print("\nTesting Combined Loss:")
-    try:
-        total_loss = (recon_loss + 
-                     vae.beta * kl_total + 
-                     vae.alpha * (true_loss + false_loss))
-        
-        print(f"  Components:")
-        print(f"    Reconstruction: {recon_loss.numpy():.6f}")
-        print(f"    KL (β={vae.beta}): {(vae.beta * kl_total).numpy():.6f}")
-        print(f"    Clustering (α={vae.alpha}): {(vae.alpha * (true_loss + false_loss)).numpy():.6f}")
-        print(f"  Total loss: {total_loss.numpy():.6f}")
-        
-        if np.isnan(total_loss.numpy()) or np.isinf(total_loss.numpy()):
-            print("  ❌ Total loss is NaN/Inf")
-            return False
-        else:
-            print("  ✅ Total loss is finite")
-            
-    except Exception as e:
-        print(f"❌ Combined loss test failed: {e}")
-        return False
-    
-    return True
-
-def test_distributed_training_step():
-    """Test distributed training step with current setup"""
-    print("\n" + "="*60)
-    print("TESTING DISTRIBUTED TRAINING STEP")
-    print("="*60)
-    
-    # Skip if only one GPU available
-    gpus = tf.config.list_physical_devices('GPU')
-    if len(gpus) < 2:
-        print("Single GPU detected, testing regular training step...")
-        strategy = tf.distribute.get_strategy()
-    else:
-        strategy = tf.distribute.MirroredStrategy()
-        print(f"Multi-GPU detected, testing with {strategy.num_replicas_in_sync} replicas...")
-    
-    config = Config()
-    
-    with strategy.scope():
-        # Create model within strategy scope
-        vae = create_vae_model(config)
-        
-        # Create small training data exactly as in pipeline
-        background_data = np.random.randn(100, 6, 16, 512).astype(np.float32) + 1000.0
-        
-        # Apply preprocessing
-        for i in range(background_data.shape[0]):
-            for j in range(6):
-                background_data[i, j] = pre_proc(background_data[i, j])
-        
-        generator = DataGenerator(config, background_data)
-        train_data = generator.generate_training_batch(64)  # Small batch
-        
-        # Prepare data exactly as in training.py
-        x_train = (train_data['concatenated'], train_data['true'], train_data['false'])
-        y_train = train_data['concatenated']
-        
-        # Create distributed dataset
-        batch_size = 32  # Smaller for testing
-        dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-        dataset = dataset.batch(batch_size)
-        dataset = strategy.experimental_distribute_dataset(dataset)
-        
-        print("Testing single distributed training step...")
-        
-        @tf.function
-        def distributed_test_step(dist_inputs):
-            def step_fn(inputs):
-                x, y = inputs
-                
-                # Forward pass exactly as in VAE train_step
-                batch_size_local = tf.shape(x[0])[0]
-                encoder_input = tf.reshape(x[0], (batch_size_local * 6, 16, 512, 1))
-                z_mean, z_log_var, z = vae.encoder(encoder_input, training=True)
-                reconstruction = vae.decoder(z, training=True)
-                reconstruction = tf.reshape(reconstruction, tf.shape(y))
-                
-                # Individual loss components
-                reconstruction_loss = tf.reduce_mean(
-                    tf.reduce_sum(
-                        tf.keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
-                    )
-                )
-                
-                kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
-                kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-                
-                false_loss = vae.compute_clustering_loss_false(x[2])
-                true_loss = vae.compute_clustering_loss_true(x[1])
-                
-                total_loss = (reconstruction_loss + 
-                             vae.beta * kl_loss + 
-                             vae.alpha * (true_loss + false_loss))
-                
-                return {
-                    'total_loss': total_loss,
-                    'reconstruction_loss': reconstruction_loss,
-                    'kl_loss': kl_loss,
-                    'true_loss': true_loss,
-                    'false_loss': false_loss,
-                    'z_mean_sample': tf.reduce_mean(z_mean),
-                    'z_log_var_sample': tf.reduce_mean(z_log_var)
-                }
-            
-            return strategy.run(step_fn, args=(dist_inputs,))
-        
-        # Test with first batch
-        for dist_inputs in dataset:
-            try:
-                results = distributed_test_step(dist_inputs)
-                
-                print("Distributed step results:")
-                for key in results:
-                    if strategy.num_replicas_in_sync > 1:
-                        values = strategy.experimental_local_results(results[key])
-                        print(f"  {key}:")
-                        for i, val in enumerate(values):
-                            val_scalar = float(val.numpy())
-                            is_bad = np.isnan(val_scalar) or np.isinf(val_scalar)
-                            print(f"    Replica {i}: {val_scalar:.6e} {'[NaN/Inf!]' if is_bad else ''}")
-                            if is_bad:
-                                return False
-                    else:
-                        val_scalar = float(results[key].numpy())
-                        is_bad = np.isnan(val_scalar) or np.isinf(val_scalar)
-                        print(f"  {key}: {val_scalar:.6e} {'[NaN/Inf!]' if is_bad else ''}")
-                        if is_bad:
-                            return False
-                
-                print("✅ Distributed training step completed successfully!")
-                break  # Only test first batch
-                
-            except Exception as e:
-                print(f"❌ Distributed step failed: {e}")
-                import traceback
-                traceback.print_exc()
+        logger.info(f"Encoder outputs:")
+        for name, tensor in [("z_mean", z_mean), ("z_log_var", z_log_var), ("z", z)]:
+            vals = tensor.numpy()
+            has_nan = np.any(np.isnan(vals))
+            has_inf = np.any(np.isinf(vals))
+            logger.info(f"  {name}: NaN={has_nan}, Inf={has_inf}, range=[{np.min(vals):.6f}, {np.max(vals):.6f}]")
+            if has_nan or has_inf:
+                logger.error(f"❌ Encoder output {name} contains NaN/Inf!")
                 return False
-    
-    return True
+        
+        # Test decoder
+        logger.info("\n--- Testing Decoder ---")
+        reconstruction = vae.decoder(z, training=False)
+        reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
+        
+        recon_vals = reconstruction.numpy()
+        has_nan = np.any(np.isnan(recon_vals))
+        has_inf = np.any(np.isinf(recon_vals))
+        logger.info(f"Decoder output: NaN={has_nan}, Inf={has_inf}, range=[{np.min(recon_vals):.6f}, {np.max(recon_vals):.6f}]")
+        
+        if has_nan or has_inf:
+            logger.error(f"❌ Decoder output contains NaN/Inf!")
+            return False
+        
+        # Test individual loss components
+        logger.info("\n--- Testing Loss Components ---")
+        
+        # 1. Reconstruction Loss
+        try:
+            recon_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    tf.keras.losses.binary_crossentropy(concatenated, reconstruction), 
+                    axis=(1, 2)
+                )
+            )
+            recon_val = float(recon_loss.numpy())
+            logger.info(f"1. Reconstruction loss: {recon_val:.6f}")
+            if np.isnan(recon_val) or np.isinf(recon_val):
+                logger.error("❌ Reconstruction loss is NaN/Inf!")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Reconstruction loss failed: {e}")
+            return False
+        
+        # 2. KL Loss
+        try:
+            kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+            kl_val = float(kl_loss.numpy())
+            logger.info(f"2. KL loss: {kl_val:.6f}")
+            if np.isnan(kl_val) or np.isinf(kl_val):
+                logger.error("❌ KL loss is NaN/Inf!")
+                
+                # Debug KL components
+                logger.info("KL loss debugging:")
+                z_mean_vals = z_mean.numpy()
+                z_log_var_vals = z_log_var.numpy()
+                logger.info(f"  z_mean range: [{np.min(z_mean_vals):.6f}, {np.max(z_mean_vals):.6f}]")
+                logger.info(f"  z_log_var range: [{np.min(z_log_var_vals):.6f}, {np.max(z_log_var_vals):.6f}]")
+                logger.info(f"  exp(z_log_var) range: [{np.min(np.exp(z_log_var_vals)):.6f}, {np.max(np.exp(z_log_var_vals)):.6f}]")
+                return False
+        except Exception as e:
+            logger.error(f"❌ KL loss failed: {e}")
+            return False
+        
+        # 3. Clustering Losses
+        try:
+            true_loss = vae.compute_clustering_loss_true(true_data)
+            true_val = float(true_loss.numpy())
+            logger.info(f"3. True clustering loss: {true_val:.6f}")
+            if np.isnan(true_val) or np.isinf(true_val):
+                logger.error("❌ True clustering loss is NaN/Inf!")
+                return False
+        except Exception as e:
+            logger.error(f"❌ True clustering loss failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+        try:
+            false_loss = vae.compute_clustering_loss_false(false_data)
+            false_val = float(false_loss.numpy())
+            logger.info(f"4. False clustering loss: {false_val:.6f}")
+            if np.isnan(false_val) or np.isinf(false_val):
+                logger.error("❌ False clustering loss is NaN/Inf!")
+                return False
+        except Exception as e:
+            logger.error(f"❌ False clustering loss failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+        # 5. Total Loss
+        try:
+            total_loss = (recon_loss + 
+                         vae.beta * kl_loss + 
+                         vae.alpha * (true_loss + false_loss))
+            total_val = float(total_loss.numpy())
+            logger.info(f"5. Total loss: {total_val:.6f}")
+            if np.isnan(total_val) or np.isinf(total_val):
+                logger.error("❌ Total loss is NaN/Inf!")
+                return False
+            elif total_val > 10000:
+                logger.warning(f"⚠️  Total loss is very large: {total_val:.6f}")
+                logger.info(f"   Loss breakdown:")
+                logger.info(f"   - Reconstruction: {recon_val:.6f}")
+                logger.info(f"   - KL (β={vae.beta}): {vae.beta * kl_val:.6f}")
+                logger.info(f"   - Clustering (α={vae.alpha}): {vae.alpha * (true_val + false_val):.6f}")
+                
+        except Exception as e:
+            logger.error(f"❌ Total loss failed: {e}")
+            return False
+        
+        logger.info("✅ All loss components are finite!")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Loss component test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-def test_problematic_scenarios():
-    """Test scenarios that commonly cause NaN"""
-    print("\n" + "="*60)
-    print("TESTING PROBLEMATIC SCENARIOS")
-    print("="*60)
+def test_gradient_computation():
+    """Test gradient computation without distributed training"""
+    logger.info("\n" + "="*60)
+    logger.info("TESTING GRADIENT COMPUTATION")
+    logger.info("="*60)
     
     config = Config()
+    
+    # Test without distributed strategy first
     vae = create_vae_model(config)
     
-    scenarios = [
-        ("Very small values", np.random.randn(4, 6, 16, 512) * 1e-10 + 1e-9),
-        ("Very large values", np.random.randn(4, 6, 16, 512) * 1000 + 10000),
-        ("Mixed extreme values", np.concatenate([
-            np.random.randn(2, 6, 16, 512) * 1e-10 + 1e-9,
-            np.random.randn(2, 6, 16, 512) * 1000 + 10000
-        ])),
-        ("Zero values", np.zeros((4, 6, 16, 512))),
-        ("All ones", np.ones((4, 6, 16, 512)))
-    ]
+    # Generate minimal test data
+    background_data = load_current_background_data(20)
+    generator = DataGenerator(config, background_data)
     
-    for name, test_data in scenarios:
-        print(f"\n--- Testing {name} ---")
+    try:
+        batch_data = generator.generate_training_batch(2)  # Very small batch
         
-        # Apply preprocessing
-        processed_data = np.zeros_like(test_data)
-        for i in range(test_data.shape[0]):
-            for j in range(6):
-                processed_data[i, j] = pre_proc(test_data[i, j])
+        concatenated = batch_data['concatenated']
+        true_data = batch_data['true']
+        false_data = batch_data['false']
         
-        check_data_stats(processed_data, f"{name} after preprocessing")
+        logger.info("Testing single gradient step...")
         
-        # Test forward pass
-        try:
-            encoder_input = processed_data.reshape(-1, 16, 512, 1)
-            z_mean, z_log_var, z = vae.encoder(encoder_input, training=False)
+        with tf.GradientTape() as tape:
+            # Forward pass
+            batch_size = tf.shape(concatenated)[0]
+            encoder_input = tf.reshape(concatenated, (batch_size * 6, 16, 512, 1))
+            z_mean, z_log_var, z = vae.encoder(encoder_input, training=True)
+            reconstruction = vae.decoder(z, training=True)
+            reconstruction = tf.reshape(reconstruction, tf.shape(concatenated))
             
-            # Check latent space
-            if np.any(np.abs(z_log_var.numpy()) > 20):
-                print(f"  ⚠️  {name}: Extreme z_log_var values detected")
+            # Compute losses
+            reconstruction_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    tf.keras.losses.binary_crossentropy(concatenated, reconstruction), 
+                    axis=(1, 2)
+                )
+            )
             
-            # Test KL loss
             kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
-            if np.isnan(kl_loss.numpy()) or np.isinf(kl_loss.numpy()):
-                print(f"  ❌ {name}: KL loss is NaN/Inf")
-            else:
-                print(f"  ✅ {name}: KL loss is finite ({kl_loss.numpy():.6f})")
+            false_loss = vae.compute_clustering_loss_false(false_data)
+            true_loss = vae.compute_clustering_loss_true(true_data)
+            
+            total_loss = (reconstruction_loss + 
+                         vae.beta * kl_loss + 
+                         vae.alpha * (true_loss + false_loss))
+        
+        # Check loss values before gradient computation
+        logger.info(f"Pre-gradient loss values:")
+        logger.info(f"  Reconstruction: {float(reconstruction_loss.numpy()):.6f}")
+        logger.info(f"  KL: {float(kl_loss.numpy()):.6f}")
+        logger.info(f"  True clustering: {float(true_loss.numpy()):.6f}")
+        logger.info(f"  False clustering: {float(false_loss.numpy()):.6f}")
+        logger.info(f"  Total: {float(total_loss.numpy()):.6f}")
+        
+        # Compute gradients
+        grads = tape.gradient(total_loss, vae.trainable_weights)
+        
+        # Check gradients
+        logger.info("Checking gradients...")
+        nan_grad_count = 0
+        inf_grad_count = 0
+        total_grad_count = 0
+        
+        for i, grad in enumerate(grads):
+            if grad is not None:
+                total_grad_count += 1
+                grad_vals = grad.numpy()
+                has_nan = np.any(np.isnan(grad_vals))
+                has_inf = np.any(np.isinf(grad_vals))
                 
-        except Exception as e:
-            print(f"  ❌ {name}: Failed with error: {e}")
+                if has_nan:
+                    nan_grad_count += 1
+                    logger.error(f"  Gradient {i}: Contains NaN!")
+                if has_inf:
+                    inf_grad_count += 1
+                    logger.error(f"  Gradient {i}: Contains Inf!")
+                    
+                if i < 3:  # Log first few gradients
+                    logger.info(f"  Gradient {i}: range=[{np.min(grad_vals):.6f}, {np.max(grad_vals):.6f}], NaN={has_nan}, Inf={has_inf}")
+        
+        logger.info(f"Gradient summary: {nan_grad_count} NaN, {inf_grad_count} Inf out of {total_grad_count} total")
+        
+        if nan_grad_count == 0 and inf_grad_count == 0:
+            logger.info("✅ All gradients are finite!")
+            return True
+        else:
+            logger.error(f"❌ Found {nan_grad_count + inf_grad_count} bad gradients!")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Gradient computation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_distributed_training_step():
+    """Test full distributed training step"""
+    logger.info("\n" + "="*60)
+    logger.info("TESTING DISTRIBUTED TRAINING STEP")
+    logger.info("="*60)
+    
+    config = Config()
+    strategy = tf.distribute.MirroredStrategy()
+    
+    with strategy.scope():
+        vae = create_vae_model(config)
+        vae.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.model.learning_rate))
+    
+    # Generate minimal data
+    background_data = load_current_background_data(50)
+    generator = DataGenerator(config, background_data)
+    
+    try:
+        batch_data = generator.generate_training_batch(16)  # Small batch for distributed test
+        
+        concatenated = batch_data['concatenated']
+        true_data = batch_data['true']
+        false_data = batch_data['false']
+        
+        # Create dataset for distributed training
+        x_train = (concatenated, true_data, false_data)
+        y_train = concatenated
+        
+        dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+        dataset = dataset.batch(8)  # Very small batch size
+        dataset = strategy.experimental_distribute_dataset(dataset)
+        
+        # Test one training step
+        logger.info("Testing distributed training step...")
+        
+        step_count = 0
+        for dist_inputs in dataset:
+            step_count += 1
+            logger.info(f"Processing distributed batch {step_count}...")
+            
+            try:
+                # Use train_on_batch to get loss values
+                results = vae.train_on_batch(
+                    strategy.experimental_local_results(dist_inputs)[0][0],  # Get first replica's input
+                    strategy.experimental_local_results(dist_inputs)[0][1]   # Get first replica's target
+                )
+                
+                logger.info(f"Distributed step {step_count} results:")
+                for key, value in results.items():
+                    val = float(value) if hasattr(value, 'numpy') else float(value)
+                    is_bad = np.isnan(val) or np.isinf(val)
+                    logger.info(f"  {key}: {val:.6f} {'[NaN/Inf!]' if is_bad else ''}")
+                    
+                    if is_bad:
+                        logger.error(f"❌ NaN/Inf detected in {key}!")
+                        return False
+                
+                logger.info("✅ Distributed training step completed successfully!")
+                break  # Only test first batch
+                
+            except Exception as e:
+                logger.error(f"❌ Distributed step {step_count} failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Distributed training test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
-    """Run comprehensive diagnostic"""
-    print("Starting comprehensive training diagnostic...")
+    """Run comprehensive diagnostic of current training state"""
+    logger.info("="*60)
+    logger.info("CURRENT TRAINING STATE DIAGNOSTIC")
+    logger.info("="*60)
     
     tests = [
-        ("Current Data Generation", test_current_data_generation),
-        ("Current Model Components", test_current_model_components),
-        ("Distributed Training Step", test_distributed_training_step),
-        ("Problematic Scenarios", test_problematic_scenarios)
+        ("Signal Injection Fix", test_signal_injection_fix),
+        ("Individual Loss Components", test_individual_loss_components),
+        ("Gradient Computation", test_gradient_computation),
+        ("Distributed Training Step", test_distributed_training_step)
     ]
     
     results = {}
     
     for test_name, test_func in tests:
-        print(f"\n{'='*20} {test_name} {'='*20}")
+        logger.info(f"\n{'='*20} {test_name} {'='*20}")
         try:
             results[test_name] = test_func()
         except Exception as e:
-            print(f"❌ {test_name} crashed: {e}")
+            logger.error(f"❌ {test_name} crashed: {e}")
             results[test_name] = False
             import traceback
             traceback.print_exc()
     
     # Summary
-    print("\n" + "="*60)
-    print("COMPREHENSIVE DIAGNOSTIC SUMMARY")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("DIAGNOSTIC SUMMARY")
+    logger.info("="*60)
     
     all_passed = True
     for test_name, passed in results.items():
         status = "✅ PASS" if passed else "❌ FAIL"
-        print(f"{test_name}: {status}")
+        logger.info(f"{test_name}: {status}")
         if not passed:
             all_passed = False
     
     if all_passed:
-        print("\n🎉 All tests passed! The remaining NaN issue may be in specific edge cases.")
-        print("Recommendations:")
-        print("1. Consider reducing batch size to avoid memory pressure")
-        print("2. Add gradient clipping to prevent gradient explosion")
-        print("3. Use mixed precision training for numerical stability")
+        logger.info("\n🎉 All tests passed! Training should be stable now.")
     else:
-        print("\n🔍 Found issues! Focus on the failed components.")
-        print("Key areas to investigate:")
-        print("1. KL loss computation (check for extreme z_log_var values)")
-        print("2. Reconstruction loss (check input/output ranges)")
-        print("3. Distributed training synchronization")
+        logger.info("\n🔍 Found remaining issues. Focus on failed components.")
+        
+        # Provide specific recommendations based on failures
+        if not results.get("Signal Injection Fix", True):
+            logger.info("\n📋 Signal Injection still has issues:")
+            logger.info("   - Check data value ranges")
+            logger.info("   - Verify pre_proc normalization")
+            logger.info("   - Test setigen integration")
+        
+        if not results.get("Individual Loss Components", True):
+            logger.info("\n📋 Loss component issues:")
+            logger.info("   - Check clustering loss implementation")
+            logger.info("   - Verify KL loss bounds")
+            logger.info("   - Test encoder/decoder output ranges")
+        
+        if not results.get("Gradient Computation", True):
+            logger.info("\n📋 Gradient issues:")
+            logger.info("   - Reduce loss weights further")
+            logger.info("   - Add gradient clipping")
+            logger.info("   - Check optimizer settings")
     
     return all_passed
 
