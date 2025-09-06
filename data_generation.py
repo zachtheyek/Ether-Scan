@@ -13,6 +13,8 @@ from random import random
 import math
 import gc
 
+from preprocessing import pre_proc
+
 logger = logging.getLogger(__name__)
 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
