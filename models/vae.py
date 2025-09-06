@@ -46,16 +46,7 @@ class BetaVAE(keras.Model):
     
     def call(self, inputs, training=None):
         """
-        Forward pass through the VAE
-        
-        Args:
-            inputs: Can be either:
-                - Single tensor: (batch, 6, 16, 512) - for inference
-                - Tuple: (main_input, true_data, false_data) - for training
-            training: Whether in training mode
-            
-        Returns:
-            Reconstructed output
+        Forward pass through the VAE with proper input handling
         """
         # Handle different input formats
         if isinstance(inputs, (tuple, list)) and len(inputs) == 3:
@@ -68,8 +59,11 @@ class BetaVAE(keras.Model):
         # Process main input through encoder-decoder
         batch_size = tf.shape(main_input)[0]
         
-        # Reshape for encoder: (batch*6, 16, 512, 1)
-        encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
+        # Add channel dimension if needed and reshape for encoder: (batch*6, 16, 512, 1)
+        if len(main_input.shape) == 4:  # (batch, 6, 16, 512)
+            encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
+        else:  # Already has channel dimension (batch, 6, 16, 512, 1)
+            encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
         
         # Encode
         z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
@@ -231,7 +225,7 @@ class BetaVAE(keras.Model):
         return similarity
     
     def train_step(self, data):
-        """EXACT author's train_step structure"""
+        """Fixed train_step with proper input reshaping"""
         # Author's exact data unpacking
         x, y = data
         true_data = x[1]
@@ -239,8 +233,23 @@ class BetaVAE(keras.Model):
         x = x[0]
         
         with tf.GradientTape() as tape:
-            z_mean, z_log_var, z = self.encoder(x, training=True)
+            # CRITICAL FIX: Reshape input for encoder like in call method
+            batch_size = tf.shape(x)[0]
+            
+            # Add channel dimension and reshape for encoder: (batch*6, 16, 512, 1)
+            if len(x.shape) == 4:  # (batch, 6, 16, 512)
+                encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+            else:  # Already has channel dim
+                encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+            
+            # Encode
+            z_mean, z_log_var, z = self.encoder(encoder_input, training=True)
+            
+            # Decode
             reconstruction = self.decoder(z, training=True)
+            
+            # Reshape reconstruction back to cadence format for loss computation
+            reconstruction = tf.reshape(reconstruction, tf.shape(y))
             
             # Author's exact reconstruction loss
             reconstruction_loss = tf.reduce_mean(
@@ -253,7 +262,7 @@ class BetaVAE(keras.Model):
             kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
-            # Author's clustering losses
+            # Author's clustering losses (these handle their own reshaping)
             false_loss = self.compute_clustering_loss_false(false_data)
             true_loss = self.compute_clustering_loss_true(true_data)
             
@@ -262,11 +271,8 @@ class BetaVAE(keras.Model):
                          self.beta * kl_loss + 
                          self.alpha * (1 * true_loss + false_loss))
         
-        # Update weights - REMOVED problematic gradient checking
+        # Apply gradients
         grads = tape.gradient(total_loss, self.trainable_weights)
-        
-        # Apply gradients directly - TensorFlow optimizer handles NaN gradients properly
-        # The TerminateOnNaN callback and gradient clipping provide sufficient protection
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         
         # Update metrics
