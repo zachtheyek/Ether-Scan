@@ -32,7 +32,7 @@ class DataConfig:
 
     # NEW: Memory management parameters
     chunk_size_loading: int = 150  # Cadences to process at once during loading
-    max_chunks_per_file: int = 20  # Limit chunks to prevent excessive processing
+    max_chunks_per_file: int = 30  # Limit chunks to prevent excessive processing
     
     
     # Training data files (as per paper's training data)
@@ -67,7 +67,7 @@ class TrainingConfig:
 
     # NEW: Memory management parameters
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
-    target_backgrounds: int = 6000  # Number of background cadences to load
+    target_backgrounds: int = 10000  # Number of background cadences to load
     memory_efficient_mode: bool = True  # Enable memory optimizations
 
 @dataclass
