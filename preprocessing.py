@@ -11,21 +11,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@njit(nopython=True)
+# @njit(nopython=True)  # Comment out temporarily
 def pre_proc(data: np.ndarray) -> np.ndarray:
     """
     Apply log normalization to data following author's exact approach
-    FIXED: Numba-compatible version using np.min/np.max instead of .min()/.max()
     """
     # Add small epsilon to avoid log(0)
     data = data + 1e-10
     
-    # Author's exact normalization sequence with Numba compatibility
+    # Author's exact normalization sequence
     data = np.log(data)
-    data = data - np.min(data)  # Use np.min instead of data.min()
-    data_max = np.max(data)     # Use np.max instead of data.max()
-    if data_max > 0:
-        data = data / data_max
+    data = data - data.min()
+    if data.max() > 0:
+        data = data / data.max()
     return data
 
 @jit(nopython=True, parallel=True)
