@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
     """
-    Create a cadence with injected signal - FIXED for proper intensity calculation
+    Create a cadence with injected signal - FIXED for normalized background data
     """
     CONST = 3
     start = int(random() * (width_bin - 1)) + 1
@@ -35,12 +35,13 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
     width = random()*50 + abs(drift)*18./1
     b = 96 - true_slope*(start)
     
-    # Use raw data for setigen (maintains noise statistics)
+    # CRITICAL FIX: Background data is already normalized to [0,1]
+    # Don't apply additional normalization
     frame = stg.Frame.from_data(
         df=2.7939677238464355*u.Hz,
         dt=18.25361108*u.s,
         fch1=0*u.MHz,
-        data=data,  # Use raw data with natural noise
+        data=data,  # Already normalized background
         ascending=True
     )
     
@@ -49,15 +50,14 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
             f_start=frame.get_frequency(index=start),
             drift_rate=drift*u.Hz/u.s
         ),
-        stg.constant_t_profile(level=frame.get_intensity(snr=snr)),  # This works with raw data
+        stg.constant_t_profile(level=frame.get_intensity(snr=snr)),
         stg.gaussian_f_profile(width=width*u.Hz),
         stg.constant_bp_profile(level=1)
     )
     
-    # Normalize AFTER injection
+    # CRITICAL FIX: Data is already normalized, just return it
+    # Don't apply pre_proc again since backgrounds are already [0,1]
     result_data = frame.data.copy()
-    for i in range(result_data.shape[0]):
-        result_data[i] = pre_proc(result_data[i])
     
     return result_data, true_slope, b
 

@@ -64,7 +64,10 @@ def setup_gpu_config():
 def load_background_data(config: Config) -> np.ndarray:
     """
     Load background data using config-specified parameters
+    FIXED: Normalize each observation after downsampling
     """
+    from preprocessing import pre_proc  # Import the normalization function
+    
     logger.info(f"Loading background data from {config.data_path}")
     
     # Use config values for memory management
@@ -123,13 +126,18 @@ def load_background_data(config: Config) -> np.ndarray:
                     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
                         continue
                     
-                    # Downsample using config factor
+                    # CRITICAL FIX: Downsample AND normalize each observation separately
                     from skimage.transform import downscale_local_mean
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
+                    
                     for obs_idx in range(6):
-                        downsampled_cadence[obs_idx] = downscale_local_mean(
+                        # 1. Downsample first
+                        downsampled_obs = downscale_local_mean(
                             cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
+                        
+                        # 2. CRITICAL: Normalize each observation using author's pre_proc
+                        downsampled_cadence[obs_idx] = pre_proc(downsampled_obs)
                     
                     all_backgrounds.append(downsampled_cadence)
                 
@@ -156,10 +164,24 @@ def load_background_data(config: Config) -> np.ndarray:
     # Stack all backgrounds
     background_array = np.array(all_backgrounds, dtype=np.float32)
     
+    # VERIFICATION: Check that values are now in [0,1] range
+    min_val = np.min(background_array)
+    max_val = np.max(background_array)
+    mean_val = np.mean(background_array)
+    
     logger.info(f"Total background cadences loaded: {background_array.shape[0]}")
     logger.info(f"Background array shape: {background_array.shape}")
+    logger.info(f"Background value range: [{min_val:.6f}, {max_val:.6f}]")
+    logger.info(f"Background mean: {mean_val:.6f}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
-    logger.info(f"✓ Background data ready at {final_width} resolution")
+    
+    if max_val > 2.0:
+        logger.error(f"❌ Background values still too large! Max: {max_val}")
+        raise ValueError("Background normalization failed")
+    else:
+        logger.info(f"✅ Background data properly normalized")
+    
+    logger.info(f"✅ Background data ready at {final_width} resolution")
     
     return background_array
 
