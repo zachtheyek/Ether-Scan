@@ -14,20 +14,18 @@ logger = logging.getLogger(__name__)
 @njit(nopython=True)
 def pre_proc(data: np.ndarray) -> np.ndarray:
     """
-    EXACT author's preprocessing with numerical protection
+    Apply log normalization to data following author's exact approach
+    FIXED: Numba-compatible version using np.min/np.max instead of .min()/.max()
     """
-    # Ensure positive values before log (author assumes this)
-    data = np.maximum(data, 1e-10)
+    # Add small epsilon to avoid log(0)
+    data = data + 1e-10
     
-    # Author's exact sequence
+    # Author's exact normalization sequence with Numba compatibility
     data = np.log(data)
-    data = data - data.min()
-    
-    # Protect against division by zero
-    data_max = data.max()
+    data = data - np.min(data)  # Use np.min instead of data.min()
+    data_max = np.max(data)     # Use np.max instead of data.max()
     if data_max > 0:
         data = data / data_max
-    
     return data
 
 @jit(nopython=True, parallel=True)
