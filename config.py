@@ -13,8 +13,10 @@ class ModelConfig:
     latent_dim: int = 8
     dense_layer_size: int = 512
     kernel_size: Tuple[int, int] = (3, 3)
-    alpha: float = 10.0  # Clustering loss weight (author's value)
-    beta: float = 1.5    # KL divergence weight (author's value)
+    # alpha: float = 10.0  # Clustering loss weight (author's value)
+    # beta: float = 1.5    # KL divergence weight (author's value)
+    alpha: float = 0.1 
+    beta: float = 0.1
     gamma: float = 0.0   # Not used in paper
     learning_rate: float = 0.001  # Author's learning rate
     
