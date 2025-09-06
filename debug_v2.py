@@ -17,6 +17,15 @@ from models.vae import create_vae_model
 import logging
 import gc
 
+# ✅ Fix: Configure memory growth immediately after importing TF
+physical_gpus = tf.config.list_physical_devices('GPU')
+if physical_gpus:
+    try:
+        for gpu in physical_gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(f"Could not set memory growth: {e}")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -25,13 +34,6 @@ def setup_exact_training_environment():
     # Exact distributed strategy setup
     strategy = tf.distribute.MirroredStrategy()
     logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} replicas")
-    
-    # Exact memory settings
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    
     return strategy
 
 def load_exact_background_data():
@@ -100,7 +102,7 @@ def load_exact_background_data():
 
 def test_exact_training_step():
     """Test one training step with exact conditions"""
-    logger.info("Setting up exact training environment...")
+    logger.info("Setting up exact training environment.")
     
     strategy = setup_exact_training_environment()
     config = Config()
@@ -119,7 +121,7 @@ def test_exact_training_step():
             )
         )
         
-        logger.info("Generating training data with exact parameters...")
+        logger.info("Generating training data with exact parameters.")
         
         # Generate data exactly as in training
         generator = DataGenerator(config, background_data)
@@ -141,7 +143,7 @@ def test_exact_training_step():
         logger.info(f"  False: {train_false.shape}")
         
         # Check data before training
-        logger.info("Checking data before training step...")
+        logger.info("Checking data before training step.")
         for name, data in [("concatenated", train_concat), ("true", train_true), ("false", train_false)]:
             has_nan = np.any(np.isnan(data))
             has_inf = np.any(np.isinf(data))
@@ -160,7 +162,7 @@ def test_exact_training_step():
         logger.info(f"Created distributed dataset with batch_size={batch_size}")
         
         # Test single training step with exact conditions
-        logger.info("Performing single distributed training step...")
+        logger.info("Performing single distributed training step.")
         
         @tf.function
         def distributed_train_step(dist_inputs):
@@ -209,7 +211,7 @@ def test_exact_training_step():
         step_count = 0
         for dist_inputs in dataset:
             step_count += 1
-            logger.info(f"Testing distributed step {step_count}...")
+            logger.info(f"Testing distributed step {step_count}.")
             
             try:
                 results = distributed_train_step(dist_inputs)
@@ -228,7 +230,7 @@ def test_exact_training_step():
                             return False
                 
                 # Test gradient computation
-                logger.info("Testing gradient computation...")
+                logger.info("Testing gradient computation.")
                 
                 @tf.function
                 def test_gradients(dist_inputs):
@@ -277,7 +279,7 @@ def test_loss_scaling():
     config = Config()
     
     # Test with reduced loss weights
-    logger.info("Testing with reduced alpha/beta...")
+    logger.info("Testing with reduced alpha/beta.")
     
     original_alpha = config.model.alpha
     original_beta = config.model.beta
