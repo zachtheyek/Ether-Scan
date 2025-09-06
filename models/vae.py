@@ -137,63 +137,88 @@ class BetaVAE(keras.Model):
     @tf.function
     def loss_same(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
         """
-        Compute Euclidean distance between latent vectors
-        Author's implementation for similarity
+        Author's EXACT loss_same implementation
         """
         return tf.reduce_mean(tf.reduce_sum(tf.square(a - b), axis=1))
-
-    @tf.function  
-    def loss_diff(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
-        """
-        FIXED: Stable dissimilarity loss using author's approach with numerical protection
-        Original uses 1/distance^2 which explodes when vectors are similar
-        """
-        # Compute squared euclidean distance
-        distance_sq = tf.reduce_sum(tf.square(a - b), axis=1)
-        
-        # CRITICAL FIX: Add larger epsilon and use safer formula
-        # Instead of 1/d^2, use 1/(d^2 + epsilon) which is bounded
-        epsilon = 1e-4  # Much larger epsilon for stability
-        safe_distance_sq = distance_sq + epsilon
-        
-        # Additional safety: clip the result to prevent explosion
-        dissimilarity = 1.0 / safe_distance_sq
-        dissimilarity = tf.clip_by_value(dissimilarity, 0.0, 1000.0)  # Bound the result
-        
-        return tf.reduce_mean(dissimilarity)
 
     @tf.function
     def compute_clustering_loss_true(self, true_data: tf.Tensor) -> tf.Tensor:
         """
-        FIXED: Clustering loss for true ETI signals with numerical protection
+        EXACT author's implementation - processes each observation separately
+        Author's true_clustering function
         """
-        batch_size = tf.shape(true_data)[0]
+        # Add channel dimension if missing
+        if len(true_data.shape) == 4:
+            true_data = tf.expand_dims(true_data, -1)  # (batch, 6, 16, 512, 1)
         
-        # Reshape and encode - EXACTLY as author does
-        true_reshaped = tf.reshape(true_data, (batch_size * 6, 16, 512, 1))
-        _, _, z = self.encoder(true_reshaped, training=True)
-        z = tf.reshape(z, (batch_size, 6, -1))
+        # Process each observation separately as author does
+        a1 = self.encoder(true_data[:,0,:,:,:], training=True)[2]  # ON
+        b = self.encoder(true_data[:,1,:,:,:], training=True)[2]   # OFF
+        a2 = self.encoder(true_data[:,2,:,:,:], training=True)[2]  # ON  
+        c = self.encoder(true_data[:,3,:,:,:], training=True)[2]   # OFF
+        a3 = self.encoder(true_data[:,4,:,:,:], training=True)[2]  # ON
+        d = self.encoder(true_data[:,5,:,:,:], training=True)[2]   # OFF
+
+        # Author's EXACT computation (only uses loss_same, no loss_diff!)
+        same = 0.0
+        same += self.loss_same(a1, a2)
+        same += self.loss_same(a1, a3)
+        same += self.loss_same(a2, a1)
+        same += self.loss_same(a2, a3)
+        same += self.loss_same(a3, a2)
+        same += self.loss_same(a3, a1)
         
-        # Extract observations exactly as author does
-        a1 = z[:, 0, :]  # ON
-        b = z[:, 1, :]   # OFF  
-        a2 = z[:, 2, :]  # ON
-        c = z[:, 3, :]   # OFF
-        a3 = z[:, 4, :]  # ON
-        d = z[:, 5, :]   # OFF
+        same += self.loss_same(b, c)
+        same += self.loss_same(b, d)
+        same += self.loss_same(c, b)
+        same += self.loss_same(c, d)
+        same += self.loss_same(d, b)
+        same += self.loss_same(d, c)
         
-        # AUTHOR'S EXACT COMPUTATION but with stable loss_diff
+        # Author uses only similarity distances, no explosive dissimilarity
         difference = 0.0
-        difference += self.loss_diff(a1, b)
-        difference += self.loss_diff(a1, c) 
-        difference += self.loss_diff(a1, d)
-        difference += self.loss_diff(a2, b)
-        difference += self.loss_diff(a2, c)
-        difference += self.loss_diff(a2, d)
-        difference += self.loss_diff(a3, b)
-        difference += self.loss_diff(a3, c)
-        difference += self.loss_diff(a3, d)
+        difference += self.loss_same(a1, b)
+        difference += self.loss_same(a1, c)
+        difference += self.loss_same(a1, d)
+        difference += self.loss_same(a2, b)
+        difference += self.loss_same(a2, c)
+        difference += self.loss_same(a2, d)
+        difference += self.loss_same(a3, b)
+        difference += self.loss_same(a3, c)
+        difference += self.loss_same(a3, d)
         
+        similarity = same + difference
+        return similarity
+
+    @tf.function
+    def compute_clustering_loss_false(self, false_data: tf.Tensor) -> tf.Tensor:
+        """
+        EXACT author's false_clustering implementation
+        """
+        # Add channel dimension if missing
+        if len(false_data.shape) == 4:
+            false_data = tf.expand_dims(false_data, -1)
+        
+        # Process each observation separately
+        a1 = self.encoder(false_data[:,0,:,:,:], training=True)[2]
+        b = self.encoder(false_data[:,1,:,:,:], training=True)[2]
+        a2 = self.encoder(false_data[:,2,:,:,:], training=True)[2]
+        c = self.encoder(false_data[:,3,:,:,:], training=True)[2]
+        a3 = self.encoder(false_data[:,4,:,:,:], training=True)[2]
+        d = self.encoder(false_data[:,5,:,:,:], training=True)[2]
+
+        # Author's approach - all observations should be similar for RFI
+        difference = 0.0
+        difference += self.loss_same(a1, b)
+        difference += self.loss_same(a1, c)
+        difference += self.loss_same(a1, d)
+        difference += self.loss_same(a2, b)
+        difference += self.loss_same(a2, c)
+        difference += self.loss_same(a2, d)
+        difference += self.loss_same(a3, b)
+        difference += self.loss_same(a3, c)
+        difference += self.loss_same(a3, d)
+
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
@@ -202,90 +227,40 @@ class BetaVAE(keras.Model):
         same += self.loss_same(c, d)
         same += self.loss_same(b, d)
         
-        total_loss = same + difference
-        
-        # Final safety check
-        total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
-        
-        return total_loss
-
-    @tf.function
-    def compute_clustering_loss_false(self, false_data: tf.Tensor) -> tf.Tensor:
-        """
-        FIXED: Clustering loss for false (RFI) signals with numerical protection
-        """
-        batch_size = tf.shape(false_data)[0]
-        
-        false_reshaped = tf.reshape(false_data, (batch_size * 6, 16, 512, 1))
-        _, _, z = self.encoder(false_reshaped, training=True)
-        z = tf.reshape(z, (batch_size, 6, -1))
-        
-        # All observations should be similar (author's approach)
-        total_loss = 0.0
-        for i in range(6):
-            for j in range(6):
-                if i != j:
-                    total_loss += self.loss_same(z[:, i, :], z[:, j, :])
-        
-        # Final safety check  
-        total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
-        
-        return total_loss
+        similarity = same + difference
+        return similarity
     
     def train_step(self, data):
-        """Custom training step with author's exact loss computation"""
-        # Unpack data
-        if isinstance(data, tuple) and len(data) == 2:
-            inputs, target = data
-            if isinstance(inputs, tuple) and len(inputs) == 3:
-                concatenated_input, true_cadence, false_cadence = inputs
-            else:
-                concatenated_input = inputs
-                true_cadence = inputs
-                false_cadence = inputs
-        else:
-            concatenated_input = data
-            target = data
-            true_cadence = data
-            false_cadence = data
+        """EXACT author's train_step structure"""
+        # Author's exact data unpacking
+        x, y = data
+        true_data = x[1]
+        false_data = x[2] 
+        x = x[0]
         
         with tf.GradientTape() as tape:
-            # Process main input through VAE
-            batch_size = tf.shape(concatenated_input)[0]
-            
-            # Reshape for encoder
-            encoder_input = tf.reshape(concatenated_input, (batch_size * 6, 16, 512, 1))
-            z_mean, z_log_var, z = self.encoder(encoder_input, training=True)
+            z_mean, z_log_var, z = self.encoder(x, training=True)
             reconstruction = self.decoder(z, training=True)
             
-            # Reshape back
-            reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
+            # Author's exact reconstruction loss
+            reconstruction_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
+                )
+            )
             
-            # FIXED: Robust reconstruction loss computation
-            reconstruction_loss = self.compute_reconstruction_loss(target, reconstruction)
-            
-            # FIXED: Robust KL divergence with proper bounds
+            # Author's exact KL loss
             kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             
-            # Handle different tensor shapes for KL loss
-            if len(kl_loss.shape) == 2:
-                # Expected case: (batch_size, latent_dim)
-                kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-            else:
-                # Fallback for other shapes
-                kl_loss = tf.reduce_mean(kl_loss)
+            # Author's clustering losses
+            false_loss = self.compute_clustering_loss_false(false_data)
+            true_loss = self.compute_clustering_loss_true(true_data)
             
-            # Clustering losses
-            true_loss = self.compute_clustering_loss_true(true_cadence)
-            false_loss = self.compute_clustering_loss_false(false_cadence)
-            
-            # Total loss (Equation 1 from author's code)
+            # Author's exact total loss formula
             total_loss = (reconstruction_loss + 
-                         self.beta * kl_loss +
-                         self.alpha * (true_loss + false_loss))
-            
-            # Add numerical stability checks
-            total_loss = tf.clip_by_value(total_loss, 0.0, 1000.0)
+                         self.beta * kl_loss + 
+                         self.alpha * (1 * true_loss + false_loss))
         
         # Update weights - REMOVED problematic gradient checking
         grads = tape.gradient(total_loss, self.trainable_weights)
