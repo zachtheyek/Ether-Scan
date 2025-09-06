@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
     """
-    FIXED: Normalize data BEFORE signal injection
+    Create a cadence with injected signal - FIXED for proper intensity calculation
     """
     CONST = 3
     start = int(random() * (width_bin - 1)) + 1
@@ -35,18 +35,12 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
     width = random()*50 + abs(drift)*18./1
     b = 96 - true_slope*(start)
     
-    # CRITICAL FIX: Normalize data BEFORE creating setigen frame
-    normalized_data = np.zeros_like(data)
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            normalized_data[i, j] = pre_proc(data[i, j])
-    
-    # Now create frame with normalized data
+    # Use raw data for setigen (maintains noise statistics)
     frame = stg.Frame.from_data(
         df=2.7939677238464355*u.Hz,
         dt=18.25361108*u.s,
         fch1=0*u.MHz,
-        data=normalized_data,  # Use normalized data
+        data=data,  # Use raw data with natural noise
         ascending=True
     )
     
@@ -55,12 +49,17 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
             f_start=frame.get_frequency(index=start),
             drift_rate=drift*u.Hz/u.s
         ),
-        stg.constant_t_profile(level=frame.get_intensity(snr=snr)),
+        stg.constant_t_profile(level=frame.get_intensity(snr=snr)),  # This works with raw data
         stg.gaussian_f_profile(width=width*u.Hz),
         stg.constant_bp_profile(level=1)
     )
     
-    return frame.data, true_slope, b
+    # Normalize AFTER injection
+    result_data = frame.data.copy()
+    for i in range(result_data.shape[0]):
+        result_data[i] = pre_proc(result_data[i])
+    
+    return result_data, true_slope, b
 
 def intersection(m1, m2, b1, b2):
     """Check if two drifting signals intersect in valid regions"""
