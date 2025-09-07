@@ -41,7 +41,7 @@ def get_memory_usage():
     return process.memory_info().rss / 1024 / 1024 / 1024
 
 def setup_gpu_config():
-    """Configure GPU memory growth and multi-GPU strategy"""
+    """Configure GPU memory growth and multi-GPU strategy with OOM prevention"""
     import tensorflow as tf
     
     gpus = tf.config.list_physical_devices('GPU')
@@ -49,10 +49,14 @@ def setup_gpu_config():
         try:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
+
+            # CRITICAL: Use async allocator to prevent memory fragmentation
+            os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+            os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'
             
             # Create distributed strategy for multi-GPU training
             strategy = tf.distribute.MirroredStrategy()
-            logger.info(f"Configured {strategy.num_replicas_in_sync} GPUs with MirroredStrategy")
+            logger.info(f"Configured {strategy.num_replicas_in_sync} GPUs with memory growth and async allocation")
             return strategy
         except RuntimeError as e:
             logger.error(f"GPU configuration error: {e}")
