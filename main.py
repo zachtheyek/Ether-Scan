@@ -49,6 +49,9 @@ def setup_gpu_config():
         try:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
+                tf.config.experimental.set_virtual_device_configuration(
+                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=16000)]  # 16GB limit per GPU
+                )
 
             # CRITICAL: Use async allocator to prevent memory fragmentation
             os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
