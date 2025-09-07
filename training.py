@@ -90,7 +90,7 @@ class TrainingPipeline:
         """
         Train one round using config-specified parameters
         """
-        logger.info(f"Training round {round_idx} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
+        logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
         # Update generator SNR parameters
         self.config.training.snr_base = snr_base

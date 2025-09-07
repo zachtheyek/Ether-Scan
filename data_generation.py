@@ -236,7 +236,6 @@ class DataGenerator:
         
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
-        logger.info(f"Using full width_bin: {self.width_bin} (will downsample later)")
         
     def generate_training_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """

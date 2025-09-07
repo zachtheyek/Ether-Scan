@@ -461,7 +461,7 @@ def build_decoder(latent_dim: int = 8,
 def create_vae_model(config):
     """Create and compile VAE model with author's exact settings"""
     
-    logger.info("Creating VAE model with author's parameters...")
+    logger.info("Creating VAE model...")
     
     encoder = build_encoder(
         latent_dim=config.model.latent_dim,  # 8
