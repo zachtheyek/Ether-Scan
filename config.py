@@ -55,8 +55,8 @@ class DataConfig:
 
 @dataclass  
 class TrainingConfig:
-    batch_size: int = 64
-    validation_batch_size: int = 32
+    batch_size: int = 16
+    validation_batch_size: int = 8
     num_training_rounds: int = 20
     epochs_per_round: int = 100
     snr_base: int = 10
