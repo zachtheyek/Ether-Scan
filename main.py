@@ -32,25 +32,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_gpu_config():
-    """Configure GPU memory growth and multi-GPU strategy with OOM prevention"""
+    """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
     import tensorflow as tf
     
+    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Prevent memory fragmentation within each GPU
+    os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'  # Aggressive cleanup of intermediate tensors
+
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         try:
+            # Set equal memory limits for all GPUs
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
                 tf.config.experimental.set_virtual_device_configuration(
-                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=16000)]  # 16GB limit per GPU
+                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=16000)]  # 16GiB limit per GPU
                 )
 
-            # CRITICAL: Use async allocator to prevent memory fragmentation
-            os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-            os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'
+            # Set distributed strategy to prevent uneven GPU memory usage
+            # Primary choice: NCCL for NVIDIA GPUs
+            try:
+                strategy = tf.distribute.MirroredStrategy(
+                    cross_device_ops=tf.distribute.NcclAllReduce()
+                )
+                logger.info("Using NcclAllReduce for optimal NVIDIA GPU performance")
+                
+            except Exception as e:
+                # Fallback: HierarchicalCopyAllReduce
+                logger.warning(f"NCCL failed ({e}), using HierarchicalCopyAllReduce")
+                strategy = tf.distribute.MirroredStrategy(
+                    cross_device_ops=tf.distribute.HierarchicalCopyAllReduce()
+                )
             
-            # Create distributed strategy for multi-GPU training
-            strategy = tf.distribute.MirroredStrategy()
-            logger.info(f"Configured {strategy.num_replicas_in_sync} GPUs with memory growth and async allocation")
+            logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
             return strategy
         except RuntimeError as e:
             logger.error(f"GPU configuration error: {e}")

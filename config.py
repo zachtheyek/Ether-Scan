@@ -55,8 +55,10 @@ class DataConfig:
 
 @dataclass  
 class TrainingConfig:
-    batch_size: int = 8
-    validation_batch_size: int = 4
+    # NOTE: batch sizes must be divisible by number of GPUs (4)
+    # NOTE: val can have higher batch size than train because val uses less memory (only forward pass)
+    batch_size: int = 128
+    validation_batch_size: int = 256
     num_training_rounds: int = 20
     epochs_per_round: int = 50
     snr_base: int = 10
