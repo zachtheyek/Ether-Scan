@@ -244,10 +244,6 @@ class DataGenerator:
         # Use config for chunk size, with fallback for memory efficiency
         max_chunk_size = getattr(self.config.training, 'max_chunk_size', 1000)
         
-        # If memory efficient mode is enabled, ensure reasonable chunk size
-        if getattr(self.config.training, 'memory_efficient_mode', True):
-            max_chunk_size = min(max_chunk_size, 1000)  # Cap at 1000 for memory safety
-        
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")

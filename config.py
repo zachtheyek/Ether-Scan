@@ -55,8 +55,6 @@ class DataConfig:
 
 @dataclass  
 class TrainingConfig:
-    # NOTE: batch sizes must be divisible by number of GPUs (4)
-    # NOTE: val can have higher batch size than train because val uses less memory (only forward pass)
     batch_size: int = 128
     validation_batch_size: int = 256
     num_training_rounds: int = 20
@@ -66,11 +64,8 @@ class TrainingConfig:
     num_samples_train: int = 5000
     num_samples_test: int = 2000
     num_samples_rf: int = 10000
-
-    # NEW: Memory management parameters
-    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     target_backgrounds: int = 10000  # Number of background cadences to load
-    memory_efficient_mode: bool = True  # Enable memory optimizations
+    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
 
 @dataclass
 class RandomForestConfig:

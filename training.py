@@ -138,14 +138,13 @@ class TrainingPipeline:
             MemoryCleanupCallback()
         ]
         
-        # Add TerminateOnNaN if in memory efficient mode
-        if getattr(self.config.training, 'memory_efficient_mode', True):
-            callbacks.append(tf.keras.callbacks.TerminateOnNaN())
-            
-            # Reduce learning rate on plateau to prevent instability
-            callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
-            ))
+        # Terminate training if loss goes to NaN/Inf
+        callbacks.append(tf.keras.callbacks.TerminateOnNaN())
+        
+        # Reduce learning rate on loss plateau to prevent instability
+        callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
+        ))
         
         logger.info(f"Training with batch_size={batch_size}, val_batch_size={val_batch_size}")
         
