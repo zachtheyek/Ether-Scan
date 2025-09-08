@@ -13,10 +13,10 @@ class ModelConfig:
     latent_dim: int = 8
     dense_layer_size: int = 512
     kernel_size: Tuple[int, int] = (3, 3)
-    alpha: float = 10.0  # Clustering loss weight (author's value)
-    beta: float = 1.5    # KL divergence weight (author's value)
-    gamma: float = 0.0   # Not used in paper
-    learning_rate: float = 0.001  # Author's learning rate
+    alpha: float = 10.0  # Clustering loss weight 
+    beta: float = 1.5    # KL divergence weight
+    gamma: float = 0.0   # Not used
+    learning_rate: float = 0.001  # Default learning rate
     
 @dataclass
 class DataConfig:
@@ -30,12 +30,11 @@ class DataConfig:
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
-    # NEW: Memory management parameters
+    # Memory management parameters
     chunk_size_loading: int = 150  # Cadences to process at once during loading
     max_chunks_per_file: int = 30  # Limit chunks to prevent excessive processing
     
-    
-    # Training data files (as per paper's training data)
+    # Data files
     training_files: List[str] = None
     test_files: List[str] = None
     
@@ -52,20 +51,20 @@ class DataConfig:
                 'real_filtered_LARGE_testHIP83043.npy'
             ]
 
-
 @dataclass  
 class TrainingConfig:
-    batch_size: int = 64
-    validation_batch_size: int = 128
     num_training_rounds: int = 20
     epochs_per_round: int = 50
+    batch_size: int = 64
+    validation_batch_size: int = 128
+
+    target_backgrounds: int = 10000  # Number of background cadences to load
+    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     snr_base: int = 10
     snr_range: int = 40
     num_samples_train: int = 5000
     num_samples_test: int = 2000
     num_samples_rf: int = 10000
-    target_backgrounds: int = 10000  # Number of background cadences to load
-    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
 
 @dataclass
 class RandomForestConfig:
