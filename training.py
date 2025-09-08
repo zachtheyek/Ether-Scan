@@ -185,15 +185,10 @@ class TrainingPipeline:
         Perform iterative training following author's exact schedule
         Paper shows 20 rounds with varying epochs and consistent SNR
         """
-        # Author's training schedule from VAE_NEW_ACCELERATED-BLPC1-8hz-1.py
-        epoch_schedule = [150, 150, 150, 150, 150, 150, 150, 100, 100, 100,
-                         100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-        
-        # All rounds use same SNR range: 10-50 (base=10, range=40)
-        snr_base = 10
-        snr_range = 40
-        
-        n_rounds = min(len(epoch_schedule), self.config.training.num_training_rounds)
+        epochs = self.config.training.epochs_per_round
+        snr_base = self.config.training.snr_base
+        snr_range = self.config.training.snr_range
+        n_rounds = self.config.training.num_training_rounds
         
         logger.info(f"Starting iterative training for {n_rounds} rounds")
         logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
@@ -205,7 +200,7 @@ class TrainingPipeline:
             
             self.train_round(
                 round_idx=round_idx,
-                epochs=epoch_schedule[round_idx],
+                epochs=epochs,
                 snr_base=snr_base,
                 snr_range=snr_range
             )
