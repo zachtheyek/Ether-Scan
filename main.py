@@ -31,15 +31,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# NOTE: Add this to various points in main.py:
-# NOTE: logger.info(f"Memory usage: {get_memory_usage():.2f} GB")
-# NOTE: Add after each major operation:
-# NOTE: Force garbage collection: gc.collect()
-def get_memory_usage():
-    """Get current memory usage in GB"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024 / 1024
-
 def setup_gpu_config():
     """Configure GPU memory growth and multi-GPU strategy with OOM prevention"""
     import tensorflow as tf
