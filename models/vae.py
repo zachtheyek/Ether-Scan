@@ -289,6 +289,58 @@ class BetaVAE(keras.Model):
             "true_loss": self.true_loss_tracker.result(),
             "false_loss": self.false_loss_tracker.result()
         }
+
+    def test_step(self, data):
+        """
+        MISSING test_step method - this is why validation losses were zero!
+        """
+        # Unpack data same as train_step
+        x, y = data
+        true_data = x[1]
+        false_data = x[2] 
+        x = x[0]
+        
+        # Forward pass only (no gradient tape needed for validation)
+        batch_size = tf.shape(x)[0]
+        
+        # Reshape input for encoder: (batch*6, 16, 512, 1)
+        if len(x.shape) == 4:  # (batch, 6, 16, 512)
+            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+        else:  # Already has channel dim
+            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+        
+        # Encode and decode
+        z_mean, z_log_var, z = self.encoder(encoder_input, training=False)
+        reconstruction = self.decoder(z, training=False)
+        
+        # Reshape reconstruction back to cadence format for loss computation
+        reconstruction = tf.reshape(reconstruction, tf.shape(y))
+        
+        # Compute all losses exactly like train_step
+        reconstruction_loss = tf.reduce_mean(
+            tf.reduce_sum(
+                keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
+            )
+        )
+        
+        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+        kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+        
+        false_loss = self.compute_clustering_loss_false(false_data)
+        true_loss = self.compute_clustering_loss_true(true_data)
+        
+        total_loss = (reconstruction_loss + 
+                     self.beta * kl_loss + 
+                     self.alpha * (1 * true_loss + false_loss))
+        
+        # Return losses for logging (Keras will automatically add "val_" prefix)
+        return {
+            "loss": total_loss,
+            "reconstruction_loss": reconstruction_loss,
+            "kl_loss": kl_loss,
+            "true_loss": true_loss,
+            "false_loss": false_loss
+        }
     
     @property
     def metrics(self):
