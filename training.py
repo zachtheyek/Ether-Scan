@@ -12,6 +12,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import gc
 
+from config import TrainingConfig
 from preprocessing import DataPreprocessor
 from data_generation import DataGenerator
 from models.vae import create_vae_model
