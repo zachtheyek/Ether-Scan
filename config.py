@@ -65,6 +65,7 @@ class TrainingConfig:
     num_samples_train: int = 5000
     num_samples_test: int = 2000
     num_samples_rf: int = 10000
+    train_val_split: float = 0.8
 
 @dataclass
 class RandomForestConfig:

@@ -88,7 +88,7 @@ class TrainingPipeline:
     
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        Train one round using config-specified parameters
+        Train one round using config-specified parameters & proper distributed dataset handling
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
@@ -97,9 +97,10 @@ class TrainingPipeline:
         self.config.training.snr_range = snr_range
         
         # Use config values for sample count and batch size
-        n_samples = self.config.training.num_samples_train
         batch_size = self.config.training.batch_size
         val_batch_size = self.config.training.validation_batch_size
+        n_samples = self.config.training.num_samples_train
+        train_val_split = self.config.train_val_split
         
         logger.info(f"Using config values - Samples: {n_samples}, Batch size: {batch_size}")
         
@@ -107,16 +108,27 @@ class TrainingPipeline:
         train_data = self.data_generator.generate_training_batch(n_samples * 3)
         
         # Split into train/validation (80/20)
-        n_train = int(n_samples * 3 * 0.8)
-        
-        train_concat = train_data['concatenated'][:n_train]
-        train_true = train_data['true'][:n_train]
-        train_false = train_data['false'][:n_train]
-        
-        val_concat = train_data['concatenated'][n_train:]
-        val_true = train_data['true'][n_train:]
-        val_false = train_data['false'][n_train:]
-        
+        n_train = int(n_samples * 3 * train_val_split)
+        n_val = (n_samples * 3) - n_train
+
+        # Calculate trimming point so samples are divisible by batch size (to avoid OUT_OF_RANGE)
+        n_train_trimmed = (n_train // batch_size) * batch_size
+        n_val_trimmed = (n_val // val_batch_size) * val_batch_size
+
+        logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
+        logger.info(f"Steps per epoch: Train {n_train_trimmed // batch_size}, Val {n_val_trimmed // val_batch_size}")
+
+        # Split and trim in one operation to avoid intermediate arrays
+        train_concat = train_data['concatenated'][:n_train_trimmed]
+        train_true = train_data['true'][:n_train_trimmed]
+        train_false = train_data['false'][:n_train_trimmed]
+     
+        val_start = n_train_raw  # Start from original split point
+        val_end = val_start + n_val_trimmed  # Take only trimmed amount
+        val_concat = train_data['concatenated'][val_start:val_end]
+        val_true = train_data['true'][val_start:val_end]
+        val_false = train_data['false'][val_start:val_end]
+               
         # Clear original data to save memory
         del train_data
         gc.collect()
@@ -134,20 +146,15 @@ class TrainingPipeline:
                 cleanup_memory()
         
         callbacks = [
-            tf.keras.callbacks.TerminateOnNaN(),
-            MemoryCleanupCallback()
+            tf.keras.callbacks.TerminateOnNaN(),  # Terminate training if loss goes to NaN/Inf
+            MemoryCleanupCallback(),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
+            )  # Reduce learning rate on loss plateau to prevent instability
         ]
         
-        # Terminate training if loss goes to NaN/Inf
-        callbacks.append(tf.keras.callbacks.TerminateOnNaN())
-        
-        # Reduce learning rate on loss plateau to prevent instability
-        callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
-        ))
-        
         logger.info(f"Training with batch_size={batch_size}, val_batch_size={val_batch_size}")
-        
+
         history = self.vae.fit(
             x=x_train,
             y=y_train,
