@@ -23,8 +23,9 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
     """
     CONST = 3
     start = int(random() * (width_bin - 1)) + 1
-    
-    if (-1)**(int(random()*3+1)) > 0:
+   
+    # FIXED: removed drift rate bias bug from using (-1)**(int(random()*3+1))
+    if np.random.choice([-1, 1]) > 0:
         true_slope = (96/start)
         slope = (true_slope) * (18.25361108/2.7939677238464355) + random()*CONST
     else:
