@@ -39,6 +39,38 @@ def cleanup_memory():
         except:
             pass
 
+def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
+    """
+    Calculate SNR parameters for curriculum learning
+    
+    Args:
+        round_idx: Current training round (0-indexed)
+        total_rounds: Total number of training rounds
+        config: Training configuration
+        
+    Returns:
+        (snr_base, snr_range) tuple
+    """
+    # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
+    progress = round_idx / (total_rounds - 1)
+    
+    if config.curriculum_schedule == "linear":
+        # Linear progression from wide to narrow SNR range
+        current_range = config.initial_snr_range - progress * (config.initial_snr_range - config.final_snr_range)
+    elif config.curriculum_schedule == "exponential":
+        # Exponential decay - stay easy longer, then get hard quickly
+        current_range = config.final_snr_range + (config.initial_snr_range - config.final_snr_range) * np.exp(config.exponential_decay_rate * progress)
+    elif config.curriculum_schedule == "step":
+        # Step function - easy for first part, hard for second part
+        if round_idx < config.easy_rounds:
+            current_range = config.initial_snr_range
+        else:
+            current_range = config.final_snr_range
+        # NOTE: add mechanism for more step changes
+    # NOTE: add exception for all other values of curriculum_schedule
+    
+    return config.snr_base, int(current_range)
+
 class TrainingPipeline:
     """Training pipeline matching author's methodology"""
     
@@ -85,7 +117,7 @@ class TrainingPipeline:
         os.makedirs(self.config.model_path, exist_ok=True)
         os.makedirs(os.path.join(self.config.model_path, 'checkpoints'), exist_ok=True)
         os.makedirs(os.path.join(self.config.output_path, 'plots'), exist_ok=True)
-    
+
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
         Train one round using config-specified parameters & proper distributed dataset handling
@@ -175,7 +207,7 @@ class TrainingPipeline:
         checkpoint_path = os.path.join(
             self.config.model_path,
             'checkpoints',
-            f'vae_round_{round_idx:02d}.h5'
+            f'vae_round_{round_idx+1:02d}.h5'
         )
         self.vae.encoder.save(checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
@@ -188,20 +220,19 @@ class TrainingPipeline:
     
     def iterative_training(self):
         """
-        Perform iterative training following author's exact schedule
-        Paper shows 20 rounds with varying epochs and consistent SNR
+        Perform iterative training with curriculum learning
         """
         epochs = self.config.training.epochs_per_round
-        snr_base = self.config.training.snr_base
-        snr_range = self.config.training.snr_range
         n_rounds = self.config.training.num_training_rounds
         
-        logger.info(f"Starting iterative training for {n_rounds} rounds")
-        logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
+        logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
         
         for round_idx in range(n_rounds):
+            snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
+
             logger.info(f"\n{'='*50}")
             logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
+            logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
             logger.info(f"{'='*50}")
             
             self.train_round(

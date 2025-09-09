@@ -57,15 +57,21 @@ class TrainingConfig:
     epochs_per_round: int = 50
     batch_size: int = 64
     validation_batch_size: int = 128
-
     target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
-    snr_base: int = 10
-    snr_range: int = 40
     num_samples_train: int = 5000
     num_samples_test: int = 2000
     num_samples_rf: int = 10000
     train_val_split: float = 0.8
+
+    # Curriculum learning parameters
+    snr_base: int = 10 
+    initial_snr_range: int = 40  # Start with wide range (10-50)
+    final_snr_range: int = 20    # End with narrow range (10-30)  
+    curriculum_schedule: str = "exponential"  # "linear", "exponential", "step"
+    exponential_decay_rate: int = -3  # How quickly training should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
+    step_easy_rounds: int = 5         # Number of rounds with easy signals
+    step_hard_rounds: int = 15        # Number of rounds with challenging signals
 
 @dataclass
 class RandomForestConfig:
