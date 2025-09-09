@@ -133,7 +133,7 @@ class TrainingPipeline:
         batch_size = self.config.training.batch_size
         val_batch_size = self.config.training.validation_batch_size
         n_samples = self.config.training.num_samples_train
-        train_val_split = self.config.train_val_split
+        train_val_split = self.config.training.train_val_split
         
         logger.info(f"Using config values - Samples: {n_samples}, Batch size: {batch_size}")
         
@@ -156,7 +156,7 @@ class TrainingPipeline:
         train_true = train_data['true'][:n_train_trimmed]
         train_false = train_data['false'][:n_train_trimmed]
      
-        val_start = n_train_raw  # Start from original split point
+        val_start = n_train  # Start from original split point
         val_end = val_start + n_val_trimmed  # Take only trimmed amount
         val_concat = train_data['concatenated'][val_start:val_end]
         val_true = train_data['true'][val_start:val_end]
