@@ -130,9 +130,9 @@ class TrainingPipeline:
         self.config.training.snr_range = snr_range
         
         # CHANGE 1: Use physical batch sizes for memory efficiency
-        physical_batch = self.config.training.physical_batch_size  # 16
-        logical_batch = self.config.training.logical_batch_size    # 64
-        accumulation_steps = logical_batch // physical_batch       # 4
+        physical_batch = self.config.training.train_physical_batch_size
+        logical_batch = self.config.training.train_logical_batch_size
+        accumulation_steps = logical_batch // physical_batch
         val_batch_size = self.config.training.validation_batch_size
         n_samples = self.config.training.num_samples_train
         train_val_split = self.config.training.train_val_split
