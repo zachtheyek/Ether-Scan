@@ -55,8 +55,10 @@ class DataConfig:
 class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 50
-    batch_size: int = 64
-    validation_batch_size: int = 128
+    # batch_size: int = 64
+    # validation_batch_size: int = 128
+    batch_size: int = 8
+    validation_batch_size: int = 16
     target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     num_samples_train: int = 5000
