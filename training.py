@@ -164,7 +164,19 @@ class TrainingPipeline:
         
         # Training history tracking
         epoch_metrics = {'loss': [], 'val_loss': []}
-        
+
+        @tf.function
+        def compute_gradients_for_accumulation(batch_data, accumulation_steps):
+            """Compute gradients for one micro-batch in accumulation"""
+            with tf.GradientTape() as tape:
+                losses = self.vae.compute_forward_pass(batch_data, training=True)
+                # Scale loss by accumulation steps
+                scaled_loss = losses['total_loss'] / accumulation_steps
+            
+            # Compute gradients
+            gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
+            return gradients, losses
+
         for epoch in range(epochs):
             logger.info(f"Epoch {epoch + 1}/{epochs}")
             
@@ -177,46 +189,39 @@ class TrainingPipeline:
                 accumulated_gradients = []
                 step_loss = 0.0
                 
-                # Process accumulation_steps micro-batches
+                # Process accumulation_steps in micro-batches
                 for micro_step in range(accumulation_steps):
-                    
-                    def micro_batch_step(batch_data):
-                        x_batch, y_batch = batch_data
-                        
-                        with tf.GradientTape() as tape:
-                            # Forward pass
-                            results = self.vae.train_step((x_batch, y_batch))
-                            loss = results['loss'] 
-                            # Scale loss by accumulation steps
-                            scaled_loss = loss / accumulation_steps
-                        
-                        # Compute gradients
-                        gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
-                        return gradients, loss
-                    
                     # Get micro-batch and run on all GPUs
                     micro_batch_data = next(train_iterator)
-                    per_replica_grads, per_replica_loss = self.strategy.run(
-                        micro_batch_step, args=(micro_batch_data,)
+                    per_replica_results = self.strategy.run(
+                    compute_gradients_for_accumulation, 
+                    args=(micro_batch_data, accumulation_steps)
                     )
+
+                    per_replica_grads, per_replica_losses = per_replica_results[0], per_replica_results[1]
                     
                     # Accumulate gradients
-                    if not accumulated_gradients:
+                    if accumulated_gradients is None:
                         accumulated_gradients = per_replica_grads
                     else:
                         accumulated_gradients = [
-                            acc_grad + new_grad 
+                            acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
                             for acc_grad, new_grad in zip(accumulated_gradients, per_replica_grads)
                         ]
                     
                     step_loss += self.strategy.reduce(
-                        tf.distribute.ReduceOp.MEAN, per_replica_loss, axis=None
+                        tf.distribute.ReduceOp.MEAN, per_replica_losses['total_loss'], axis=None
                     )
                 
                 # Apply accumulated gradients
-                self.vae.optimizer.apply_gradients(
-                    zip(accumulated_gradients, self.vae.trainable_variables)
-                )
+                if accumulated_gradients is not None:
+                    valid_grads_and_vars = [
+                        (grad, var) for grad, var in zip(accumulated_gradients, self.vae.trainable_variables)
+                        if grad is not None
+                    ]
+            
+                    if valid_grads_and_vars:
+                        self.vae.optimizer.apply_gradients(valid_grads_and_vars)
                 
                 epoch_loss += step_loss / accumulation_steps
                 

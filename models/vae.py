@@ -173,64 +173,79 @@ class BetaVAE(keras.Model):
         
         similarity = same + difference
         return similarity
-    
-    def train_step(self, data):
-        """Model training step"""
+
+    @tf.function
+    def compute_forward_pass(self, data, training=True):
+        """
+        Compute forward pass and losses without applying gradients
+        Can be reused by both train_step and gradient accumulation
+        """
         # Unpack data
         x, y = data
         true_data = x[1]
         false_data = x[2] 
         x = x[0]
+
+        # Reshape input for encoder
+        batch_size = tf.shape(x)[0]
+        if len(x.shape) == 4:  # (batch, 6, 16, 512)
+            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+        else:  # Already has channel dim
+            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
         
-        with tf.GradientTape() as tape:
-            # Reshape input for encoder like in call method
-            batch_size = tf.shape(x)[0]
-            
-            # Add channel dimension and reshape for encoder: (batch*6, 16, 512, 1)
-            if len(x.shape) == 4:  # (batch, 6, 16, 512)
-                encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
-            else:  # Already has channel dim
-                encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
-            
-            # Encode
-            z_mean, z_log_var, z = self.encoder(encoder_input, training=True)
-            
-            # Decode
-            reconstruction = self.decoder(z, training=True)
-            
-            # Reshape reconstruction back to cadence format for loss computation
-            reconstruction = tf.reshape(reconstruction, tf.shape(y))
-            
-            # Compute reconstruction loss
-            reconstruction_loss = tf.reduce_mean(
-                tf.reduce_sum(
-                    keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
-                )
+        # Encode
+        z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
+        
+        # Decode
+        reconstruction = self.decoder(z, training=training)
+        
+        # Reshape reconstruction back to cadence format for loss computation
+        reconstruction = tf.reshape(reconstruction, tf.shape(y))
+        
+        # Compute reconstruction loss
+        reconstruction_loss = tf.reduce_mean(
+            tf.reduce_sum(
+                keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
             )
-            
-            # Compute KL loss
-            kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
-            kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-            
-            # Compute clustering losses (these handle their own reshaping)
-            false_loss = self.compute_clustering_loss_false(false_data)
-            true_loss = self.compute_clustering_loss_true(true_data)
-            
-            # Total loss formula
-            total_loss = (reconstruction_loss + 
-                         self.beta * kl_loss + 
-                         self.alpha * (1 * true_loss + false_loss))
+        )
         
+        # Compute KL loss
+        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+        kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+        
+        # Compute clustering losses (these handle their own reshaping)
+        false_loss = self.compute_clustering_loss_false(false_data)
+        true_loss = self.compute_clustering_loss_true(true_data)
+        
+        # Total loss formula
+        total_loss = (reconstruction_loss + 
+                     self.beta * kl_loss + 
+                     self.alpha * (1 * true_loss + false_loss))
+
+        return {
+            'total_loss': total_loss,
+            'reconstruction_loss': reconstruction_loss,
+            'kl_loss': kl_loss,
+            'true_loss': true_loss,
+            'false_loss': false_loss
+        }
+    
+    def train_step(self, data):
+        """Model training step"""
+        with tf.GradientTape() as tape:
+            losses = self.compute_forward_pass(data, training=True)
+            total_loss = losses['total_loss']
+
         # Apply gradients
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         
         # Update metrics
         self.total_loss_tracker.update_state(total_loss)
-        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
-        self.kl_loss_tracker.update_state(kl_loss)
-        self.true_loss_tracker.update_state(true_loss)
-        self.false_loss_tracker.update_state(false_loss)
+        self.reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
+        self.kl_loss_tracker.update_state(losses['kl_loss'])
+        self.true_loss_tracker.update_state(losses['true_loss'])
+        self.false_loss_tracker.update_state(losses['false_loss'])
         
         return {
             "loss": self.total_loss_tracker.result(),
@@ -242,51 +257,14 @@ class BetaVAE(keras.Model):
 
     def test_step(self, data):
         """Model validation step"""
-        # Unpack data same as train_step
-        x, y = data
-        true_data = x[1]
-        false_data = x[2] 
-        x = x[0]
-        
-        # Forward pass only (no gradient tape needed for validation)
-        batch_size = tf.shape(x)[0]
-        
-        # Reshape input for encoder: (batch*6, 16, 512, 1)
-        if len(x.shape) == 4:  # (batch, 6, 16, 512)
-            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
-        else:  # Already has channel dim
-            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
-        
-        # Encode and decode
-        z_mean, z_log_var, z = self.encoder(encoder_input, training=False)
-        reconstruction = self.decoder(z, training=False)
-        
-        # Reshape reconstruction back to cadence format for loss computation
-        reconstruction = tf.reshape(reconstruction, tf.shape(y))
-        
-        # Compute all losses exactly like train_step
-        reconstruction_loss = tf.reduce_mean(
-            tf.reduce_sum(
-                keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
-            )
-        )
-        
-        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
-        kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-        
-        false_loss = self.compute_clustering_loss_false(false_data)
-        true_loss = self.compute_clustering_loss_true(true_data)
-        
-        total_loss = (reconstruction_loss + 
-                     self.beta * kl_loss + 
-                     self.alpha * (1 * true_loss + false_loss))
+        losses = self.compute_forward_pass(data, training=False)
 
         # Update metrics
-        self.val_total_loss_tracker.update_state(total_loss)
-        self.val_reconstruction_loss_tracker.update_state(reconstruction_loss)
-        self.val_kl_loss_tracker.update_state(kl_loss)
-        self.val_true_loss_tracker.update_state(true_loss)
-        self.val_false_loss_tracker.update_state(false_loss)
+        self.total_loss_tracker.update_state(losses['total_loss'])
+        self.reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
+        self.kl_loss_tracker.update_state(losses['kl_loss'])
+        self.true_loss_tracker.update_state(losses['true_loss'])
+        self.false_loss_tracker.update_state(losses['false_loss'])
         
         return {
             "loss": self.val_total_loss_tracker.result(),
