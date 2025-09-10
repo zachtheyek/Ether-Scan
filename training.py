@@ -121,7 +121,7 @@ class TrainingPipeline:
 
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        Train one round using config-specified parameters & proper distributed dataset handling
+        Train one round with distributed dataset handling & gradient accumulation
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
@@ -129,94 +129,163 @@ class TrainingPipeline:
         self.config.training.snr_base = snr_base
         self.config.training.snr_range = snr_range
         
-        # Use config values for sample count and batch size
-        batch_size = self.config.training.batch_size
+        # CHANGE 1: Use physical batch sizes for memory efficiency
+        physical_batch = self.config.training.physical_batch_size  # 16
+        logical_batch = self.config.training.logical_batch_size    # 64
+        accumulation_steps = logical_batch // physical_batch       # 4
         val_batch_size = self.config.training.validation_batch_size
         n_samples = self.config.training.num_samples_train
         train_val_split = self.config.training.train_val_split
         
-        logger.info(f"Using config values - Samples: {n_samples}, Batch size: {batch_size}")
+        logger.info(f"Gradient accumulation: {physical_batch} physical, {logical_batch} logical, "
+                   f"{accumulation_steps} accumulation steps")
         
-        # Generate training data (will use config-specified chunking)
+        # Generate training data (same as before)
         train_data = self.data_generator.generate_training_batch(n_samples * 3)
         
-        # Split into train/validation (80/20)
+        # Split and trim (same logic as before, but using logical_batch for calculations)
         n_train = int(n_samples * 3 * train_val_split)
         n_val = (n_samples * 3) - n_train
-
-        # Calculate trimming point so samples are divisible by batch size (to avoid OUT_OF_RANGE)
-        n_train_trimmed = (n_train // batch_size) * batch_size
+        
+        n_train_trimmed = (n_train // logical_batch) * logical_batch  # Use logical batch
         n_val_trimmed = (n_val // val_batch_size) * val_batch_size
 
         logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
-        logger.info(f"Steps per epoch: Train {n_train_trimmed // batch_size}, Val {n_val_trimmed // val_batch_size}")
-
-        # Split and trim in one operation to avoid intermediate arrays
+        
+        # Prepare data (same as before)
         train_concat = train_data['concatenated'][:n_train_trimmed]
         train_true = train_data['true'][:n_train_trimmed]
         train_false = train_data['false'][:n_train_trimmed]
-     
-        val_start = n_train  # Start from original split point
-        val_end = val_start + n_val_trimmed  # Take only trimmed amount
+        
+        val_start = n_train
+        val_end = val_start + n_val_trimmed
         val_concat = train_data['concatenated'][val_start:val_end]
         val_true = train_data['true'][val_start:val_end]
         val_false = train_data['false'][val_start:val_end]
-               
-        # Clear original data to save memory
+        
         del train_data
         gc.collect()
         
-        # Prepare data in format expected by model
-        x_train = (train_concat, train_true, train_false)
-        y_train = train_concat
+        # CHANGE 2: Create datasets with physical batch size
+        train_dataset = tf.data.Dataset.from_tensor_slices((
+            (train_concat, train_true, train_false), train_concat
+        )).batch(physical_batch).prefetch(tf.data.AUTOTUNE)
         
-        x_val = (val_concat, val_true, val_false)
-        y_val = val_concat
-
-       # Add custom callback for memory cleanup
-        class MemoryCleanupCallback(tf.keras.callbacks.Callback):
-            def on_epoch_end(self, epoch, logs=None):
-                cleanup_memory()
+        val_dataset = tf.data.Dataset.from_tensor_slices((
+            (val_concat, val_true, val_false), val_concat  
+        )).batch(val_batch_size).prefetch(tf.data.AUTOTUNE)
         
-        callbacks = [
-            tf.keras.callbacks.TerminateOnNaN(),  # Terminate training if loss goes to NaN/Inf
-            MemoryCleanupCallback(),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1
-            )  # Reduce learning rate on loss plateau to prevent instability
-        ]
+        # Distribute datasets across GPUs
+        train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
+        val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
         
-        logger.info(f"Training with batch_size={batch_size}, val_batch_size={val_batch_size}")
-
-        history = self.vae.fit(
-            x=x_train,
-            y=y_train,
-            batch_size=batch_size,  # Use config value
-            epochs=epochs,
-            validation_data=(x_val, y_val),
-            validation_batch_size=val_batch_size,  # Use config value
-            callbacks=callbacks,
-            verbose=1
-        )
+        # CHANGE 3: Custom training loop instead of self.vae.fit()
+        steps_per_epoch = n_train_trimmed // logical_batch
+        val_steps = n_val_trimmed // val_batch_size
         
-        # Update history
-        for key in history.history:
+        # Training history tracking
+        epoch_metrics = {'loss': [], 'val_loss': []}
+        
+        for epoch in range(epochs):
+            logger.info(f"Epoch {epoch + 1}/{epochs}")
+            
+            # Training with gradient accumulation
+            epoch_loss = 0.0
+            train_iterator = iter(train_dataset)
+            
+            for step in range(steps_per_epoch):
+                # CHANGE 4: Gradient accumulation logic
+                accumulated_gradients = []
+                step_loss = 0.0
+                
+                # Process accumulation_steps micro-batches
+                for micro_step in range(accumulation_steps):
+                    
+                    def micro_batch_step(batch_data):
+                        x_batch, y_batch = batch_data
+                        
+                        with tf.GradientTape() as tape:
+                            # Forward pass (same as your original VAE)
+                            results = self.vae.train_step((x_batch, y_batch))
+                            loss = results['loss'] 
+                            # Scale loss by accumulation steps
+                            scaled_loss = loss / accumulation_steps
+                        
+                        # Compute gradients
+                        gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
+                        return gradients, loss
+                    
+                    # Get micro-batch and run on all GPUs
+                    micro_batch_data = next(train_iterator)
+                    per_replica_grads, per_replica_loss = self.strategy.run(
+                        micro_batch_step, args=(micro_batch_data,)
+                    )
+                    
+                    # Accumulate gradients
+                    if not accumulated_gradients:
+                        accumulated_gradients = per_replica_grads
+                    else:
+                        accumulated_gradients = [
+                            acc_grad + new_grad 
+                            for acc_grad, new_grad in zip(accumulated_gradients, per_replica_grads)
+                        ]
+                    
+                    step_loss += self.strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN, per_replica_loss, axis=None
+                    )
+                
+                # CHANGE 5: Apply accumulated gradients
+                self.vae.optimizer.apply_gradients(
+                    zip(accumulated_gradients, self.vae.trainable_variables)
+                )
+                
+                epoch_loss += step_loss / accumulation_steps
+                
+                if step % 10 == 0:
+                    logger.info(f"Step {step}/{steps_per_epoch}, Loss: {step_loss/accumulation_steps:.4f}")
+            
+            # Validation (can use larger batches - no gradients computed)
+            val_loss = 0.0
+            val_iterator = iter(val_dataset)
+            
+            for val_step in range(val_steps):
+                val_batch_data = next(val_iterator)
+                val_results = self.strategy.run(self.vae.test_step, args=(val_batch_data,))
+                val_loss += self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, val_results['loss'], axis=None
+                )
+            
+            # Log epoch results
+            avg_epoch_loss = epoch_loss / steps_per_epoch
+            avg_val_loss = val_loss / val_steps
+            
+            epoch_metrics['loss'].append(float(avg_epoch_loss))
+            epoch_metrics['val_loss'].append(float(avg_val_loss))
+            
+            logger.info(f"Epoch {epoch + 1} - Loss: {avg_epoch_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+            
+            # Learning rate reduction logic (if needed)
+            current_lr = self.vae.optimizer.learning_rate
+            if epoch > 3 and avg_epoch_loss > min(epoch_metrics['loss'][-4:-1]):
+                new_lr = current_lr * 0.5
+                self.vae.optimizer.learning_rate = new_lr
+                logger.info(f"Reduced learning rate to {new_lr}")
+        
+        # Update history (same format as before)
+        for key, values in epoch_metrics.items():
             if key in self.history:
-                self.history[key].extend(history.history[key])
+                self.history[key].extend(values)
         
-        # Save checkpoint
+        # Save checkpoint (same as before)
         checkpoint_path = os.path.join(
-            self.config.model_path,
-            'checkpoints',
-            f'vae_round_{round_idx+1:02d}.h5'
+            self.config.model_path, 'checkpoints', f'vae_round_{round_idx+1:02d}.h5'
         )
         self.vae.encoder.save(checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
         
-        # Clean up memory
+        # Clean up memory (same as before)
         del train_concat, train_true, train_false
         del val_concat, val_true, val_false
-        del x_train, y_train, x_val, y_val
         gc.collect()
     
     def iterative_training(self):

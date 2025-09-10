@@ -45,7 +45,7 @@ def setup_gpu_config():
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
                 tf.config.experimental.set_virtual_device_configuration(
-                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=16000)]  # 16GiB limit per GPU
+                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=14000)]  # 14GiB limit per GPU
                 )
 
             # Set distributed strategy to prevent uneven GPU memory usage
