@@ -182,7 +182,7 @@ def create_full_cadence(function, samples: int, plate: np.ndarray,
                         factor: float = 1, width_bin: int = 512) -> np.ndarray:
     """
     Create multiple cadences in parallel
-    Note: Cannot use @jit decorator because function arguments are not supported in nopython mode
+    Cannot use @jit decorator because function arguments are not supported in nopython mode
     """
     data = np.zeros((samples, 6, 16, width_bin))
     
