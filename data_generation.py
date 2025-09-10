@@ -1,6 +1,5 @@
 """
 Synthetic data generation for SETI ML Pipeline
-Fixed to match author's approach using setigen
 """
 
 import numpy as np
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
     """
-    Create a cadence with injected signal - FIXED for normalized background data
+    Create a cadence with injected signal
     """
     CONST = 3
     start = int(random() * (width_bin - 1)) + 1
@@ -36,8 +35,6 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
     width = random()*50 + abs(drift)*18./1
     b = 96 - true_slope*(start)
     
-    # CRITICAL FIX: Background data is already normalized to [0,1]
-    # Don't apply additional normalization
     frame = stg.Frame.from_data(
         df=2.7939677238464355*u.Hz,
         dt=18.25361108*u.s,
@@ -56,8 +53,7 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.
         stg.constant_bp_profile(level=1)
     )
     
-    # CRITICAL FIX: Data is already normalized, just return it
-    # Don't apply pre_proc again since backgrounds are already [0,1]
+    # Data is already normalized, just return it
     result_data = frame.data.copy()
     
     return result_data, true_slope, b
@@ -82,7 +78,7 @@ def intersection(m1, m2, b1, b2):
 def create_true(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10, 
                 factor: float = 1, index: int = 1, width_bin: int = 512) -> np.ndarray:
     """
-    Create true ETI signal following author's exact approach
+    Create true ETI signal
     Signal appears in ON observations (0, 2, 4) with consistent drift
     
     Args:
@@ -217,7 +213,7 @@ def create_mixed_training_batch(data_generator, batch_size: int) -> Tuple[np.nda
     )
 
 class DataGenerator:
-    """Synthetic data generator matching author's approach"""
+    """Synthetic data generator"""
     
     def __init__(self, config, background_plates: np.ndarray):
         """

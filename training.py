@@ -1,6 +1,5 @@
 """
 Training pipeline for SETI ML models
-Fixed to match paper's training methodology exactly
 """
 
 import numpy as np
@@ -19,26 +18,6 @@ from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
-
-def cleanup_memory():
-    """Force memory cleanup for distributed training"""
-    import gc
-    gc.collect()
-    
-    # Clear TensorFlow's session state
-    try:
-        tf.keras.backend.clear_session()
-    except:
-        pass
-    
-    # Force GPU memory cleanup if available
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.reset_memory_growth(gpu)
-        except:
-            pass
 
 def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
     """
@@ -59,21 +38,21 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
         # Linear progression from wide to narrow SNR range
         current_range = config.initial_snr_range - progress * (config.initial_snr_range - config.final_snr_range)
     elif config.curriculum_schedule == "exponential":
-        # Exponential decay - stay easy longer, then get hard quickly
+        # Exponential decay - start easy, then get hard quickly
         current_range = config.final_snr_range + (config.initial_snr_range - config.final_snr_range) * np.exp(config.exponential_decay_rate * progress)
     elif config.curriculum_schedule == "step":
         # Step function - easy for first part, hard for second part
+        # TODO: add mechanism for more step changes
         if round_idx < config.easy_rounds:
             current_range = config.initial_snr_range
         else:
             current_range = config.final_snr_range
-        # NOTE: add mechanism for more step changes
-    # NOTE: add exception for all other values of curriculum_schedule
+    # TODO: add exception handling for all other values of curriculum_schedule
     
     return config.snr_base, int(current_range)
 
 class TrainingPipeline:
-    """Training pipeline matching author's methodology"""
+    """Training pipeline"""
     
     def __init__(self, config, background_data: np.ndarray, strategy=None):
         """
@@ -129,7 +108,7 @@ class TrainingPipeline:
         self.config.training.snr_base = snr_base
         self.config.training.snr_range = snr_range
         
-        # CHANGE 1: Use physical batch sizes for memory efficiency
+        # Use physical batch sizes for memory efficiency
         physical_batch = self.config.training.train_physical_batch_size
         logical_batch = self.config.training.train_logical_batch_size
         accumulation_steps = logical_batch // physical_batch
@@ -140,19 +119,19 @@ class TrainingPipeline:
         logger.info(f"Gradient accumulation: {physical_batch} physical, {logical_batch} logical, "
                    f"{accumulation_steps} accumulation steps")
         
-        # Generate training data (same as before)
+        # Generate training data 
         train_data = self.data_generator.generate_training_batch(n_samples * 3)
         
-        # Split and trim (same logic as before, but using logical_batch for calculations)
+        # Split and trim
         n_train = int(n_samples * 3 * train_val_split)
         n_val = (n_samples * 3) - n_train
         
-        n_train_trimmed = (n_train // logical_batch) * logical_batch  # Use logical batch
+        n_train_trimmed = (n_train // logical_batch) * logical_batch
         n_val_trimmed = (n_val // val_batch_size) * val_batch_size
 
         logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
         
-        # Prepare data (same as before)
+        # Prepare data 
         train_concat = train_data['concatenated'][:n_train_trimmed]
         train_true = train_data['true'][:n_train_trimmed]
         train_false = train_data['false'][:n_train_trimmed]
@@ -166,7 +145,7 @@ class TrainingPipeline:
         del train_data
         gc.collect()
         
-        # CHANGE 2: Create datasets with physical batch size
+        # Create datasets with physical batch size
         train_dataset = tf.data.Dataset.from_tensor_slices((
             (train_concat, train_true, train_false), train_concat
         )).batch(physical_batch).prefetch(tf.data.AUTOTUNE)
@@ -179,7 +158,7 @@ class TrainingPipeline:
         train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
         
-        # CHANGE 3: Custom training loop instead of self.vae.fit()
+        # Training loop with manual forward pass for gradient accumulation
         steps_per_epoch = n_train_trimmed // logical_batch
         val_steps = n_val_trimmed // val_batch_size
         
@@ -194,7 +173,7 @@ class TrainingPipeline:
             train_iterator = iter(train_dataset)
             
             for step in range(steps_per_epoch):
-                # CHANGE 4: Gradient accumulation logic
+                # Initialize gradient accumulation logic
                 accumulated_gradients = []
                 step_loss = 0.0
                 
@@ -205,7 +184,7 @@ class TrainingPipeline:
                         x_batch, y_batch = batch_data
                         
                         with tf.GradientTape() as tape:
-                            # Forward pass (same as your original VAE)
+                            # Forward pass
                             results = self.vae.train_step((x_batch, y_batch))
                             loss = results['loss'] 
                             # Scale loss by accumulation steps
@@ -234,7 +213,7 @@ class TrainingPipeline:
                         tf.distribute.ReduceOp.MEAN, per_replica_loss, axis=None
                     )
                 
-                # CHANGE 5: Apply accumulated gradients
+                # Apply accumulated gradients
                 self.vae.optimizer.apply_gradients(
                     zip(accumulated_gradients, self.vae.trainable_variables)
                 )
@@ -264,26 +243,26 @@ class TrainingPipeline:
             
             logger.info(f"Epoch {epoch + 1} - Loss: {avg_epoch_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
             
-            # Learning rate reduction logic (if needed)
+            # Adaptive learning rate
             current_lr = self.vae.optimizer.learning_rate
             if epoch > 3 and avg_epoch_loss > min(epoch_metrics['loss'][-4:-1]):
                 new_lr = current_lr * 0.5
                 self.vae.optimizer.learning_rate = new_lr
                 logger.info(f"Reduced learning rate to {new_lr}")
         
-        # Update history (same format as before)
+        # Update history 
         for key, values in epoch_metrics.items():
             if key in self.history:
                 self.history[key].extend(values)
         
-        # Save checkpoint (same as before)
+        # Save checkpoint
         checkpoint_path = os.path.join(
             self.config.model_path, 'checkpoints', f'vae_round_{round_idx+1:02d}.h5'
         )
         self.vae.encoder.save(checkpoint_path)
         logger.info(f"Saved checkpoint to {checkpoint_path}")
         
-        # Clean up memory (same as before)
+        # Clean up memory
         del train_concat, train_true, train_false
         del val_concat, val_true, val_false
         gc.collect()
@@ -322,8 +301,9 @@ class TrainingPipeline:
                     )
                 )
     
+    # NOTE: come back to this later
     def train_random_forest(self):
-        """Train Random Forest using config-specified parameters"""
+        """Train Random Forest"""
         logger.info("Training Random Forest classifier...")
         
         # Use config values
@@ -470,14 +450,13 @@ class TrainingPipeline:
             logger.info(f"Saved Random Forest to {rf_path}")
 
 def train_full_pipeline(config, background_data: np.ndarray,
-                       n_rounds: int = 20, strategy=None) -> TrainingPipeline:
+                       strategy=None) -> TrainingPipeline:
     """
-    Train complete SETI ML pipeline following author's methodology
+    Train complete SETI ML pipeline
     
     Args:
         config: Configuration object
         background_data: Preprocessed background observations
-        n_rounds: Number of training rounds (default: 20 as per paper)
         strategy: TensorFlow distribution strategy
         
     Returns:

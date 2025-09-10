@@ -1,6 +1,5 @@
 """
 Main entry point for SETI ML Pipeline
-Fixed to properly handle data preprocessing and training flow
 """
 
 import argparse
@@ -11,8 +10,6 @@ import numpy as np
 from datetime import datetime
 import json
 import gc
-import psutil
-
 
 from config import Config
 from preprocessing import DataPreprocessor
@@ -49,8 +46,8 @@ def setup_gpu_config():
                 )
 
             # Set distributed strategy to prevent uneven GPU memory usage
-            # Primary choice: NCCL for NVIDIA GPUs
             try:
+                # Primary choice: NCCL for NVIDIA GPUs
                 strategy = tf.distribute.MirroredStrategy(
                     cross_device_ops=tf.distribute.NcclAllReduce()
                 )
@@ -74,17 +71,16 @@ def setup_gpu_config():
 
 def load_background_data(config: Config) -> np.ndarray:
     """
-    Load background data using config-specified parameters
-    FIXED: Normalize each observation after downsampling
+    Load, downsample, and normalize background data
     """
-    from preprocessing import pre_proc  # Import the normalization function
+    from preprocessing import pre_proc
     
     logger.info(f"Loading background data from {config.data_path}")
     
     # Use config values for memory management
-    target_backgrounds = getattr(config.training, 'target_backgrounds', 8000)
-    chunk_size = getattr(config.data, 'chunk_size_loading', 100)
-    max_chunks = getattr(config.data, 'max_chunks_per_file', 10)
+    target_backgrounds = config.training.target_backgrounds
+    chunk_size = config.data.chunk_size_loading
+    max_chunks = config.data.max_chunks_per_file
     downsample_factor = config.data.downsample_factor
     final_width = config.data.width_bin // downsample_factor
     
@@ -137,7 +133,7 @@ def load_background_data(config: Config) -> np.ndarray:
                     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
                         continue
                     
-                    # CRITICAL FIX: Downsample AND normalize each observation separately
+                    # Downsample & normalize each observation separately
                     from skimage.transform import downscale_local_mean
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
                     
@@ -147,7 +143,7 @@ def load_background_data(config: Config) -> np.ndarray:
                             cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
                         
-                        # 2. CRITICAL: Normalize each observation using author's pre_proc
+                        # 2. Normalize each observation using pre_proc
                         downsampled_cadence[obs_idx] = pre_proc(downsampled_obs)
                     
                     all_backgrounds.append(downsampled_cadence)
@@ -175,7 +171,7 @@ def load_background_data(config: Config) -> np.ndarray:
     # Stack all backgrounds
     background_array = np.array(all_backgrounds, dtype=np.float32)
     
-    # VERIFICATION: Check that values are now in [0,1] range
+    # Verify that values are now in [0,1] range
     min_val = np.min(background_array)
     max_val = np.max(background_array)
     mean_val = np.mean(background_array)
@@ -208,6 +204,7 @@ def train_command(args):
     # Load configuration
     config = Config()
     
+    # TODO: update CLI args
     # Override config with command line args
     if args.epochs:
         config.training.epochs_per_round = args.epochs
@@ -240,7 +237,6 @@ def train_command(args):
         pipeline = train_full_pipeline(
             config,
             background_data,
-            n_rounds=config.training.num_training_rounds, 
             strategy=strategy
         )
     except Exception as e:
@@ -257,6 +253,7 @@ def train_command(args):
     logger.info("Training completed successfully!")
     logger.info("="*60)
 
+# NOTE: come back to this later
 def inference_command(args):
     """Execute inference command"""
     logger.info("Starting inference pipeline...")
@@ -322,6 +319,7 @@ def inference_command(args):
         logger.info(f"Total detections: {n_total}")
         logger.info(f"High confidence (>90%): {n_high_conf}")
 
+# NOTE: come back to this later
 def evaluate_command(args):
     """Execute evaluation command"""
     logger.info("Starting model evaluation...")
@@ -383,6 +381,7 @@ def evaluate_command(args):
     logger.info(f"  Overall Accuracy: {accuracy:.3f}")
     logger.info("="*60)
 
+# TODO: update CLI args
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(

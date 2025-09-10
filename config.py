@@ -1,6 +1,5 @@
 """
 Configuration module for SETI ML Pipeline
-Updated to match author's exact hyperparameters
 """
 
 import os
@@ -9,7 +8,7 @@ from typing import Tuple, Optional, List, Dict
 
 @dataclass
 class ModelConfig:
-    """VAE model configuration - author's exact settings"""
+    """VAE model configuration"""
     latent_dim: int = 8
     dense_layer_size: int = 512
     kernel_size: Tuple[int, int] = (3, 3)
@@ -25,8 +24,6 @@ class DataConfig:
     time_bins: int = 16    # Time bins per observation
     downsample_factor: int = 8  # Downsampling factor
     num_observations: int = 6  # Per cadence (3 ON, 3 OFF)
-    
-    # Frequency and time resolution from paper
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
@@ -68,26 +65,28 @@ class TrainingConfig:
 
     # Curriculum learning parameters
     snr_base: int = 10 
-    initial_snr_range: int = 40  # Start with wide range (10-50)
-    final_snr_range: int = 20    # End with narrow range (10-30)  
+    initial_snr_range: int = 40
+    final_snr_range: int = 20
     curriculum_schedule: str = "exponential"  # "linear", "exponential", "step"
     exponential_decay_rate: int = -3  # How quickly training should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
-    step_easy_rounds: int = 5         # Number of rounds with easy signals
-    step_hard_rounds: int = 15        # Number of rounds with challenging signals
+    step_easy_rounds: int = 5  # Number of rounds with easy signals
+    step_hard_rounds: int = 15  # Number of rounds with challenging signals
 
+# NOTE: come back to this later
 @dataclass
 class RandomForestConfig:
-    """Random Forest configuration from paper"""
+    """Random Forest configuration"""
     n_estimators: int = 1000
     bootstrap: bool = True
     max_features: str = 'sqrt'
     n_jobs: int = -1
 
+# NOTE: come back to this later
 @dataclass
 class InferenceConfig:
     """Inference configuration"""
     classification_threshold: float = 0.5
-    batch_size: int = 5000  # Author's inference batch size
+    batch_size: int = 5000
     max_drift_rate: float = 10.0  # Hz/s
 
 class Config:
@@ -116,13 +115,14 @@ class Config:
         """Get subset parameters for a file (start, end indices)"""
         # Define subsets for specific files to manage memory usage
         subset_map = {
-            'real_filtered_LARGE_HIP110750.npy': (12000, 16000),  # As per original code
-            'real_filtered_LARGE_HIP13402.npy': (None, 4000),     # First 4000
-            'real_filtered_LARGE_HIP8497.npy': (None, 4000),      # First 4000
+            'real_filtered_LARGE_HIP110750.npy': (12000, 16000),  # Last 4000
+            'real_filtered_LARGE_HIP13402.npy': (None, 4000),  # First 4000
+            'real_filtered_LARGE_HIP8497.npy': (None, 4000),  # First 4000
             'real_filtered_LARGE_testHIP83043.npy': (None, None)  # Full file
         }
         return subset_map.get(filename, (None, None))
     
+    # TODO: update this method
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {

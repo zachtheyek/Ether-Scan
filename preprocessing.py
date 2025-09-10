@@ -1,6 +1,5 @@
 """
 Data preprocessing module for SETI ML Pipeline
-Fixed to match author's exact preprocessing flow
 """
 
 import numpy as np
@@ -14,12 +13,12 @@ logger = logging.getLogger(__name__)
 # @njit(nopython=True)  # Comment out temporarily
 def pre_proc(data: np.ndarray) -> np.ndarray:
     """
-    Apply log normalization to data following author's exact approach
+    Apply log normalization to data
     """
     # Add small epsilon to avoid log(0)
     data = data + 1e-10
     
-    # Author's exact normalization sequence
+    # Normalization sequence
     data = np.log(data)
     data = data - data.min()
     if data.max() > 0:
@@ -30,7 +29,6 @@ def pre_proc(data: np.ndarray) -> np.ndarray:
 def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
     """
     Reshape raw observation data into snippets
-    Matches author's shaping_data function from preprocess_dynamic.py
     
     Args:
         data: Raw observation data (time_bins, polarization, frequency_channels)
@@ -81,7 +79,7 @@ def combine_cadence(A1, A2, A3, B, C, D) -> np.ndarray:
 
 def resize_par(data: np.ndarray, factor: int) -> np.ndarray:
     """
-    Resize data in parallel, matching author's resize_par function
+    Resize data in parallel
     Used before feeding to neural network
     
     Args:
@@ -103,7 +101,6 @@ def resize_par(data: np.ndarray, factor: int) -> np.ndarray:
 def combine_for_nn(data: np.ndarray) -> np.ndarray:
     """
     Combine batch and observation dimensions for neural network input
-    Matches author's combine function from single_search_RF.py
     
     Args:
         data: Input (batch, 6, time, freq, 1)
@@ -121,13 +118,13 @@ def combine_for_nn(data: np.ndarray) -> np.ndarray:
     return new_data
 
 class DataPreprocessor:
-    """Main preprocessing class matching author's exact approach"""
+    """Main preprocessing class"""
     
     def __init__(self, config):
         self.config = config
-        self.width_bin = config.data.width_bin  # 4096
-        self.downsample_factor = config.data.downsample_factor  # 8
-        self.final_freq_bins = self.width_bin // self.downsample_factor  # 512
+        self.width_bin = config.data.width_bin
+        self.downsample_factor = config.data.downsample_factor
+        self.final_freq_bins = self.width_bin // self.downsample_factor 
         
     def process_single_observation(self, obs_data: np.ndarray) -> np.ndarray:
         """
@@ -154,7 +151,7 @@ class DataPreprocessor:
     def preprocess_cadence(self, observations: List[np.ndarray], 
                            use_overlap: bool = False) -> np.ndarray:
         """
-        Preprocess a full cadence following author's exact method
+        Preprocess a full cadence
         
         Args:
             observations: List of 6 observation arrays
@@ -186,7 +183,7 @@ class DataPreprocessor:
     def prepare_for_vae(self, cadence_data: np.ndarray) -> np.ndarray:
         """
         Prepare cadence data for VAE input
-        Author's model expects (batch*6, 16, 512, 1)
+        Model expects (batch*6, 16, 512, 1)
         
         Args:
             cadence_data: Cadence data (batch, 6, 16, 512)
