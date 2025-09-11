@@ -273,8 +273,9 @@ class TrainingPipeline:
 
         for epoch in range(epochs):
             # Log resources at start of epoch
-            start_resources = log_system_resources()
-            logger.info(f"Epoch {epoch + 1}/{epochs} Start | {start_resources}")
+            logger.info(f"\n{'-'*30}")
+            logger.info(f"Epoch {epoch + 1}/{epochs} Start")
+            logger.info(f"{log_system_resources()}")
             
             # Training with gradient accumulation
             epoch_losses = {
@@ -350,11 +351,11 @@ class TrainingPipeline:
                     epoch_losses[key] += step_losses[key]
                 
                 if step % 10 == 0:
-                    logger.info(f"Step {step}/{steps_per_epoch} | "
-                               f"Total: {step_losses['total']:.4f} | "
-                               f"Recon: {step_losses['reconstruction']:.4f} | "
-                               f"KL: {step_losses['kl']:.4f} | "
-                               f"True: {step_losses['true']:.4f} | "
+                    logger.info(f"Step {step}/{steps_per_epoch}, "
+                               f"Total: {step_losses['total']:.4f}, "
+                               f"Recon: {step_losses['reconstruction']:.4f}, "
+                               f"KL: {step_losses['kl']:.4f}, "
+                               f"True: {step_losses['true']:.4f}, "
                                f"False: {step_losses['false']:.4f}")
             
             # Validation (can use larger batches - no gradients computed)
@@ -395,16 +396,16 @@ class TrainingPipeline:
             epoch_metrics['loss'].append(float(epoch_losses['total']))
             epoch_metrics['val_loss'].append(float(val_losses['total']))
             
-            logger.info(f"Epoch {epoch + 1} Complete | "
-                       f"Train - Total: {epoch_losses['total']:.4f} | "
-                       f"Recon: {epoch_losses['reconstruction']:.4f} | "
-                       f"KL: {epoch_losses['kl']:.4f} | "
-                       f"True: {epoch_losses['true']:.4f} | "
-                       f"False: {epoch_losses['false']:.4f} | "
-                       f"Val - Total: {val_losses['total']:.4f} | "
-                       f"Recon: {val_losses['reconstruction']:.4f} | "
-                       f"KL: {val_losses['kl']:.4f} | "
-                       f"True: {val_losses['true']:.4f} | "
+            logger.info(f"Epoch {epoch + 1} Complete")
+            logger.info(f"Train -- Total: {epoch_losses['total']:.4f}, "
+                       f"Recon: {epoch_losses['reconstruction']:.4f}, "
+                       f"KL: {epoch_losses['kl']:.4f}, "
+                       f"True: {epoch_losses['true']:.4f}, "
+                       f"False: {epoch_losses['false']:.4f}, ")
+            logger.info(f"Val -- Total: {val_losses['total']:.4f}, "
+                       f"Recon: {val_losses['reconstruction']:.4f}, "
+                       f"KL: {val_losses['kl']:.4f}, "
+                       f"True: {val_losses['true']:.4f}, "
                        f"False: {val_losses['false']:.4f}")
 
             # Add TensorBoard logging
@@ -434,8 +435,8 @@ class TrainingPipeline:
             self.update_learning_rate(val_losses)
 
             # Log resources at end of epoch  
-            end_resources = log_system_resources()
-            logger.info(f"Epoch {epoch + 1} End | {end_resources}")
+            logger.info(f"Epoch {epoch + 1}/{epochs} End")
+            logger.info(f"{log_system_resources()}")
         
         # Update history 
         for key, values in epoch_metrics.items():
