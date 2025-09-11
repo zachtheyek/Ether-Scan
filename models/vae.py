@@ -65,11 +65,8 @@ class BetaVAE(keras.Model):
         # Process main input through encoder-decoder
         batch_size = tf.shape(main_input)[0]
         
-        # Add channel dimension if needed and reshape for encoder: (batch*6, 16, 512, 1)
-        if len(main_input.shape) == 4:  # (batch, 6, 16, 512)
-            encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
-        else:  # Already has channel dimension (batch, 6, 16, 512, 1)
-            encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
+        # Reshape for encoder
+        encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
         
         # Encode
         z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
@@ -188,10 +185,7 @@ class BetaVAE(keras.Model):
 
         # Reshape input for encoder
         batch_size = tf.shape(x)[0]
-        if len(x.shape) == 4:  # (batch, 6, 16, 512)
-            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
-        else:  # Already has channel dim
-            encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+        encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
         
         # Encode
         z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
