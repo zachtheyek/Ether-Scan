@@ -160,7 +160,7 @@ class TrainingPipeline:
                              patience_threshold=5, 
                              reduction_factor=0.2):
         """Robust adaptive learning rate with multiple safeguards"""
-        current_lr = float(self.vae.optimizer.learning_rate)
+        current_lr = self.vae.optimizer.learning_rate.numpy()
         if current_lr <= min_lr_threshold:
             return current_lr
         
@@ -414,7 +414,7 @@ class TrainingPipeline:
                 tf.summary.scalar('kl_loss', epoch_losses['kl'], step=self.global_step)
                 tf.summary.scalar('true_loss', epoch_losses['true'], step=self.global_step)
                 tf.summary.scalar('false_loss', epoch_losses['false'], step=self.global_step)
-                tf.summary.scalar('learning_rate', float(self.vae.optimizer.learning_rate), step=self.global_step)
+                tf.summary.scalar('learning_rate', self.vae.optimizer.learning_rate.numpy(), step=self.global_step)
 
             with self.val_writer.as_default():
                 tf.summary.scalar('validation_total_loss', val_losses['total'], step=self.global_step)
