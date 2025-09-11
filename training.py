@@ -203,11 +203,11 @@ class TrainingPipeline:
         # Create datasets with physical batch size
         train_dataset = tf.data.Dataset.from_tensor_slices((
             (train_concat, train_true, train_false), train_concat
-        )).batch(physical_batch).prefetch(tf.data.AUTOTUNE)
+        )).shuffle(1000).batch(physical_batch).repeat().prefetch(tf.data.AUTOTUNE)
         
         val_dataset = tf.data.Dataset.from_tensor_slices((
             (val_concat, val_true, val_false), val_concat  
-        )).batch(val_batch_size).prefetch(tf.data.AUTOTUNE)
+        )).batch(val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
         
         # Distribute datasets across GPUs
         train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
@@ -216,6 +216,8 @@ class TrainingPipeline:
         # Training loop with manual forward pass for gradient accumulation
         steps_per_epoch = n_train_trimmed // logical_batch
         val_steps = n_val_trimmed // val_batch_size
+
+        logger.info(f"Infinite dataset setup: {steps_per_epoch} train steps, {val_steps} val steps")
         
         # Training history tracking
         epoch_metrics = {'loss': [], 'val_loss': []}
