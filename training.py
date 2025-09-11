@@ -303,19 +303,31 @@ class TrainingPipeline:
                     # Get micro-batch and run on all GPUs
                     micro_batch_data = next(train_iterator)
                     per_replica_results = self.strategy.run(
-                    compute_gradients_for_accumulation, 
-                    args=(micro_batch_data, accumulation_steps)
+                        compute_gradients_for_accumulation, 
+                        args=(micro_batch_data, accumulation_steps)
                     )
 
                     per_replica_grads, per_replica_losses = per_replica_results[0], per_replica_results[1]
+
+                    # Reduce PerReplica gradients across replicas before accumulating
+                    reduced_grads = []
+                    for grad in per_replica_grads:
+                        if grad is not None:
+                            # Reduce gradients across replicas using MEAN
+                            reduced_grad = self.strategy.reduce(
+                                tf.distribute.ReduceOp.MEAN, grad, axis=None
+                            )
+                            reduced_grads.append(reduced_grad)
+                        else:
+                            reduced_grads.append(None)
                     
-                    # Accumulate gradients
+                    # Accumulate reduced gradients
                     if accumulated_gradients is None:
-                        accumulated_gradients = per_replica_grads
+                        accumulated_gradients = reduced_grads
                     else:
                         accumulated_gradients = [
                             acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
-                            for acc_grad, new_grad in zip(accumulated_gradients, per_replica_grads)
+                            for acc_grad, new_grad in zip(accumulated_gradients, reduced_grads)
                         ]
 
                     # Accumulate all loss components
