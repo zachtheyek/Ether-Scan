@@ -273,7 +273,7 @@ class TrainingPipeline:
 
         for epoch in range(epochs):
             # Log resources at start of epoch
-            logger.info(f"\n{'-'*30}")
+            logger.info(f"{'-'*30}")
             logger.info(f"Epoch {epoch + 1}/{epochs} Start")
             logger.info(f"{log_system_resources()}")
             
@@ -351,7 +351,7 @@ class TrainingPipeline:
                     epoch_losses[key] += step_losses[key]
                 
                 if step % 10 == 0:
-                    logger.info(f"Step {step}/{steps_per_epoch}, "
+                    logger.info(f"Step {step+1}/{steps_per_epoch}, "
                                f"Total: {step_losses['total']:.4f}, "
                                f"Recon: {step_losses['reconstruction']:.4f}, "
                                f"KL: {step_losses['kl']:.4f}, "
