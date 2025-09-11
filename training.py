@@ -10,6 +10,8 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 import gc
+import psutil
+import subprocess
 
 from config import TrainingConfig
 from preprocessing import DataPreprocessor
@@ -18,6 +20,39 @@ from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
+
+def log_system_resources():
+    """Log system resource usage"""
+    # CPU usage
+    cpu_percent = psutil.cpu_percent(interval=1)
+    
+    # Memory usage
+    memory = psutil.virtual_memory()
+    memory_used_gb = memory.used / 1e9
+    memory_total_gb = memory.total / 1e9
+    
+    # GPU usage (if available)
+    gpu_info = []
+    try:
+        # Try nvidia-smi for GPU info
+        result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total', 
+                               '--format=csv,noheader,nounits'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for i, line in enumerate(lines):
+                parts = line.split(', ')
+                if len(parts) == 3:
+                    gpu_util, mem_used, mem_total = parts
+                    gpu_info.append(f"GPU{i}: {gpu_util}% util, {mem_used}MB/{mem_total}MB")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        gpu_info = ["GPU info unavailable"]
+    
+    resource_str = (f"Resources | CPU: {cpu_percent:.1f}% | "
+                   f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%) | "
+                   f"{' | '.join(gpu_info)}")
+    
+    return resource_str
 
 def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
     """
@@ -198,7 +233,9 @@ class TrainingPipeline:
             return gradients, losses
 
         for epoch in range(epochs):
-            logger.info(f"Epoch {epoch + 1}/{epochs}")
+            # Log resources at start of epoch
+            start_resources = log_system_resources()
+            logger.info(f"Epoch {epoch + 1}/{epochs} Start | {start_resources}")
             
             # Training with gradient accumulation
             epoch_losses = {
@@ -360,6 +397,10 @@ class TrainingPipeline:
                 new_lr = current_lr * 0.5
                 self.vae.optimizer.learning_rate = new_lr
                 logger.info(f"Reduced learning rate to {new_lr}")
+
+            # Log resources at end of epoch  
+            end_resources = log_system_resources()
+            logger.info(f"Epoch {epoch + 1} End | {end_resources}")
         
         # Update history 
         for key, values in epoch_metrics.items():
