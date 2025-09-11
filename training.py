@@ -44,13 +44,13 @@ def log_system_resources():
                 parts = line.split(', ')
                 if len(parts) == 3:
                     gpu_util, mem_used, mem_total = parts
-                    gpu_info.append(f"GPU{i}: {gpu_util}% util, {mem_used}MB/{mem_total}MB")
+                    gpu_info.append(f"GPU{i}: {gpu_util}% util ({mem_used}MB/{mem_total}MB)")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         gpu_info = ["GPU info unavailable"]
     
-    resource_str = (f"Resources | CPU: {cpu_percent:.1f}% | "
-                   f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%) | "
-                   f"{' | '.join(gpu_info)}")
+    resource_str = (f"Resources -- CPU: {cpu_percent:.1f}%, "
+                   f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%), "
+                   f"{', '.join(gpu_info)}")
     
     return resource_str
 
