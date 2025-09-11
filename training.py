@@ -182,7 +182,7 @@ class TrainingPipeline:
         if self.patience_counter >= patience_threshold:
             new_lr = max(current_lr * (1 - reduction_factor), min_lr_threshold)
             
-            self.vae.optimizer.learning_rate = new_lr
+            self.vae.optimizer.learning_rate.assign(new_lr)
             self.patience_counter = 0  # Reset counter
             
             logger.info(f"Reduced learning rate: {current_lr:.2e} -> {new_lr:.2e}")
