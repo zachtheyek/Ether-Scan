@@ -470,7 +470,6 @@ def create_vae_model(config):
     logger.info(f"Created VAE model: latent_dim={config.model.latent_dim}, "
                f"beta={config.model.beta}, alpha={config.model.alpha}")
     logger.info(f"{encoder.summary()}")
-    # NOTE: test logs
-    # logger.info(f"{decoder.summary()}")
+    logger.info(f"{decoder.summary()}")
     
     return vae
