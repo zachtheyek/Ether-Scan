@@ -153,6 +153,43 @@ class TrainingPipeline:
         os.makedirs(os.path.join(self.config.model_path, 'checkpoints'), exist_ok=True)
         os.makedirs(os.path.join(self.config.output_path, 'plots'), exist_ok=True)
 
+
+    def update_learning_rate(self, val_losses, 
+                             min_lr_threshold=1e-6, 
+                             min_improvement_threshold=0.001, 
+                             patience_threshold=5, 
+                             reduction_factor=0.2):
+        """Robust adaptive learning rate with multiple safeguards"""
+        current_lr = float(self.vae.optimizer.learning_rate)
+        if current_lr <= min_lr_threshold:
+            return current_lr
+        
+        # Use validation loss for better generalization
+        if not hasattr(self, 'best_val_loss'):
+            self.best_val_loss = float('inf')
+            self.patience_counter = 0
+        
+        current_val_loss = float(val_losses['total'])
+        
+        # Check if validation loss improved
+        if current_val_loss < self.best_val_loss * (1 - min_improvement_threshold):
+            self.best_val_loss = current_val_loss
+            self.patience_counter = 0
+        else:
+            self.patience_counter += 1
+        
+        # Reduce LR if no improvement for patience_threshold epochs
+        if self.patience_counter >= patience_threshold:
+            new_lr = max(current_lr * (1 - reduction_factor), min_lr_threshold)
+            
+            self.vae.optimizer.learning_rate = new_lr
+            self.patience_counter = 0  # Reset counter
+            
+            logger.info(f"Reduced learning rate: {current_lr:.2e} -> {new_lr:.2e}")
+            return new_lr
+        
+        return current_lr
+
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
         Train one round with distributed dataset handling & gradient accumulation
@@ -394,11 +431,7 @@ class TrainingPipeline:
             self.global_step += 1
             
             # Adaptive learning rate
-            current_lr = self.vae.optimizer.learning_rate
-            if epoch > 3 and epoch_losses['total'] > min(epoch_metrics['loss'][-4:-1]):
-                new_lr = current_lr * 0.5
-                self.vae.optimizer.learning_rate = new_lr
-                logger.info(f"Reduced learning rate to {new_lr}")
+            self.update_learning_rate(val_losses)
 
             # Log resources at end of epoch  
             end_resources = log_system_resources()

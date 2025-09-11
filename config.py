@@ -52,7 +52,7 @@ class DataConfig:
 class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
-    train_physical_batch_size: int = 64  # Micro batch size for memory efficiency
+    train_physical_batch_size: int = 32  # Micro batch size for memory efficiency
     train_logical_batch_size: int = 256  # Actual batch size for convergence 
     batch_size: int = train_logical_batch_size  # Legacy param, should equal train_logical_batch_size
     validation_batch_size: int = 512
