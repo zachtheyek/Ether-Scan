@@ -51,11 +51,11 @@ class DataConfig:
 @dataclass  
 class TrainingConfig:
     num_training_rounds: int = 20
-    epochs_per_round: int = 50
-    train_physical_batch_size: int = 16  # Micro batch size for memory efficiency
-    train_logical_batch_size: int = 64  # Actual batch size for convergence 
+    epochs_per_round: int = 100
+    train_physical_batch_size: int = 64  # Micro batch size for memory efficiency
+    train_logical_batch_size: int = 256  # Actual batch size for convergence 
     batch_size: int = train_logical_batch_size  # Legacy param, should equal train_logical_batch_size
-    validation_batch_size: int = 128
+    validation_batch_size: int = 512
     target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     num_samples_train: int = 5000

@@ -91,6 +91,26 @@ class TrainingPipeline:
         
         # Setup directories
         self.setup_directories()
+
+        # Setup TensorBoard logging
+        self.log_dir = os.path.join(config.output_path, 'logs')
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Create TensorBoard writers
+        self.train_writer = tf.summary.create_file_writer(os.path.join(self.log_dir, 'train'))
+        self.val_writer = tf.summary.create_file_writer(os.path.join(self.log_dir, 'validation'))
+        
+        # Global step counter for TensorBoard
+        self.global_step = 0
+        
+        logger.info(f"TensorBoard logs will be written to: {self.log_dir}")
+
+    def __del__(self):
+        """Cleanup TensorBoard writers"""
+        if hasattr(self, 'train_writer'):
+            self.train_writer.close()
+        if hasattr(self, 'val_writer'):
+            self.val_writer.close()
     
     def setup_directories(self):
         """Create necessary directories"""
@@ -181,13 +201,25 @@ class TrainingPipeline:
             logger.info(f"Epoch {epoch + 1}/{epochs}")
             
             # Training with gradient accumulation
-            epoch_loss = 0.0
+            epoch_losses = {
+                'total': 0.0,
+                'reconstruction': 0.0,
+                'kl': 0.0,
+                'true': 0.0,
+                'false': 0.0
+            }
             train_iterator = iter(train_dataset)
             
             for step in range(steps_per_epoch):
                 # Initialize gradient accumulation logic
                 accumulated_gradients = []
-                step_loss = 0.0
+                step_losses = {
+                    'total': 0.0,
+                    'reconstruction': 0.0,
+                    'kl': 0.0,
+                    'true': 0.0,
+                    'false': 0.0
+                }
                 
                 # Process accumulation_steps in micro-batches
                 for micro_step in range(accumulation_steps):
@@ -208,9 +240,22 @@ class TrainingPipeline:
                             acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
                             for acc_grad, new_grad in zip(accumulated_gradients, per_replica_grads)
                         ]
-                    
-                    step_loss += self.strategy.reduce(
+
+                    # Accumulate all loss components
+                    step_losses['total'] += self.strategy.reduce(
                         tf.distribute.ReduceOp.MEAN, per_replica_losses['total_loss'], axis=None
+                    )
+                    step_losses['reconstruction'] += self.strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN, per_replica_losses['reconstruction_loss'], axis=None
+                    )
+                    step_losses['kl'] += self.strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN, per_replica_losses['kl_loss'], axis=None
+                    )
+                    step_losses['true'] += self.strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN, per_replica_losses['true_loss'], axis=None
+                    )
+                    step_losses['false'] += self.strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN, per_replica_losses['false_loss'], axis=None
                     )
                 
                 # Apply accumulated gradients
@@ -223,34 +268,95 @@ class TrainingPipeline:
                     if valid_grads_and_vars:
                         self.vae.optimizer.apply_gradients(valid_grads_and_vars)
                 
-                epoch_loss += step_loss / accumulation_steps
+                # Average step losses by accumulation steps
+                for key in step_losses:
+                    step_losses[key] /= accumulation_steps
+                    epoch_losses[key] += step_losses[key]
                 
                 if step % 10 == 0:
-                    logger.info(f"Step {step}/{steps_per_epoch}, Loss: {step_loss/accumulation_steps:.4f}")
+                    logger.info(f"Step {step}/{steps_per_epoch} | "
+                               f"Total: {step_losses['total']:.4f} | "
+                               f"Recon: {step_losses['reconstruction']:.4f} | "
+                               f"KL: {step_losses['kl']:.4f} | "
+                               f"True: {step_losses['true']:.4f} | "
+                               f"False: {step_losses['false']:.4f}")
             
             # Validation (can use larger batches - no gradients computed)
-            val_loss = 0.0
+            val_losses = {
+                'total': 0.0,
+                'reconstruction': 0.0,
+                'kl': 0.0,
+                'true': 0.0,
+                'false': 0.0
+            }
             val_iterator = iter(val_dataset)
             
             for val_step in range(val_steps):
                 val_batch_data = next(val_iterator)
                 val_results = self.strategy.run(self.vae.test_step, args=(val_batch_data,))
-                val_loss += self.strategy.reduce(
+                val_losses['total'] += self.strategy.reduce(
                     tf.distribute.ReduceOp.MEAN, val_results['loss'], axis=None
+                )
+                val_losses['reconstruction'] += self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, val_results['reconstruction_loss'], axis=None
+                )
+                val_losses['kl'] += self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, val_results['kl_loss'], axis=None
+                )
+                val_losses['true'] += self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, val_results['true_loss'], axis=None
+                )
+                val_losses['false'] += self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, val_results['false_loss'], axis=None
                 )
             
             # Log epoch results
-            avg_epoch_loss = epoch_loss / steps_per_epoch
-            avg_val_loss = val_loss / val_steps
+            for key in epoch_losses:
+                epoch_losses[key] /= steps_per_epoch
+            for key in val_losses:
+                val_losses[key] /= val_steps
+
+            epoch_metrics['loss'].append(float(epoch_losses['total']))
+            epoch_metrics['val_loss'].append(float(val_losses['total']))
             
-            epoch_metrics['loss'].append(float(avg_epoch_loss))
-            epoch_metrics['val_loss'].append(float(avg_val_loss))
-            
-            logger.info(f"Epoch {epoch + 1} - Loss: {avg_epoch_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+            logger.info(f"Epoch {epoch + 1} Complete | "
+                       f"Train - Total: {epoch_losses['total']:.4f} | "
+                       f"Recon: {epoch_losses['reconstruction']:.4f} | "
+                       f"KL: {epoch_losses['kl']:.4f} | "
+                       f"True: {epoch_losses['true']:.4f} | "
+                       f"False: {epoch_losses['false']:.4f} | "
+                       f"Val - Total: {val_losses['total']:.4f} | "
+                       f"Recon: {val_losses['reconstruction']:.4f} | "
+                       f"KL: {val_losses['kl']:.4f} | "
+                       f"True: {val_losses['true']:.4f} | "
+                       f"False: {val_losses['false']:.4f}")
+
+            # Add TensorBoard logging
+            with self.train_writer.as_default():
+                tf.summary.scalar('total_loss', epoch_losses['total'], step=self.global_step)
+                tf.summary.scalar('reconstruction_loss', epoch_losses['reconstruction'], step=self.global_step)
+                tf.summary.scalar('kl_loss', epoch_losses['kl'], step=self.global_step)
+                tf.summary.scalar('true_loss', epoch_losses['true'], step=self.global_step)
+                tf.summary.scalar('false_loss', epoch_losses['false'], step=self.global_step)
+                tf.summary.scalar('learning_rate', float(self.vae.optimizer.learning_rate), step=self.global_step)
+
+            with self.val_writer.as_default():
+                tf.summary.scalar('validation_total_loss', val_losses['total'], step=self.global_step)
+                tf.summary.scalar('validation_reconstruction_loss', val_losses['reconstruction'], step=self.global_step)
+                tf.summary.scalar('validation_kl_loss', val_losses['kl'], step=self.global_step)
+                tf.summary.scalar('validation_true_loss', val_losses['true'], step=self.global_step)
+                tf.summary.scalar('validation_false_loss', val_losses['false'], step=self.global_step)
+
+            # Flush writers to ensure data is written
+            self.train_writer.flush()
+            self.val_writer.flush()
+
+            # Increment global step
+            self.global_step += 1
             
             # Adaptive learning rate
             current_lr = self.vae.optimizer.learning_rate
-            if epoch > 3 and avg_epoch_loss > min(epoch_metrics['loss'][-4:-1]):
+            if epoch > 3 and epoch_losses['total'] > min(epoch_metrics['loss'][-4:-1]):
                 new_lr = current_lr * 0.5
                 self.vae.optimizer.learning_rate = new_lr
                 logger.info(f"Reduced learning rate to {new_lr}")
