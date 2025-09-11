@@ -471,6 +471,18 @@ class TrainingPipeline:
             logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
             logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
             logger.info(f"{'='*50}")
+
+            # Reset learning rate & adaptive state before new curriculum stage
+            original_lr = self.config.model.learning_rate
+            current_lr = self.vae.optimizer.learning_rate.numpy()
+            self.vae.optimizer.learning_rate.assign(original_lr)
+            
+            if hasattr(self, 'best_val_loss'):
+                delattr(self, 'best_val_loss')
+            if hasattr(self, 'patience_counter'):
+                delattr(self, 'patience_counter')
+
+            logger.info(f"Curriculum LR reset: {current_lr:.2e} → {original_lr:.2e}")
             
             self.train_round(
                 round_idx=round_idx,
