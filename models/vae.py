@@ -260,11 +260,11 @@ class BetaVAE(keras.Model):
         losses = self.compute_forward_pass(data, training=False)
 
         # Update metrics
-        self.total_loss_tracker.update_state(losses['total_loss'])
-        self.reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
-        self.kl_loss_tracker.update_state(losses['kl_loss'])
-        self.true_loss_tracker.update_state(losses['true_loss'])
-        self.false_loss_tracker.update_state(losses['false_loss'])
+        self.val_total_loss_tracker.update_state(losses['total_loss'])
+        self.val_reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
+        self.val_kl_loss_tracker.update_state(losses['kl_loss'])
+        self.val_true_loss_tracker.update_state(losses['true_loss'])
+        self.val_false_loss_tracker.update_state(losses['false_loss'])
         
         return {
             "loss": self.val_total_loss_tracker.result(),
