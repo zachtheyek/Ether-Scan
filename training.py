@@ -355,7 +355,8 @@ class TrainingPipeline:
                     ]
             
                     if valid_grads_and_vars:
-                        self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+                        with self.strategy.scope():
+                            self.vae.optimizer.apply_gradients(valid_grads_and_vars)
                 
                 # Average step losses by accumulation steps
                 for key in step_losses:
