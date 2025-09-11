@@ -271,6 +271,17 @@ class TrainingPipeline:
             gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
             return gradients, losses
 
+        @tf.function
+        def apply_accumulated_gradients(accumulated_grads):
+            """Apply accumulated gradients within distributed context"""
+            valid_grads_and_vars = [
+                (grad, var) for grad, var in zip(accumulated_grads, self.vae.trainable_variables)
+                if grad is not None
+            ]
+            
+            if valid_grads_and_vars:
+                self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+
         for epoch in range(epochs):
             # Log resources at start of epoch
             logger.info(f"{'-'*30}")
@@ -347,16 +358,14 @@ class TrainingPipeline:
                         tf.distribute.ReduceOp.MEAN, per_replica_losses['false_loss'], axis=None
                     )
                 
-                # Apply accumulated gradients
+                # Apply accumulated gradients using distributed strategy
                 if accumulated_gradients is not None:
-                    valid_grads_and_vars = [
-                        (grad, var) for grad, var in zip(accumulated_gradients, self.vae.trainable_variables)
-                        if grad is not None
-                    ]
-            
-                    if valid_grads_and_vars:
-                        with self.strategy.scope():
-                            self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+                    # Check if we have valid gradients
+                    has_valid_grads = any(grad is not None for grad in accumulated_gradients)
+                    
+                    if has_valid_grads:
+                        # Apply gradients within the distributed strategy context
+                        self.strategy.run(apply_accumulated_gradients, args=(accumulated_gradients,))
                 
                 # Average step losses by accumulation steps
                 for key in step_losses:
