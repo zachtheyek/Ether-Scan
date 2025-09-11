@@ -289,7 +289,7 @@ class TrainingPipeline:
             
             for step in range(steps_per_epoch):
                 # Initialize gradient accumulation logic
-                accumulated_gradients = []
+                accumulated_gradients = None
                 step_losses = {
                     'total': 0.0,
                     'reconstruction': 0.0,
