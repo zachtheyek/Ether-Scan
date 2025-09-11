@@ -28,8 +28,8 @@ class DataConfig:
     time_resolution: float = 18.25361108  # seconds
 
     # Memory management parameters
-    chunk_size_loading: int = 150  # Cadences to process at once during loading
-    max_chunks_per_file: int = 30  # Limit chunks to prevent excessive processing
+    chunk_size_loading: int = 150  # Cadences to process at once during background loading
+    max_chunks_per_file: int = 30  # Max backgrounds per file = max_chunks_per_file * chunk_size_loading
     
     # Data files
     training_files: List[str] = None
@@ -115,9 +115,9 @@ class Config:
         """Get subset parameters for a file (start, end indices)"""
         # Define subsets for specific files to manage memory usage
         subset_map = {
-            'real_filtered_LARGE_HIP110750.npy': (12000, 16000),  # Last 4000
-            'real_filtered_LARGE_HIP13402.npy': (None, 4000),  # First 4000
-            'real_filtered_LARGE_HIP8497.npy': (None, 4000),  # First 4000
+            'real_filtered_LARGE_HIP110750.npy': (None, 5000),  # First 5000
+            'real_filtered_LARGE_HIP13402.npy': (8000, 10000),  # Middle 2000
+            'real_filtered_LARGE_HIP8497.npy': (11000, None),  # Last 3567
             'real_filtered_LARGE_testHIP83043.npy': (None, None)  # Full file
         }
         return subset_map.get(filename, (None, None))
