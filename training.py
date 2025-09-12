@@ -337,10 +337,7 @@ class TrainingPipeline:
                         accumulated_gradients = reduced_grads
                     else:
                         accumulated_gradients = [
-                            # acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
-                            acc_grad + new_grad if acc_grad is not None and new_grad is not None
-                            else acc_grad if new_grad is None
-                            else new_grad
+                            acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
                             for acc_grad, new_grad in zip(accumulated_gradients, reduced_grads)
                         ]
 
