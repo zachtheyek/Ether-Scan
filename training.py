@@ -260,27 +260,33 @@ class TrainingPipeline:
         epoch_metrics = {'loss': [], 'val_loss': []}
 
         @tf.function
-        def compute_gradients_for_accumulation(batch_data, accumulation_steps):
-            """Compute gradients for one micro-batch in accumulation"""
-            with tf.GradientTape() as tape:
-                losses = self.vae.compute_forward_pass(batch_data, training=True)
-                # Scale loss by accumulation steps
-                scaled_loss = losses['total_loss'] / accumulation_steps
+        def distributed_train_step(batch_data):
+            """Complete training step within distributed context"""
+            def compute_loss_and_grads():
+                with tf.GradientTape() as tape:
+                    losses = self.vae.compute_forward_pass(batch_data, training=True)
+                    # Scale loss by num replicas
+                    scaled_loss = losses['total_loss'] / self.strategy.num_replicas_in_sync
+                
+                # Compute gradients
+                gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
+                return gradients, losses
             
-            # Compute gradients
-            gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
-            return gradients, losses
+            return self.strategy.run(compute_loss_and_grads)
 
-        # @tf.function
-        # def apply_accumulated_gradients(accumulated_grads):
-        #     """Apply accumulated gradients within distributed context"""
-        #     valid_grads_and_vars = [
-        #         (grad, var) for grad, var in zip(accumulated_grads, self.vae.trainable_variables)
-        #         if grad is not None
-        #     ]
-        #
-        #     if valid_grads_and_vars:
-        #         self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+        @tf.function
+        def apply_gradients_step(gradients):
+            """Apply gradients within distributed context"""
+            def apply_grads():
+                # Filter out None gradients
+                valid_grads_and_vars = [
+                    (grad, var) for grad, var in zip(gradients, self.vae.trainable_variables)
+                    if grad is not None
+                ]
+                if valid_grads_and_vars:
+                    self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+            
+            self.strategy.run(apply_grads)
 
         for epoch in range(epochs):
             # Log resources at start of epoch
@@ -299,7 +305,7 @@ class TrainingPipeline:
             train_iterator = iter(train_dataset)
             
             for step in range(steps_per_epoch):
-                # Initialize gradient accumulation logic
+                # Initialize gradient accumulation
                 accumulated_gradients = None
                 step_losses = {
                     'total': 0.0,
@@ -309,30 +315,28 @@ class TrainingPipeline:
                     'false': 0.0
                 }
                 
-                # Process accumulation_steps in micro-batches
+                # Accumulate gradients over micro-batches
                 for micro_step in range(accumulation_steps):
-                    # Get micro-batch and run on all GPUs
+                    # Get micro-batch
                     micro_batch_data = next(train_iterator)
-                    per_replica_results = self.strategy.run(
-                        compute_gradients_for_accumulation, 
-                        args=(micro_batch_data, accumulation_steps)
-                    )
 
-                    per_replica_grads, per_replica_losses = per_replica_results[0], per_replica_results[1]
+                    # Compute gradients and losses
+                    per_replica_results = distributed_train_step(micro_batch_data)
+                    per_replica_grads, per_replica_losses = per_replica_results
 
-                    # Reduce PerReplica gradients across replicas before accumulating
+                    # Reduce gradients across replicas
                     reduced_grads = []
-                    for grad in per_replica_grads:
-                        if grad is not None:
-                            # Reduce gradients across replicas using MEAN
+                    for grad_per_replica in per_replica_grads:
+                        if grad_per_replica is not None:
+                            # Reduce PerReplica gradients
                             reduced_grad = self.strategy.reduce(
-                                tf.distribute.ReduceOp.MEAN, grad, axis=None
+                                tf.distribute.ReduceOp.MEAN, grad_per_replica, axis=None
                             )
                             reduced_grads.append(reduced_grad)
                         else:
                             reduced_grads.append(None)
                     
-                    # Accumulate reduced gradients
+                    # Accumulate gradients
                     if accumulated_gradients is None:
                         accumulated_gradients = reduced_grads
                     else:
@@ -341,7 +345,7 @@ class TrainingPipeline:
                             for acc_grad, new_grad in zip(accumulated_gradients, reduced_grads)
                         ]
 
-                    # Accumulate all loss components
+                    # Accumulate loss components
                     step_losses['total'] += self.strategy.reduce(
                         tf.distribute.ReduceOp.MEAN, per_replica_losses['total_loss'], axis=None
                     )
@@ -357,24 +361,23 @@ class TrainingPipeline:
                     step_losses['false'] += self.strategy.reduce(
                         tf.distribute.ReduceOp.MEAN, per_replica_losses['false_loss'], axis=None
                     )
-                
-                # Apply accumulated gradients using distributed strategy
+
+                # Apply accumulated gradients if we have valid ones
                 if accumulated_gradients is not None:
-                    # # Check if we have valid gradients
-                    # has_valid_grads = any(grad is not None for grad in accumulated_gradients)
-                    #
-                    # if has_valid_grads:
-                    #     # Apply gradients within the distributed strategy context
-                    #     self.strategy.run(apply_accumulated_gradients, args=(accumulated_gradients,))
-                    valid_grads_and_vars = [
-                        (grad, var) for grad, var in zip(accumulated_gradients, self.vae.trainable_variables)
-                        if grad is not None
+                    # Scale accumulated gradients by accumulation steps
+                    scaled_gradients = [
+                        grad / accumulation_steps if grad is not None else None
+                        for grad in accumulated_gradients
                     ]
-            
-                    if valid_grads_and_vars:
-                        self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+                    
+                    # Check if we have any valid gradients before applying
+                    has_valid_grads = any(grad is not None for grad in scaled_gradients)
+                    if has_valid_grads:
+                        apply_gradients_step(scaled_gradients)
+                    else:
+                        logger.warning(f"Step {step}: No valid gradients found")
                 
-                # Average step losses by accumulation steps
+                # Average step losses
                 for key in step_losses:
                     step_losses[key] /= accumulation_steps
                     epoch_losses[key] += step_losses[key]
