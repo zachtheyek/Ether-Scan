@@ -271,16 +271,16 @@ class TrainingPipeline:
             gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
             return gradients, losses
 
-        @tf.function
-        def apply_accumulated_gradients(accumulated_grads):
-            """Apply accumulated gradients within distributed context"""
-            valid_grads_and_vars = [
-                (grad, var) for grad, var in zip(accumulated_grads, self.vae.trainable_variables)
-                if grad is not None
-            ]
-            
-            if valid_grads_and_vars:
-                self.vae.optimizer.apply_gradients(valid_grads_and_vars)
+        # @tf.function
+        # def apply_accumulated_gradients(accumulated_grads):
+        #     """Apply accumulated gradients within distributed context"""
+        #     valid_grads_and_vars = [
+        #         (grad, var) for grad, var in zip(accumulated_grads, self.vae.trainable_variables)
+        #         if grad is not None
+        #     ]
+        #
+        #     if valid_grads_and_vars:
+        #         self.vae.optimizer.apply_gradients(valid_grads_and_vars)
 
         for epoch in range(epochs):
             # Log resources at start of epoch
@@ -337,7 +337,10 @@ class TrainingPipeline:
                         accumulated_gradients = reduced_grads
                     else:
                         accumulated_gradients = [
-                            acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
+                            # acc_grad + new_grad if acc_grad is not None and new_grad is not None else None
+                            acc_grad + new_grad if acc_grad is not None and new_grad is not None
+                            else acc_grad if new_grad is None
+                            else new_grad
                             for acc_grad, new_grad in zip(accumulated_gradients, reduced_grads)
                         ]
 
@@ -360,12 +363,19 @@ class TrainingPipeline:
                 
                 # Apply accumulated gradients using distributed strategy
                 if accumulated_gradients is not None:
-                    # Check if we have valid gradients
-                    has_valid_grads = any(grad is not None for grad in accumulated_gradients)
-                    
-                    if has_valid_grads:
-                        # Apply gradients within the distributed strategy context
-                        self.strategy.run(apply_accumulated_gradients, args=(accumulated_gradients,))
+                    # # Check if we have valid gradients
+                    # has_valid_grads = any(grad is not None for grad in accumulated_gradients)
+                    #
+                    # if has_valid_grads:
+                    #     # Apply gradients within the distributed strategy context
+                    #     self.strategy.run(apply_accumulated_gradients, args=(accumulated_gradients,))
+                    valid_grads_and_vars = [
+                        (grad, var) for grad, var in zip(accumulated_gradients, self.vae.trainable_variables)
+                        if grad is not None
+                    ]
+            
+                    if valid_grads_and_vars:
+                        self.vae.optimizer.apply_gradients(valid_grads_and_vars)
                 
                 # Average step losses by accumulation steps
                 for key in step_losses:
