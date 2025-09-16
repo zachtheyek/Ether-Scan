@@ -94,7 +94,7 @@ class BetaVAE(keras.Model):
         return tf.reduce_mean(1.0 / (tf.reduce_sum(tf.square(a - b), axis=1) + 1e-8))
 
     @tf.function
-    def compute_clustering_loss_true(self, true_data: tf.Tensor) -> tf.Tensor:
+    def compute_clustering_loss_true_distributed(self, true_data: tf.Tensor) -> tf.Tensor:
         """
         Clustering loss for true signals
         """
@@ -102,14 +102,25 @@ class BetaVAE(keras.Model):
         if len(true_data.shape) == 4:
             true_data = tf.expand_dims(true_data, -1)  # (batch, 6, 16, 512, 1)
         
-        # Process each observation separately
-        a1 = self.encoder(true_data[:,0,:,:,:], training=True)[2]  # ON
-        b = self.encoder(true_data[:,1,:,:,:], training=True)[2]   # OFF
-        a2 = self.encoder(true_data[:,2,:,:,:], training=True)[2]  # ON  
-        c = self.encoder(true_data[:,3,:,:,:], training=True)[2]   # OFF
-        a3 = self.encoder(true_data[:,4,:,:,:], training=True)[2]  # ON
-        d = self.encoder(true_data[:,5,:,:,:], training=True)[2]   # OFF
+        batch_size = tf.shape(true_data)[0]
+        
+        # Process all observations at once for efficiency
+        all_obs = tf.reshape(true_data, (batch_size * 6, 16, 512, 1))
+        _, _, all_latents = self.encoder(all_obs, training=True)
+        
+        # Reshape back to (batch, 6, latent_dim)
+        latent_dim = tf.shape(all_latents)[1]
+        latents_reshaped = tf.reshape(all_latents, (batch_size, 6, latent_dim))
 
+        # Extract ON and OFF observations
+        a1 = latents_reshaped[:, 0, :]  # ON
+        b = latents_reshaped[:, 1, :]   # OFF
+        a2 = latents_reshaped[:, 2, :]  # ON  
+        c = latents_reshaped[:, 3, :]   # OFF
+        a3 = latents_reshaped[:, 4, :]  # ON
+        d = latents_reshaped[:, 5, :]   # OFF
+
+        # Difference terms (ON-OFF should be maximized, so use loss_diff)
         difference = 0.0
         difference += self.loss_diff(a1, b)
         difference += self.loss_diff(a1, c)
@@ -121,6 +132,7 @@ class BetaVAE(keras.Model):
         difference += self.loss_diff(a3, c)
         difference += self.loss_diff(a3, d)
         
+        # Same terms (ON-ON and OFF-OFF should be minimized, so use loss_same)
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
@@ -133,22 +145,34 @@ class BetaVAE(keras.Model):
         return similarity
 
     @tf.function
-    def compute_clustering_loss_false(self, false_data: tf.Tensor) -> tf.Tensor:
+    def compute_clustering_loss_false_distributed(self, false_data: tf.Tensor) -> tf.Tensor:
         """
         Clustering loss for false signals
         """
         # Add channel dimension if missing
         if len(false_data.shape) == 4:
             false_data = tf.expand_dims(false_data, -1)
-        
-        # Process each observation separately
-        a1 = self.encoder(false_data[:,0,:,:,:], training=True)[2]  # ON
-        b = self.encoder(false_data[:,1,:,:,:], training=True)[2]   # OFF
-        a2 = self.encoder(false_data[:,2,:,:,:], training=True)[2]  # ON
-        c = self.encoder(false_data[:,3,:,:,:], training=True)[2]   # OFF
-        a3 = self.encoder(false_data[:,4,:,:,:], training=True)[2]  # ON
-        d = self.encoder(false_data[:,5,:,:,:], training=True)[2]   # OFF
 
+        batch_size = tf.shape(false_data)[0]
+        
+        # Process all observations at once for efficiency
+        all_obs = tf.reshape(false_data, (batch_size * 6, 16, 512, 1))
+        _, _, all_latents = self.encoder(all_obs, training=True)
+        
+        # Reshape back to (batch, 6, latent_dim)
+        latent_dim = tf.shape(all_latents)[1]
+        latents_reshaped = tf.reshape(all_latents, (batch_size, 6, latent_dim))
+        
+        # Extract OFF observations
+        a1 = latents_reshaped[:, 0, :]  # OFF
+        b = latents_reshaped[:, 1, :]   # OFF
+        a2 = latents_reshaped[:, 2, :]  # OFF
+        c = latents_reshaped[:, 3, :]   # OFF
+        a3 = latents_reshaped[:, 4, :]  # OFF
+        d = latents_reshaped[:, 5, :]   # OFF
+
+        # For RFI/false signals, all observations should look similar
+        # So we minimize distances between all pairs
         difference = 0.0
         difference += self.loss_same(a1, b)
         difference += self.loss_same(a1, c)
@@ -172,20 +196,13 @@ class BetaVAE(keras.Model):
         return similarity
 
     @tf.function
-    def compute_forward_pass(self, data, training=True):
+    def distributed_forward_pass(self, main_data, true_data, false_data, target_data, training=True):
         """
         Compute forward pass and losses without applying gradients
         Can be reused by both train_step and gradient accumulation
         """
-        # Unpack data
-        x, y = data
-        true_data = x[1]
-        false_data = x[2] 
-        x = x[0]
-
-        # Reshape input for encoder
-        batch_size = tf.shape(x)[0]
-        encoder_input = tf.reshape(x, (batch_size * 6, 16, 512, 1))
+        batch_size = tf.shape(main_data)[0]
+        encoder_input = tf.reshape(main_data, (batch_size * 6, 16, 512, 1))
         
         # Encode
         z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
@@ -194,12 +211,12 @@ class BetaVAE(keras.Model):
         reconstruction = self.decoder(z, training=training)
         
         # Reshape reconstruction back to cadence format for loss computation
-        reconstruction = tf.reshape(reconstruction, tf.shape(y))
+        reconstruction = tf.reshape(reconstruction, tf.shape(target_data))
         
         # Compute reconstruction loss
         reconstruction_loss = tf.reduce_mean(
             tf.reduce_sum(
-                keras.losses.binary_crossentropy(y, reconstruction), axis=(1, 2)
+                keras.losses.binary_crossentropy(target_data, reconstruction), axis=(1, 2)
             )
         )
         
@@ -208,8 +225,8 @@ class BetaVAE(keras.Model):
         kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
         
         # Compute clustering losses (these handle their own reshaping)
-        false_loss = self.compute_clustering_loss_false(false_data)
-        true_loss = self.compute_clustering_loss_true(true_data)
+        false_loss = self.compute_clustering_loss_false_distributed(false_data)
+        true_loss = self.compute_clustering_loss_true_distributed(true_data)
         
         # Total loss formula
         total_loss = (reconstruction_loss + 
@@ -226,16 +243,22 @@ class BetaVAE(keras.Model):
     
     def train_step(self, data):
         """Model training step"""
-        with tf.GradientTape() as tape:
-            losses = self.compute_forward_pass(data, training=True)
-            total_loss = losses['total_loss']
+        x, y = data
+        true_data = x[1]
+        false_data = x[2]
+        main_data = x[0]
 
-        # Apply gradients
-        grads = tape.gradient(total_loss, self.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-        
+        with tf.GradientTape() as tape:
+            losses = self.distributed_forward_pass(main_data, true_data, false_data, y, training=True)
+            # Scale loss for distributed training
+            scaled_loss = losses['total_loss'] / tf.cast(tf.distribute.get_strategy().num_replicas_in_sync, tf.float32)
+
+        # Compute and apply gradients
+        gradients = tape.gradient(scaled_loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+
         # Update metrics
-        self.total_loss_tracker.update_state(total_loss)
+        self.total_loss_tracker.update_state(losses['total_loss'])
         self.reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
         self.kl_loss_tracker.update_state(losses['kl_loss'])
         self.true_loss_tracker.update_state(losses['true_loss'])
@@ -251,7 +274,12 @@ class BetaVAE(keras.Model):
 
     def test_step(self, data):
         """Model validation step"""
-        losses = self.compute_forward_pass(data, training=False)
+        x, y = data
+        true_data = x[1]
+        false_data = x[2]
+        main_data = x[0]
+
+        losses = self.distributed_forward_pass(main_data, true_data, false_data, y, training=False)
 
         # Update metrics
         self.val_total_loss_tracker.update_state(losses['total_loss'])
