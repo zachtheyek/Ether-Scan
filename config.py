@@ -52,10 +52,14 @@ class DataConfig:
 class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
+
+    # NOTE: gradient accumulation bug causes num_replicas small updates instead of 1 large update
+    # Fix later; for now, set train_physical_batch_size = train_logical_batch_size
     train_physical_batch_size: int = 1024  # Micro batch size for memory efficiency
     train_logical_batch_size: int = 1024  # Actual batch size for convergence 
     batch_size: int = train_logical_batch_size  # Legacy param, should equal train_logical_batch_size
     validation_batch_size: int = 2048
+
     target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     num_samples_train: int = 5000
