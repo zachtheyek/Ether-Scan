@@ -204,7 +204,6 @@ def train_command(args):
     # Load configuration
     config = Config()
     
-    # TODO: update CLI args
     # Override config with command line args
     if args.rounds:
         config.training.num_training_rounds = args.rounds
@@ -212,6 +211,19 @@ def train_command(args):
         config.training.epochs_per_round = args.epochs
     if args.batch_size:
         config.training.train_logical_batch_size = args.batch_size
+    if args.model_tag:
+        tag = args.model_tag
+        if tag.startswith('round_'):
+            start_round = int(tag.split('_')[1])
+        else:
+            start_round = 1
+    else: 
+        tag = None
+        start_round = 1
+    if args.model_dir:
+        dir = args.model_dir
+    else: 
+        dir = None
     
     logger.info(f"Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
@@ -233,20 +245,6 @@ def train_command(args):
 
     # Train models
     logger.info("\nStarting training pipeline...")
-
-    if args.model_tag:
-        tag = args.model_tag
-        if tag.startswith('round_'):
-            start_round = int(tag.split('_')[1])
-        else:
-            start_round = 1
-    else: 
-        tag = None
-        start_round = 1
-    if args.model_dir:
-        dir = args.model_dir
-    else: 
-        dir = None
 
     try:
         pipeline = train_full_pipeline(
@@ -399,7 +397,7 @@ def evaluate_command(args):
     logger.info(f"  Overall Accuracy: {accuracy:.3f}")
     logger.info("="*60)
 
-# TODO: update CLI args
+# NOTE: come back to this later
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -411,8 +409,8 @@ def main():
     
     # Training command
     train_parser = subparsers.add_parser('train', help='Train models')
-    train_parser.add_argument('--data-path', type=str, default=None,
-                            help='Path to training data')
+    # train_parser.add_argument('--data-path', type=str, default=None,
+    #                         help='Path to training data')
     train_parser.add_argument('--rounds', type=int, default=None,
                             help='Number of training rounds (config default: 20)')
     train_parser.add_argument('--epochs', type=int, default=None,

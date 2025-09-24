@@ -122,7 +122,11 @@ class TrainingPipeline:
             'kl_loss': [],
             'true_loss': [],
             'false_loss': [],
-            'val_loss': []
+            'val_loss': [],
+            'val_reconstruction_loss': [], 
+            'val_kl_loss': [], 
+            'val_true_loss': [],
+            'val_false_loss': []
         }
         
         # Setup directories
@@ -292,15 +296,17 @@ class TrainingPipeline:
                        f"False: {val_losses['false']:.4f}")
 
             # Update history 
-            for key in ['loss', 'reconstruction_loss', 'kl_loss', 'true_loss', 'false_loss']:
+            for key, train_key in [('loss', 'total'), ('reconstruction_loss', 'reconstruction'), 
+                                   ('kl_loss', 'kl'), ('true_loss', 'true'), ('false_loss', 'false')]:
                 if key not in self.history:
                     self.history[key] = []
-                if key in epoch_losses:
-                    self.history[key].append(float(epoch_losses[key]))
-            
-            if 'val_loss' not in self.history:
-                self.history['val_loss'] = []
-            self.history['val_loss'].append(float(val_losses['total']))
+                self.history[key].append(float(epoch_losses[train_key]))
+
+            for key, val_key in [('val_loss', 'total'), ('val_reconstruction_loss', 'reconstruction'),
+                                 ('val_kl_loss', 'kl'), ('val_true_loss', 'true'), ('val_false_loss', 'false')]:
+                if key not in self.history:
+                    self.history[key] = []
+                self.history[key].append(float(val_losses[val_key]))
 
             # TensorBoard logging
             with self.train_writer.as_default():
@@ -658,9 +664,8 @@ class TrainingPipeline:
             logger.error(f"Random Forest training failed: {e}")
             raise
     
-    # NOTE: come back to this later
     def plot_training_history(self, save_path: Optional[str] = None):
-        """Plot training history matching author's style"""
+        """Plot training history"""
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
         
         fig.suptitle(f"Model Training Progress", fontsize=16)
