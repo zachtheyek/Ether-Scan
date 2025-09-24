@@ -57,7 +57,6 @@ class TrainingConfig:
     # Fix later; for now, set train_physical_batch_size = train_logical_batch_size
     train_physical_batch_size: int = 1024  # Micro batch size for memory efficiency
     train_logical_batch_size: int = 1024  # Actual batch size for convergence 
-    batch_size: int = train_logical_batch_size  # Legacy param, should equal train_logical_batch_size
     validation_batch_size: int = 4096
 
     target_backgrounds: int = 10000  # Number of background cadences to load
@@ -140,7 +139,7 @@ class Config:
                 'learning_rate': self.model.learning_rate
             },
             'training': {
-                'batch_size': self.training.batch_size,
+                'batch_size': self.training.train_logical_batch_size,
                 'validation_batch_size': self.training.validation_batch_size,
                 'num_training_rounds': self.training.num_training_rounds,
                 'epochs_per_round': self.training.epochs_per_round,

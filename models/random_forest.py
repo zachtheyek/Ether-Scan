@@ -184,12 +184,12 @@ def train_random_forest(vae_encoder, training_data, config):
     
     true_latents = vae_encoder.predict(
         training_data['true'], 
-        batch_size=config.training.batch_size
+        batch_size=config.training.train_logical_batch_size
     )[2]  # Get z vectors
     
     false_latents = vae_encoder.predict(
         training_data['false'],
-        batch_size=config.training.batch_size
+        batch_size=config.training.train_logical_batch_size
     )[2]
     
     # Train Random Forest

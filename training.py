@@ -332,11 +332,10 @@ class TrainingPipeline:
             logger.info(f"{log_system_resources()}")
         
         # Save checkpoint
-        checkpoint_path = os.path.join(
-            self.config.model_path, 'checkpoints', f'vae_round_{round_idx+1:02d}.h5'
+        self.save_models(
+            tag=f"round_{round_idx+1:02d}",
+            dir="checkpoints"
         )
-        self.vae.encoder.save(checkpoint_path)
-        logger.info(f"Saved checkpoint to {checkpoint_path}")
         
         # Clean up memory
         del train_concat, train_true, train_false
@@ -491,16 +490,19 @@ class TrainingPipeline:
             
         return val_losses
     
-    def iterative_training(self):
+    def iterative_training(self, start_round=1):
         """
         Perform iterative training with curriculum learning
         """
         epochs = self.config.training.epochs_per_round
         n_rounds = self.config.training.num_training_rounds
         
-        logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
+        if start_round > 1:
+            logger.info(f"Resuming training from round {start_round}/{n_rounds}")
+        else:
+            logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
         
-        for round_idx in range(n_rounds):
+        for round_idx in range(start_round-1, n_rounds):
             snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
 
             logger.info(f"\n{'='*50}")
@@ -527,15 +529,14 @@ class TrainingPipeline:
                 snr_range=snr_range
             )
             
-            # Plot progress every 5 rounds
-            if (round_idx + 1) % 5 == 0:
-                self.plot_training_history(
-                    save_path=os.path.join(
-                        self.config.output_path,
-                        'plots',
-                        f'training_progress_round_{round_idx+1}.png'
-                    )
+            # Plot progress every round
+            self.plot_training_history(
+                save_path=os.path.join(
+                    self.config.output_path,
+                    'plots',
+                    f'training_progress_round_{round_idx+1}.png'
                 )
+            )
     
     # NOTE: come back to this later
     def train_random_forest(self):
@@ -559,7 +560,7 @@ class TrainingPipeline:
             
             # Use config values for processing chunks
             chunk_size = min(max_chunk_size, 1000)  # Don't exceed memory limits
-            batch_size = min(self.config.training.batch_size, 100)  # Small batches for encoder
+            batch_size = min(self.config.training.train_logical_batch_size, 100)  # Small batches for encoder
             
             true_latents = []
             false_latents = []
@@ -608,6 +609,7 @@ class TrainingPipeline:
             logger.error(f"Random Forest training failed: {e}")
             raise
     
+    # NOTE: come back to this later
     def plot_training_history(self, save_path: Optional[str] = None):
         """Plot training history matching author's style"""
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
@@ -664,29 +666,167 @@ class TrainingPipeline:
         
         plt.close()
     
-    def save_models(self, tag: Optional[str] = None):
-        """Save trained models"""
+    def save_models(self, tag: Optional[str] = None, dir: Optional[str] = None):
+        """Save model weights"""
         if tag is None:
             tag = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
+
+        if dir is not None: 
+            encoder_path = os.path.join(self.config.model_path, dir, f'vae_encoder_{tag}.h5')
+            decoder_path = os.path.join(self.config.model_path, dir, f'vae_decoder_{tag}.h5')
+            rf_path = os.path.join(self.config.model_path, dir, f'random_forest_{tag}.joblib')
+        else:
+            encoder_path = os.path.join(self.config.model_path, f'vae_encoder_{tag}.h5')
+            decoder_path = os.path.join(self.config.model_path, f'vae_decoder_{tag}.h5')
+            rf_path = os.path.join(self.config.model_path, f'random_forest_{tag}.joblib')
+
         # Save VAE encoder (main model for inference)
-        encoder_path = os.path.join(self.config.model_path, f'vae_encoder_{tag}.h5')
         self.vae.encoder.save(encoder_path)
         logger.info(f"Saved VAE encoder to {encoder_path}")
         
         # Save decoder
-        decoder_path = os.path.join(self.config.model_path, f'vae_decoder_{tag}.h5')
         self.vae.decoder.save(decoder_path)
         logger.info(f"Saved VAE decoder to {decoder_path}")
         
         # Save Random Forest
         if self.rf_model is not None:
-            rf_path = os.path.join(self.config.model_path, f'random_forest_{tag}.joblib')
             self.rf_model.save(rf_path)
             logger.info(f"Saved Random Forest to {rf_path}")
 
+    def load_models(self, tag: Optional[str] = None, dir: Optional[str] = None):
+        """Load model weights"""
+        import tensorflow as tf
+        import glob
+        import re
+        from datetime import datetime
+
+        if tag is None:
+            tag = "final"
+        original_tag = tag
+
+        # Construct filepaths
+        if dir is not None:
+            base_dir = os.path.join(self.config.model_path, dir)
+            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
+            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+            rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
+        else:
+            base_dir = self.config.model_path
+            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
+            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+            rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
+
+        # Check if the specified path exists
+        if not (os.path.exists(encoder_path) and os.path.exists(decoder_path)):
+            logger.warning(f"No models tagged as '{original_tag}' in {base_dir}, looking for latest tag instead...")
+
+            if os.path.exists(base_dir):
+                # Find all encoder files in the directory
+                encoder_pattern = os.path.join(base_dir, 'vae_encoder_*.h5')
+                encoder_files = glob.glob(encoder_pattern)
+                
+                if encoder_files:
+                    # Extract tags and find ones with complete pairs (encoder + decoder)
+                    valid_tags = []
+                    for file in encoder_files:
+                        basename = os.path.basename(file)
+                        match = re.search(r'vae_encoder_(.+)\.h5', basename)
+                        if match:
+                            extracted_tag = match.group(1)
+                            # Check if corresponding decoder exists
+                            decoder_file = os.path.join(base_dir, f'vae_decoder_{extracted_tag}.h5')
+                            if os.path.exists(decoder_file):
+                                valid_tags.append(extracted_tag)
+                    
+                    if valid_tags:
+                        # Sort tags to find the latest
+                        def sort_key(tag_str):
+                           # Handle final_vX format with highest priority
+                            if tag_str.startswith("final_"):
+                                try:
+                                    final_ver = int(tag_str.split('_v')[1])
+                                    return (0, final_ver)
+                                except:
+                                    return (1, tag_str)
+                            # Handle round_XX format with secondary priority
+                            elif tag_str.startswith('round_'):
+                                try:
+                                    round_num = int(tag_str.split('_')[1])
+                                    return (2, round_num)
+                                except:
+                                    return (3, tag_str)
+                            # Handle timestamp format YYYYMMDD_HHMMSS lowest priority
+                            elif re.match(r'\d{8}_\d{6}', tag_str):
+                                try:
+                                    timestamp = datetime.strptime(tag_str, '%Y%m%d_%H%M%S')
+                                    return (4, timestamp)
+                                except:
+                                    return (5, tag_str)
+                            # Fallback for all other formats
+                            else:
+                                return (99, tag_str)
+
+                        # Filer for the highest priority group
+                        priorities = [sort_key(t)[0] for t in valid_tags]
+                        highest_priority = min(priorities)  # smaller = higher priority
+                        if highest_priority == 99:
+                            raise FileNotFoundError(f"No valid model tags found (e.g. final_vX, round_XX, YYYYMMDD_HHMMSS)")
+                        filtered_tags = [t for t in valid_tags if sort_key(t)[0] == highest_priority]
+
+                        # Select the latest tag within highest priority group
+                        filtered_tags.sort(key=sort_key)
+                        tag = filtered_tags[-1]  # Get the latest
+                        logger.info(f"Tag '{original_tag}' not found. Loading latest model with tag: '{tag}'")
+                        
+                        # Reconstruct paths with new tag
+                        encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
+                        decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+                        rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
+                    else:
+                        raise FileNotFoundError(f"No valid model pairs found in directory: {base_dir}")
+                else:
+                    raise FileNotFoundError(f"No encoder files found in directory: {base_dir}")
+            else:
+                raise FileNotFoundError(f"Directory doesn't exist: {base_dir}")
+
+        # Load the models
+        try:
+            if not (os.path.exists(encoder_path) and os.path.exists(decoder_path)):
+                raise FileNotFoundError("Models not found")
+            
+            logger.info(f"Loading models from {base_dir} with tag '{tag}'")
+            
+            # Load encoder & decoder
+            checkpoint_encoder = tf.keras.models.load_model(encoder_path)
+            checkpoint_decoder = tf.keras.models.load_model(decoder_path)
+            
+            # Transfer weights
+            self.vae.encoder.set_weights(checkpoint_encoder.get_weights())
+            self.vae.decoder.set_weights(checkpoint_decoder.get_weights())
+            
+            logger.info("VAE loaded successfully")
+
+            # Load Random Forest if it exists
+            if os.path.exists(rf_path):
+                # Initialize RF model if it doesn't exist yet
+                if self.rf_model is None:
+                    from models.random_forest import RandomForestModel
+                    self.rf_model = RandomForestModel(self.config)
+                
+                self.rf_model.load(rf_path)
+                logger.info("Random Forest laoded successfully")
+            else:
+                logger.info(f"Random Forest not found at {rf_path} - this is normal if RF hasn't been trained yet")
+            
+            logger.info(f"Successfully loaded models from {base_dir} with tag '{tag}'")
+            return tag  # Return the actually loaded tag for reference
+            
+        except Exception as e:
+            logger.error(f"Failed to load models: {e}")
+            raise
+
 def train_full_pipeline(config, background_data: np.ndarray,
-                       strategy=None) -> TrainingPipeline:
+                       strategy=None, tag=None, dir=None, start_round=1) -> TrainingPipeline:
     """
     Train complete SETI ML pipeline
     
@@ -700,15 +840,20 @@ def train_full_pipeline(config, background_data: np.ndarray,
     """
     # Create pipeline
     pipeline = TrainingPipeline(config, background_data, strategy)
+
+    # Resume from checkpoint if provided
+    if tag:
+        logger.info(f"Resuming from checkpoint")
+        pipeline.load_models(tag=tag, dir=dir)
     
     # Run iterative training
-    pipeline.iterative_training()
+    pipeline.iterative_training(start_round=start_round)
     
     # Train Random Forest
     pipeline.train_random_forest()
     
     # Save final models
-    pipeline.save_models("final")
+    pipeline.save_models(tag="final_v1")
     
     # Final plot
     pipeline.plot_training_history()

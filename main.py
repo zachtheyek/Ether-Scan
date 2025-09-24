@@ -206,17 +206,17 @@ def train_command(args):
     
     # TODO: update CLI args
     # Override config with command line args
+    if args.rounds:
+        config.training.num_training_rounds = args.rounds
     if args.epochs:
         config.training.epochs_per_round = args.epochs
     if args.batch_size:
-        config.training.batch_size = args.batch_size
-    if args.rounds:
-        config.training.num_training_rounds = args.rounds
+        config.training.train_logical_batch_size = args.batch_size
     
     logger.info(f"Configuration:")
-    logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
-    logger.info(f"  Batch size: {config.training.batch_size}")
+    logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
+    logger.info(f"  Batch size: {config.training.train_logical_batch_size}")
     logger.info(f"  Data path: {config.data_path}")
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
@@ -230,14 +230,25 @@ def train_command(args):
         sys.exit(1)
     
     logger.info(f"Background data loaded: {background_data.shape}")
-    
+
     # Train models
     logger.info("\nStarting training pipeline...")
+
+    tag = args.model_tag
+    dir = args.model_dir
+    if tag.startswith('round_'):
+        start_round = int(tag.split('_')[1])
+    else:
+        start_round = 1
+
     try:
         pipeline = train_full_pipeline(
             config,
             background_data,
-            strategy=strategy
+            strategy=strategy,
+            tag=tag,
+            dir=dir,
+            start_round=start_round
         )
     except Exception as e:
         logger.error(f"Training failed: {e}")
@@ -393,14 +404,19 @@ def main():
     
     # Training command
     train_parser = subparsers.add_parser('train', help='Train models')
-    train_parser.add_argument('--data-path', type=str, help='Path to training data')
-    train_parser.add_argument('--epochs', type=int, default=None,
-                            help='Epochs per training round (default: 100)')
+    train_parser.add_argument('--data-path', type=str, default=None,
+                            help='Path to training data')
     train_parser.add_argument('--rounds', type=int, default=None,
-                            help='Number of training rounds (default: 20)')
+                            help='Number of training rounds (config default: 20)')
+    train_parser.add_argument('--epochs', type=int, default=None,
+                            help='Epochs per training round (config default: 100)')
     train_parser.add_argument('--batch-size', type=int, default=None,
-                            help='Training batch size (uses config default if not specified)')
-    
+                            help='Training batch size (config default: 1024)')
+    train_parser.add_argument('--model-tag', type=str, default=None,
+                              help='Model tag to resume training from (accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS)')
+    train_parser.add_argument('--model-dir', type=str, default=None,
+                            help='Checkpoint directory to resume training from (appended to: /datax/scratch/zachy/models/etherscan)')
+
     # Inference command
     inf_parser = subparsers.add_parser('inference', help='Run inference on data')
     inf_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
