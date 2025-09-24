@@ -234,12 +234,19 @@ def train_command(args):
     # Train models
     logger.info("\nStarting training pipeline...")
 
-    tag = args.model_tag
-    dir = args.model_dir
-    if tag.startswith('round_'):
-        start_round = int(tag.split('_')[1])
-    else:
+    if args.model_tag:
+        tag = args.model_tag
+        if tag.startswith('round_'):
+            start_round = int(tag.split('_')[1])
+        else:
+            start_round = 1
+    else: 
+        tag = None
         start_round = 1
+    if args.model_dir:
+        dir = args.model_dir
+    else: 
+        dir = None
 
     try:
         pipeline = train_full_pipeline(

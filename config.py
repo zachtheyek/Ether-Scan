@@ -75,6 +75,10 @@ class TrainingConfig:
     step_easy_rounds: int = 5  # Number of rounds with easy signals
     step_hard_rounds: int = 15  # Number of rounds with challenging signals
 
+    # Fault tolerance parameters
+    max_retries: int = 5 
+    retry_delay: int = 30 # seconds 
+
 # NOTE: come back to this later
 @dataclass
 class RandomForestConfig:
@@ -125,7 +129,6 @@ class Config:
         }
         return subset_map.get(filename, (None, None))
     
-    # TODO: update this method
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {
@@ -138,20 +141,54 @@ class Config:
                 'gamma': self.model.gamma,
                 'learning_rate': self.model.learning_rate
             },
-            'training': {
-                'batch_size': self.training.train_logical_batch_size,
-                'validation_batch_size': self.training.validation_batch_size,
-                'num_training_rounds': self.training.num_training_rounds,
-                'epochs_per_round': self.training.epochs_per_round,
-                'snr_base': self.training.snr_base,
-                'snr_range': self.training.snr_range,
-                'num_samples_train': self.training.num_samples_train,
-                'num_samples_test': self.training.num_samples_test
-            },
             'data': {
                 'width_bin': self.data.width_bin,
+                'time_bins': self.data.time_bins,
                 'downsample_factor': self.data.downsample_factor,
+                'num_observations': self.data.num_observations,
                 'freq_resolution': self.data.freq_resolution,
-                'time_resolution': self.data.time_resolution
+                'time_resolution': self.data.time_resolution,
+                'chunk_size_loading': self.data.chunk_size_loading,
+                'max_chunks_per_file': self.data.max_chunks_per_file,
+                'training_files': self.data.training_files,
+                'test_files': self.data.test_files
+            },
+            'training': {
+                'num_training_rounds': self.training.num_training_rounds,
+                'epochs_per_round': self.training.epochs_per_round,
+                'train_physical_batch_size': self.training.train_physical_batch_size,
+                'train_logical_batch_size': self.training.train_logical_batch_size,
+                'validation_batch_size': self.training.validation_batch_size,
+                'target_backgrounds': self.training.target_backgrounds,
+                'max_chunk_size': self.training.max_chunk_size,
+                'num_samples_train': self.training.num_samples_train,
+                'num_samples_test': self.training.num_samples_test,
+                'num_samples_rf': self.training.num_samples_rf,
+                'train_val_split': self.training.train_val_split,
+                'snr_base': self.training.snr_base,
+                'initial_snr_range': self.training.initial_snr_range,
+                'final_snr_range': self.training.final_snr_range,
+                'curriculum_schedule': self.training.curriculum_schedule,
+                'exponential_decay_rate': self.training.exponential_decay_rate,
+                'step_easy_rounds': self.training.step_easy_rounds,
+                'step_hard_rounds': self.training.step_hard_rounds,
+                'max_retries': self.training.max_retries,
+                'retry_delay': self.training.retry_delay
+            },
+            'rf': {
+                'n_estimators': self.rf.n_estimators,
+                'bootstrap': self.rf.bootstrap,
+                'max_features': self.rf.max_features,
+                'n_jobs': self.rf.n_jobs
+            },
+            'inference': {
+                'classification_threshold': self.inference.classification_threshold,
+                'batch_size': self.inference.batch_size,
+                'max_drift_rate': self.inference.max_drift_rate
+            },
+            'paths': {
+                'data_path': self.data_path,
+                'model_path': self.model_path,
+                'output_path': self.output_path
             }
         }
