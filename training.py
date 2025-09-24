@@ -585,7 +585,7 @@ class TrainingPipeline:
                     
                     except Exception as recovery_error:
                         logger.error(f"Recovery failed: {recovery_error}")
-                        logger.info(f"Restarting training from {current_round} in {retry_delay} seconds")
+                        logger.info(f"Restarting training from round {current_round} in {retry_delay} seconds")
                         time.sleep(retry_delay)
 
                 else:
