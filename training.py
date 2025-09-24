@@ -126,7 +126,8 @@ class TrainingPipeline:
             'val_reconstruction_loss': [], 
             'val_kl_loss': [], 
             'val_true_loss': [],
-            'val_false_loss': []
+            'val_false_loss': [],
+            'learning_rate': []
         }
         
         # Setup directories
@@ -307,6 +308,8 @@ class TrainingPipeline:
                 if key not in self.history:
                     self.history[key] = []
                 self.history[key].append(float(val_losses[val_key]))
+
+            self.history['learning_rate'].append(float(self.vae.optimizer.learning_rate.numpy()))
 
             # TensorBoard logging
             with self.train_writer.as_default():
@@ -664,6 +667,7 @@ class TrainingPipeline:
             logger.error(f"Random Forest training failed: {e}")
             raise
     
+    # TODO: add RF training curves
     def plot_training_history(self, save_path: Optional[str] = None):
         """Plot training history"""
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
@@ -911,7 +915,7 @@ def train_full_pipeline(config, background_data: np.ndarray,
     pipeline.save_models(tag="final_v1")
     
     # Final plot
-    pipeline.plot_training_history()
+    pipeline.plot_training_history(save_path=os.path.join(config.output_path, 'plots', 'training_progress_final_v1.png'))
     
     logger.info("Training complete!")
     
