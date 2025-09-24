@@ -56,9 +56,9 @@ class TrainingConfig:
     # BUG: 
     # Gradient accumulation bug causes num_replicas small updates instead of 1 large update
     # Fix later; for now, set train_physical_batch_size = train_logical_batch_size as temp patch
-    train_physical_batch_size: int = 1024  # Micro batch size for memory efficiency
-    train_logical_batch_size: int = 1024  # Actual batch size for convergence 
-    validation_batch_size: int = 4096
+    train_physical_batch_size: int = 512  # Micro batch size for memory efficiency
+    train_logical_batch_size: int = 512  # Actual batch size for convergence 
+    validation_batch_size: int = 1024
 
     target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
