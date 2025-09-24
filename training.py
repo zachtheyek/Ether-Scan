@@ -302,13 +302,11 @@ class TrainingPipeline:
                 if key not in self.history:
                     self.history[key] = []
                 self.history[key].append(float(epoch_losses[train_key]))
-
             for key, val_key in [('val_loss', 'total'), ('val_reconstruction_loss', 'reconstruction'),
                                  ('val_kl_loss', 'kl'), ('val_true_loss', 'true'), ('val_false_loss', 'false')]:
                 if key not in self.history:
                     self.history[key] = []
                 self.history[key].append(float(val_losses[val_key]))
-
             self.history['learning_rate'].append(float(self.vae.optimizer.learning_rate.numpy()))
 
             # TensorBoard logging
@@ -552,7 +550,7 @@ class TrainingPipeline:
                     )
                     
                     # Plot progress every round
-                    self.plot_training_history(
+                    self.plot_training_progress(
                         save_path=os.path.join(
                             self.config.output_path,
                             'plots',
@@ -668,58 +666,81 @@ class TrainingPipeline:
             raise
     
     # TODO: add RF training curves
-    def plot_training_history(self, save_path: Optional[str] = None):
+    def plot_training_progress(self, save_path: Optional[str] = None):
         """Plot training history"""
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        from matplotlib.gridspec import GridSpec
+        import matplotlib.lines as mlines
+            
+        fig = plt.figure(figsize=(20, 12))
+        gs = GridSpec(2, 4, height_ratios=[1, 1], hspace=0.3, wspace=0.3)
+        
+        # Top subplot spanning full width - Total Loss
+        ax_top = fig.add_subplot(gs[0, :])
+        
+        # Bottom subplots - Individual losses
+        ax_recon = fig.add_subplot(gs[1, 0])
+        ax_kl = fig.add_subplot(gs[1, 1]) 
+        ax_true = fig.add_subplot(gs[1, 2])
+        ax_false = fig.add_subplot(gs[1, 3])
         
         fig.suptitle(f"Model Training Progress", fontsize=16)
         
-        # False/True clustering losses
-        if 'false_loss' in self.history and self.history['false_loss']:
-            ax1.plot(self.history['false_loss'], label='false_loss')
-        if 'true_loss' in self.history and self.history['true_loss']:
-            ax1.plot(self.history['true_loss'], label='true_loss')
-        ax1.set_title('Model Clustering Loss')
-        ax1.set_ylabel('loss')
-        ax1.set_xlabel('epoch')
-        ax1.legend()
-        ax1.grid()
+        epochs = range(1, len(self.history.get('loss', [])) + 1)
         
-        # Total loss
-        if 'loss' in self.history and self.history['loss']:
-            ax2.plot(self.history['loss'], label='train')
-        if 'val_loss' in self.history and self.history['val_loss']:
-            ax2.plot(self.history['val_loss'], label='validation')
-        ax2.set_title('Total Loss')
-        ax2.set_ylabel('loss')
-        ax2.set_xlabel('epoch')
-        ax2.legend()
-        ax2.grid()
+        # Helper function to plot dual y-axis
+        def plot_dual_axis(ax, title, train_key, val_key):
+            # Create secondary y-axis for learning rate
+            ax2 = ax.twinx()
+            
+            # Plot train and validation on left y-axis
+            if train_key in self.history and self.history[train_key]:
+                ax.plot(epochs, self.history[train_key], color='blue', label='train', linewidth=2)
+            if val_key in self.history and self.history[val_key]:
+                ax.plot(epochs, self.history[val_key], color='orange', label='val', linewidth=2)
+                
+            # Plot learning rate on right y-axis  
+            if 'learning_rate' in self.history and self.history['learning_rate']:
+                ax2.plot(epochs, self.history['learning_rate'], color='grey', 
+                        label='learning rate', linewidth=1, alpha=0.7, linestyle='--')
+            
+            ax.set_title(title)
+            ax.set_ylabel('loss')
+            ax.set_xlabel('epoch')
+            ax.grid(True, alpha=0.3)
+            
+            ax2.set_ylabel('learning rate', color='grey')
+            ax2.tick_params(axis='y', labelcolor='grey')
         
-        # Reconstruction loss
-        if 'reconstruction_loss' in self.history and self.history['reconstruction_loss']:
-            ax3.plot(self.history['reconstruction_loss'])
-        ax3.set_title('Model Reconstruction')
-        ax3.set_ylabel('loss')
-        ax3.set_xlabel('epoch')
-        ax3.grid()
+        # Top subplot - Total Loss
+        plot_dual_axis(ax_top, 'Total Loss', 'loss', 'val_loss')
         
-        # KL divergence
-        if 'kl_loss' in self.history and self.history['kl_loss']:
-            ax4.plot(self.history['kl_loss'])
-        ax4.set_title('Model Divergence')
-        ax4.set_ylabel('loss')
-        ax4.set_xlabel('epoch')
-        ax4.grid()
+        # Bottom subplots
+        plot_dual_axis(ax_recon, 'Reconstruction Loss', 'reconstruction_loss', 'val_reconstruction_loss')
+        plot_dual_axis(ax_kl, 'KL Divergence', 'kl_loss', 'val_kl_loss') 
+        plot_dual_axis(ax_true, 'True Loss', 'true_loss', 'val_true_loss')
+        plot_dual_axis(ax_false, 'False Loss', 'false_loss', 'val_false_loss')
+
+        # Create shared legend at top right of figure
+        train_line = mlines.Line2D([], [], color='blue', linewidth=2, label='Train')
+        val_line = mlines.Line2D([], [], color='orange', linewidth=2, label='Validation') 
+        lr_line = mlines.Line2D([], [], color='grey', linewidth=1, linestyle='--', alpha=0.7, label='Learning Rate')
+        
+        fig.legend(handles=[train_line, val_line, lr_line], 
+                  loc='upper right', 
+                  bbox_to_anchor=(0.98, 0.98),
+                  frameon=True,
+                  fancybox=True,
+                  shadow=True)
         
         plt.tight_layout()
         
         if save_path:
-            plt.savefig(save_path)
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
         else:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             plt.savefig(
-                os.path.join(self.config.output_path, 'plots', f'training_history_{timestamp}.png')
+                os.path.join(self.config.output_path, 'plots', f'training_progress_{timestamp}.png'),
+                dpi=300, bbox_inches='tight'
             )
         
         plt.close()
@@ -915,7 +936,7 @@ def train_full_pipeline(config, background_data: np.ndarray,
     pipeline.save_models(tag="final_v1")
     
     # Final plot
-    pipeline.plot_training_history(save_path=os.path.join(config.output_path, 'plots', 'training_progress_final_v1.png'))
+    pipeline.plot_training_progress(save_path=os.path.join(config.output_path, 'plots', 'training_progress_final_v1.png'))
     
     logger.info("Training complete!")
     
