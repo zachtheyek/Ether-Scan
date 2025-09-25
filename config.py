@@ -55,7 +55,7 @@ class TrainingConfig:
 
     # BUG: Gradient accumulation bug causes num_replicas small updates instead of 1 large update
     train_physical_batch_size: int = 32  # Micro batch size for memory efficiency
-    train_logical_batch_size: int = 256  # Actual batch size for convergence 
+    train_logical_batch_size: int = 32  # Actual batch size for convergence 
     validation_batch_size: int = 1024
 
     target_backgrounds: int = 10000  # Number of background cadences to load
