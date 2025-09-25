@@ -216,8 +216,15 @@ class BetaVAE(keras.Model):
         # Compute reconstruction loss
         reconstruction_loss = tf.reduce_mean(
             tf.reduce_sum(
-                keras.losses.binary_crossentropy(target_data, reconstruction), axis=(1, 2)
+                keras.losses.binary_crossentropy(
+                    target_data, reconstruction, from_logits=False  # TEST: use from_logits=False since decoder's final activation is sigmoid (reconstruction is bounded [0,1])
+                ), axis=(1, 2)  
             )
+        )
+
+        # TEST: Add NaN checking
+        reconstruction_loss = tf.debugging.check_numerics(
+            reconstruction_loss, "Reconstruction loss contains NaN or Inf"
         )
         
         # Compute KL loss
@@ -255,7 +262,7 @@ class BetaVAE(keras.Model):
 
         # Compute and apply gradients
         gradients = tape.gradient(scaled_loss, self.trainable_variables)
-        gradients, _ = tf.clip_by_global_norm(gradients, 1.0) # TEST: apply gradient clipping to prevent nan losses
+        gradients, _ = tf.clip_by_global_norm(gradients, 1.0)  # TEST: apply gradient clipping to prevent nan losses
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
         # Update metrics
