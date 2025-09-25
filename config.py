@@ -53,11 +53,9 @@ class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
 
-    # BUG: 
-    # Gradient accumulation bug causes num_replicas small updates instead of 1 large update
-    # Fix later; for now, set train_physical_batch_size = train_logical_batch_size as temp patch
+    # BUG: Gradient accumulation bug causes num_replicas small updates instead of 1 large update
     train_physical_batch_size: int = 64  # Micro batch size for memory efficiency
-    train_logical_batch_size: int = 64  # Actual batch size for convergence 
+    train_logical_batch_size: int = 256  # Actual batch size for convergence 
     validation_batch_size: int = 1024
 
     target_backgrounds: int = 10000  # Number of background cadences to load
