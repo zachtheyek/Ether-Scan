@@ -400,13 +400,12 @@ class TrainingPipeline:
                 step_losses[key] /= accumulation_steps
                 epoch_losses[key] += step_losses[key]
 
-            if step % 10 == 0:
-                logger.info(f"Step {step+1}/{steps_per_epoch}, "
-                           f"Total: {step_losses['total']:.4f}, "
-                           f"Recon: {step_losses['reconstruction']:.4f}, "
-                           f"KL: {step_losses['kl']:.4f}, "
-                           f"True: {step_losses['true']:.4f}, "
-                           f"False: {step_losses['false']:.4f}")
+            logger.info(f"Step {step+1}/{steps_per_epoch}, "
+                       f"Total: {step_losses['total']:.4f}, "
+                       f"Recon: {step_losses['reconstruction']:.4f}, "
+                       f"KL: {step_losses['kl']:.4f}, "
+                       f"True: {step_losses['true']:.4f}, "
+                       f"False: {step_losses['false']:.4f}")
 
         # Average epoch losses
         for key in epoch_losses:

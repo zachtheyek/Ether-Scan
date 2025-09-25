@@ -255,6 +255,9 @@ class BetaVAE(keras.Model):
 
         # Compute and apply gradients
         gradients = tape.gradient(scaled_loss, self.trainable_variables)
+
+        gradients, _ = tf.clip_by_global_norm(gradients, 1.0) # TEST: apply gradient clipping to prevent nan losses
+
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
         # Update metrics
