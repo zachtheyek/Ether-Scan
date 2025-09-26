@@ -669,7 +669,7 @@ class TrainingPipeline:
         from matplotlib.gridspec import GridSpec
         import matplotlib.lines as mlines
             
-        fig = plt.figure(figsize=(20, 12))
+        fig = plt.figure(figsize=(25, 12))
         gs = GridSpec(2, 4, height_ratios=[1, 1], hspace=0.3, wspace=0.3)
         
         # Top subplot spanning full width - Total Loss
@@ -681,7 +681,7 @@ class TrainingPipeline:
         ax_true = fig.add_subplot(gs[1, 2])
         ax_false = fig.add_subplot(gs[1, 3])
         
-        fig.suptitle(f"Model Training Progress", fontsize=16)
+        fig.suptitle(f"Beta-VAE Training Progress", fontsize=16)
         
         epochs = range(1, len(self.history.get('loss', [])) + 1)
         
@@ -702,11 +702,9 @@ class TrainingPipeline:
                         label='learning rate', linewidth=1, alpha=0.7, linestyle='--')
             
             ax.set_title(title)
-            ax.set_ylabel('loss')
             ax.set_xlabel('epoch')
             ax.grid(True, alpha=0.3)
             
-            ax2.set_ylabel('learning rate', color='grey')
             ax2.tick_params(axis='y', labelcolor='grey')
         
         # Top subplot - Total Loss
