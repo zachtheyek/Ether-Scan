@@ -749,12 +749,12 @@ class TrainingPipeline:
             tag = datetime.now().strftime('%Y%m%d_%H%M%S')
 
         if dir is not None: 
-            encoder_path = os.path.join(self.config.model_path, dir, f'vae_encoder_{tag}.h5')
-            decoder_path = os.path.join(self.config.model_path, dir, f'vae_decoder_{tag}.h5')
+            encoder_path = os.path.join(self.config.model_path, dir, f'vae_encoder_{tag}.keras')
+            decoder_path = os.path.join(self.config.model_path, dir, f'vae_decoder_{tag}.keras')
             rf_path = os.path.join(self.config.model_path, dir, f'random_forest_{tag}.joblib')
         else:
-            encoder_path = os.path.join(self.config.model_path, f'vae_encoder_{tag}.h5')
-            decoder_path = os.path.join(self.config.model_path, f'vae_decoder_{tag}.h5')
+            encoder_path = os.path.join(self.config.model_path, f'vae_encoder_{tag}.keras')
+            decoder_path = os.path.join(self.config.model_path, f'vae_decoder_{tag}.keras')
             rf_path = os.path.join(self.config.model_path, f'random_forest_{tag}.joblib')
 
         # Save VAE encoder (main model for inference)
@@ -785,13 +785,13 @@ class TrainingPipeline:
         # Construct filepaths
         if dir is not None:
             base_dir = os.path.join(self.config.model_path, dir)
-            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
-            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.keras')
+            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.keras')
             rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
         else:
             base_dir = self.config.model_path
-            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
-            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.keras')
+            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.keras')
             rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
 
         # Check if the specified path exists
@@ -800,7 +800,7 @@ class TrainingPipeline:
 
             if os.path.exists(base_dir):
                 # Find all encoder files in the directory
-                encoder_pattern = os.path.join(base_dir, 'vae_encoder_*.h5')
+                encoder_pattern = os.path.join(base_dir, 'vae_encoder_*.keras')
                 encoder_files = glob.glob(encoder_pattern)
                 
                 if encoder_files:
@@ -808,11 +808,11 @@ class TrainingPipeline:
                     valid_tags = []
                     for file in encoder_files:
                         basename = os.path.basename(file)
-                        match = re.search(r'vae_encoder_(.+)\.h5', basename)
+                        match = re.search(r'vae_encoder_(.+)\.keras', basename)
                         if match:
                             extracted_tag = match.group(1)
                             # Check if corresponding decoder exists
-                            decoder_file = os.path.join(base_dir, f'vae_decoder_{extracted_tag}.h5')
+                            decoder_file = os.path.join(base_dir, f'vae_decoder_{extracted_tag}.keras')
                             if os.path.exists(decoder_file):
                                 valid_tags.append(extracted_tag)
                     
@@ -857,8 +857,8 @@ class TrainingPipeline:
                         logger.info(f"Tag '{original_tag}' not found. Loading latest model with tag: '{tag}'")
                         
                         # Reconstruct paths with new tag
-                        encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.h5')
-                        decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.h5')
+                        encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.keras')
+                        decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.keras')
                         rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
                     else:
                         raise FileNotFoundError(f"No valid model pairs found in directory: {base_dir}")
