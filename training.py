@@ -665,7 +665,7 @@ class TrainingPipeline:
     
     # TODO: add RF training curves
     def plot_training_progress(self, save_path: Optional[str] = None):
-        """Plot training history"""
+        """Plot beta-VAE training history"""
         from matplotlib.gridspec import GridSpec
         import matplotlib.lines as mlines
             
