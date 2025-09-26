@@ -1,4 +1,4 @@
-name: seti-ml
+name: ether-scan
 channels:
   - conda-forge
   - defaults
