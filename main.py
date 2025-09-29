@@ -260,7 +260,7 @@ def train_command(args):
         raise
     
     # Save configuration
-    config_path = os.path.join(config.model_path, 'config.json')
+    config_path = os.path.join(config.model_path, 'config_final_v1.json')
     with open(config_path, 'w') as f:
         json.dump(config.to_dict(), f, indent=2)
     logger.info(f"Configuration saved to {config_path}")
@@ -412,11 +412,11 @@ def main():
     # train_parser.add_argument('--data-path', type=str, default=None,
     #                         help='Path to training data')
     train_parser.add_argument('--rounds', type=int, default=None,
-                            help='Number of training rounds (config default: 20)')
+                            help='Number of training rounds (default: 20)')
     train_parser.add_argument('--epochs', type=int, default=None,
-                            help='Epochs per training round (config default: 100)')
+                            help='Epochs per training round (default: 100)')
     train_parser.add_argument('--batch-size', type=int, default=None,
-                            help='Training batch size (config default: 1024)')
+                            help='Training batch size (default: 32)')
     train_parser.add_argument('--model-tag', type=str, default=None,
                               help='Model tag to resume training from (accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS)')
     train_parser.add_argument('--model-dir', type=str, default=None,

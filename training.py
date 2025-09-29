@@ -2,6 +2,7 @@
 Training pipeline for SETI ML models
 """
 
+from random import sample
 import numpy as np
 import tensorflow as tf
 from typing import Dict, Optional, Tuple
@@ -83,7 +84,8 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
             current_range = config.initial_snr_range
         else:
             current_range = config.final_snr_range
-    # TODO: add exception handling for all other values of curriculum_schedule
+    else:
+        raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
     
     return config.snr_base, int(current_range)
 
@@ -159,15 +161,18 @@ class TrainingPipeline:
         os.makedirs(os.path.join(self.config.model_path, 'checkpoints'), exist_ok=True)
         os.makedirs(os.path.join(self.config.output_path, 'plots'), exist_ok=True)
 
+    def update_learning_rate(self, val_losses):
+        """
+        Robust adaptive learning rate with multiple safeguards
 
-    def update_learning_rate(self, val_losses, 
-                             min_lr_threshold=1e-6, 
-                             min_improvement_threshold=0.001, 
-                             patience_threshold=5, 
-                             reduction_factor=0.2):
-        """Robust adaptive learning rate with multiple safeguards"""
+        Note the following soft constraint: 
+        min_learning_rate - base_learning_rate * (1 - reduction_factor) ^ (epochs_per_round / patience_threshold)
+          => LR can only reach min_learning_rate during round if above expression is > 0 
+          => else LR will reset at start of new round before reaching min_learning_rate
+        """
+
         current_lr = self.vae.optimizer.learning_rate.numpy()
-        if current_lr <= min_lr_threshold:
+        if current_lr <= self.config.training.min_learning_rate:
             return current_lr
         
         # Use validation loss for better generalization
@@ -178,15 +183,15 @@ class TrainingPipeline:
         current_val_loss = float(val_losses['total'])
         
         # Check if validation loss improved
-        if current_val_loss < self.best_val_loss * (1 - min_improvement_threshold):
+        if current_val_loss < self.best_val_loss * (1 - self.config.training.min_pct_improvement):
             self.best_val_loss = current_val_loss
             self.patience_counter = 0
         else:
             self.patience_counter += 1
         
-        # Reduce LR if no improvement for patience_threshold epochs
-        if self.patience_counter >= patience_threshold:
-            new_lr = max(current_lr * (1 - reduction_factor), min_lr_threshold)
+        # Reduce LR if no meaningful improvement for consecutive epochs
+        if self.patience_counter >= self.config.training.patience_threshold:
+            new_lr = max(current_lr * (1 - self.config.training.reduction_factor), self.config.training.min_learning_rate)
             
             self.vae.optimizer.learning_rate.assign(new_lr)
             self.patience_counter = 0  # Reset counter
@@ -529,7 +534,7 @@ class TrainingPipeline:
                     logger.info(f"{'='*50}")
 
                     # Reset learning rate & adaptive state before new curriculum stage
-                    original_lr = self.config.model.learning_rate
+                    original_lr = self.config.training.base_learning_rate
                     current_lr = self.vae.optimizer.learning_rate.numpy()
                     self.vae.optimizer.learning_rate.assign(original_lr)
                     
@@ -596,10 +601,42 @@ class TrainingPipeline:
     def train_random_forest(self):
         """Train Random Forest"""
         logger.info("Training Random Forest classifier...")
+
+        # Load encoder weights if untrained 
+        logger.info("Checking if encoder weights appear trained")
+
+        try:
+            sample_encoder_weights = self.vae.encoder.layers[1].get_weights()[0]  # First conv layer weights
+            mean_absolute_threshold = 0.01
+
+            # Assume trained if mean absolute weights exceed some small threshold
+            if np.mean(np.abs(sample_encoder_weights)) > mean_absolute_threshold:   
+                logger.info(f"Encoder weights appear trained (>{mean_absolute_threshold})")
+
+            else: 
+                logger.info(f"Encoder weights appear random (<{mean_absolute_threshold})")
+
+                try:
+                    logger.info(f"Loading pre-trained encoder weights with tag 'final_v1'")
+                    self.load_models(tag="final_v1")
+
+                except Exception as e: 
+                    logger.warning(f"Failed to load pre-trained encoder weights: {e}")
+
+                    try: 
+                        logger.info(f"Loading latest checkpointed weights instead")
+                        self.load_models(dir="checkpoints")
+                    
+                    except Exception as e: 
+                        logger.warning(f"Failed to load latest checkpointed weights: {e}")
+                        logger.warning("Proceeding with current encoder weights")
+        except Exception as e: 
+            logger.warning(f"Could not verify encoder weights status: {e}")
+            logger.warning(f"Proceeding with current encoder weights")
         
         # Use config values
         n_samples = self.config.training.num_samples_rf // 2  # Split between true/false
-        max_chunk_size = getattr(self.config.training, 'max_chunk_size', 1000)
+        max_chunk_size = self.config.training.max_chunk_size
         
         logger.info(f"Generating {n_samples*2} samples for Random Forest...")
         logger.info(f"Using chunk size: {max_chunk_size}")
@@ -663,7 +700,7 @@ class TrainingPipeline:
             logger.error(f"Random Forest training failed: {e}")
             raise
     
-    # TODO: add RF training curves
+    # TODO: add function to plot RF training curves
     def plot_training_progress(self, save_path: Optional[str] = None):
         """Plot beta-VAE training history"""
         from matplotlib.gridspec import GridSpec

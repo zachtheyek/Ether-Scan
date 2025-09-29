@@ -493,7 +493,7 @@ def create_vae_model(config):
     
     vae.compile(
         optimizer=keras.optimizers.Adam(
-            learning_rate=config.model.learning_rate
+            learning_rate=config.training.base_learning_rate
         )
     )
     

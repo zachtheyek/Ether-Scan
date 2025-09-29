@@ -15,7 +15,6 @@ class ModelConfig:
     alpha: float = 10.0  # Clustering loss weight 
     beta: float = 1.5    # KL divergence weight
     gamma: float = 0.0   # Not used
-    learning_rate: float = 0.001  # Default learning rate
     
 @dataclass
 class DataConfig:
@@ -65,7 +64,14 @@ class TrainingConfig:
     num_samples_rf: int = 10000
     train_val_split: float = 0.8
 
-    # Curriculum learning parameters
+    # Adaptive LR params
+    base_learning_rate: float = 0.001
+    min_learning_rate: float = 1e-6
+    min_pct_improvement: float = 0.001  # 0.1% val loss improvement
+    patience_threshold: int = 3  # consecutive epochs with no improvement
+    reduction_factor: float = 0.2  # 20% LR reduction
+
+    # Curriculum learning params
     snr_base: int = 10 
     initial_snr_range: int = 40
     final_snr_range: int = 20
@@ -74,7 +80,7 @@ class TrainingConfig:
     step_easy_rounds: int = 5  # Number of rounds with easy signals
     step_hard_rounds: int = 15  # Number of rounds with challenging signals
 
-    # Fault tolerance parameters
+    # Fault tolerance params
     max_retries: int = 5 
     retry_delay: int = 30 # seconds 
 
@@ -128,6 +134,7 @@ class Config:
         }
         return subset_map.get(filename, (None, None))
     
+    # NOTE: update anytime config.py is modified
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {
