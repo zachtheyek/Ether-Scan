@@ -2,18 +2,15 @@
 2301.12670v1.pdf
 
 # Outputs & logs
-output/
+outputs/
 *.log
 
 # Artifacts
 **/__pycache__/
+.ipynb_checkpoints/
 
 # Virtual environment
 venv/
 
 # Claude settings
 .claude/
-
-# NOTE: Temporary
-Dockerfile
-kubernetes.yaml
