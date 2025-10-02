@@ -571,7 +571,7 @@ class TrainingPipeline:
                 logger.error(f"Training failed with error: {e}")
 
                 if attempts < max_retries:
-                    logger.info(f"Attempting to recover from failure: attempt {attempts}/{max_retries}")
+                    logger.info(f"Attempting to recover from failure: attempt {attempts+1}/{max_retries}")
 
                     try:
                         # Find the latest checkpoint & determine where to resume from
@@ -908,10 +908,19 @@ class TrainingPipeline:
                 raise FileNotFoundError("Models not found")
             
             logger.info(f"Loading models from {base_dir} with tag '{tag}'")
+
+            # Import Sampling layer for custom_objects (required for model loading)
+            from models.vae import Sampling
             
             # Load encoder & decoder
-            checkpoint_encoder = tf.keras.models.load_model(encoder_path)
-            checkpoint_decoder = tf.keras.models.load_model(decoder_path)
+            checkpoint_encoder = tf.keras.models.load_model(
+                encoder_path,
+                custom_objects={'Sampling': Sampling}
+            )
+            checkpoint_decoder = tf.keras.models.load_model(
+                decoder_path,
+                custom_objects={'Sampling': Sampling}
+            )
             
             # Transfer weights
             self.vae.encoder.set_weights(checkpoint_encoder.get_weights())
