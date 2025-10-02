@@ -113,7 +113,7 @@ class Config:
         # Paths
         self.data_path = os.environ.get('SETI_DATA_PATH', '/datax/scratch/zachy/data/etherscan')
         self.model_path = os.environ.get('SETI_MODEL_PATH', '/datax/scratch/zachy/models/etherscan')
-        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/datax/scratch/zachy/output/etherscan')
+        self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/datax/scratch/zachy/outputs/etherscan')
     
     def get_training_file_path(self, filename: str) -> str:
         """Get full path for training data file"""

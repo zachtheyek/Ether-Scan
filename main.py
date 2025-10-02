@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/datax/scratch/zachy/output/etherscan/train_pipeline.log'),
+        logging.FileHandler('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -316,7 +316,7 @@ def inference_command(args):
     
     # Run inference
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_path = args.output or f"/output/seti/detections_{timestamp}.csv"
+    output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
     
     results = run_inference(
         config,
