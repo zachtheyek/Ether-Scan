@@ -183,12 +183,12 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
     
     if max_val > 2.0:
-        logger.error(f"❌ Background values still too large! Max: {max_val}")
+        logger.error(f"Background values still too large! Max: {max_val}")
         raise ValueError("Background normalization failed")
     else:
-        logger.info(f"✅ Background data properly normalized")
+        logger.info(f"Background data properly normalized")
     
-    logger.info(f"✅ Background data ready at {final_width} resolution")
+    logger.info(f"Background data ready at {final_width} resolution")
     
     return background_array
 
@@ -211,17 +211,17 @@ def train_command(args):
         config.training.epochs_per_round = args.epochs
     if args.batch_size:
         config.training.train_logical_batch_size = args.batch_size
-    if args.model_tag:
-        tag = args.model_tag
+    if args.load_tag:
+        tag = args.load_tag
         if tag.startswith('round_'):
-            start_round = int(tag.split('_')[1])
+            start_round = int(tag.split('_')[1]) + 1 # Start training from the round proceeding model checkpoint
         else:
             start_round = 1
     else: 
         tag = None
         start_round = 1
-    if args.model_dir:
-        dir = args.model_dir
+    if args.load_dir:
+        dir = args.load_dir
     else: 
         dir = None
     
@@ -397,6 +397,8 @@ def evaluate_command(args):
     logger.info(f"  Overall Accuracy: {accuracy:.3f}")
     logger.info("="*60)
 
+# TODO: add assertions to make sure no problematic values gets passed through CLI args
+# TODO: think deeply about UX, which params to expose, and how to integrate across pipeline
 # NOTE: come back to this later
 def main():
     """Main entry point"""
@@ -409,18 +411,20 @@ def main():
     
     # Training command
     train_parser = subparsers.add_parser('train', help='Train models')
-    # train_parser.add_argument('--data-path', type=str, default=None,
-    #                         help='Path to training data')
     train_parser.add_argument('--rounds', type=int, default=None,
                             help='Number of training rounds (default: 20)')
     train_parser.add_argument('--epochs', type=int, default=None,
                             help='Epochs per training round (default: 100)')
     train_parser.add_argument('--batch-size', type=int, default=None,
                             help='Training batch size (default: 32)')
-    train_parser.add_argument('--model-tag', type=str, default=None,
+    train_parser.add_argument('--load-tag', type=str, default=None,
                               help='Model tag to resume training from (accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS)')
-    train_parser.add_argument('--model-dir', type=str, default=None,
-                            help='Checkpoint directory to resume training from (appended to: /datax/scratch/zachy/models/etherscan)')
+    train_parser.add_argument('--load-dir', type=str, default=None,
+                            help='Directory to load model tag from (loads latest tag if none provided)')
+    # train_parser.add_argument('--start-round', type=int, default=None,
+                            # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
+    # train_parser.add_argument('--save-tag', type=str, default=None,
+    #                         help='Model tag to save final model (recommended: final_vX)')
 
     # Inference command
     inf_parser = subparsers.add_parser('inference', help='Run inference on data')

@@ -8,6 +8,8 @@ import tensorflow as tf
 from typing import Dict, Optional, Tuple
 import logging
 import os
+import shutil
+import re
 import time
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -22,6 +24,13 @@ from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
+
+class MaxRoundsExceededError(Exception):
+    """
+    Raised when current_round > self.config.training.num_training_rounds during iterative training.
+    Immediately terminates iterative training
+    """
+    pass
 
 def log_system_resources():
     """Log system resource usage"""
@@ -55,6 +64,135 @@ def log_system_resources():
                    f"{', '.join(gpu_info)}")
     
     return resource_str
+
+def archive_directory(base_dir: str, target_dirs: Optional[List[str]] = None, round_num: int = 1):
+    """
+    Archive and clean up a directory
+    
+    Args:
+        base_dir: Base directory to archive/clean
+        target_dirs: List of subdirectory names to include in archiving (e.g., ['train', 'validation'])
+                    If None, only files are considered (directories are ignored)
+        round_num: Training round number (1 for fresh run, >1 for resume)
+    """
+    # Create base directory if it doesn't exist
+    os.makedirs(base_dir, exist_ok=True)
+    
+    # Check if base_dir is empty
+    is_empty = True
+    
+    if target_dirs is None:
+        # Check for files only (ignore all directories)
+        for item in os.listdir(base_dir):
+            item_path = os.path.join(base_dir, item)
+            if os.path.isfile(item_path):
+                is_empty = False
+                break
+    else:
+        # Check for files AND target directories
+        has_files = False
+        has_target_dirs = False
+        
+        for item in os.listdir(base_dir):
+            item_path = os.path.join(base_dir, item)
+            if os.path.isfile(item_path):
+                has_files = True
+            elif os.path.isdir(item_path) and item in target_dirs:
+                has_target_dirs = True
+        
+        is_empty = not (has_files or has_target_dirs)
+    
+    # If empty, do nothing & return
+    if is_empty:
+        logger.info(f"Directory {base_dir} is empty, nothing to archive")
+        return
+    
+    # Otherwise, archive and clean up
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    archive_dir = os.path.join(base_dir, 'archive', timestamp)
+    os.makedirs(archive_dir, exist_ok=True)
+    
+    if round_num == 1:
+        # Fresh run: move everything to archive
+        logger.info(f"Archiving the following items from {base_dir}:")
+        
+        items_moved = 0
+        for item in os.listdir(base_dir):
+            if item == 'archive':  # Don't move the archive directory itself
+                continue
+            
+            item_path = os.path.join(base_dir, item)
+            
+            # Move all files
+            if os.path.isfile(item_path):
+                shutil.move(item_path, os.path.join(archive_dir, item))
+                logger.info(f"  {item_path}")
+                items_moved += 1
+            # Move target directories if specified
+            elif os.path.isdir(item_path) and (target_dirs is not None and item in target_dirs):
+                shutil.move(item_path, os.path.join(archive_dir, item))
+                logger.info(f"  {item_path}")
+                items_moved += 1
+
+                # Replace directory with empty one after moving
+                os.makedirs(item_path)  
+        
+        logger.info(f"Moved {items_moved} items to archive: {archive_dir}")
+    
+    else:
+        # Resume: copy to archive, then delete files with round >= round_num
+        logger.info(f"Backing up the following items from {base_dir}:")
+        
+        items_copied = 0
+        for item in os.listdir(base_dir):
+            if item == 'archive':  # Don't copy the archive directory itself
+                continue
+            
+            item_path = os.path.join(base_dir, item)
+            
+            # Copy all files
+            if os.path.isfile(item_path):
+                shutil.copy2(item_path, os.path.join(archive_dir, item))
+                logger.info(f"  {item_path}")
+                items_copied += 1
+            # Copy target directories if specified
+            elif os.path.isdir(item_path) and (target_dirs is not None and item in target_dirs):
+                shutil.copytree(item_path, os.path.join(archive_dir, item))
+                logger.info(f"  {item_path}")
+                items_copied += 1
+
+                # TODO: instead of deleting the whole event files, intelligently parse & filter out future steps, then write filtered events to new files
+                # Replace directory with empty one after copying
+                shutil.rmtree(item_path)
+                os.makedirs(item_path, exist_ok=True)
+        
+        logger.info(f"Backed up {items_copied} items to archive: {archive_dir}")
+        
+        # Delete files matching "round_X" where X >= round_num
+        logger.info(f"Deleting the following items from {base_dir}:")
+        pattern = re.compile(r'round_(\d+)')
+        deleted_files = []
+        
+        for item in os.listdir(base_dir):
+            if item == 'archive':  # Don't touch the archive directory
+                continue
+            
+            item_path = os.path.join(base_dir, item)
+            
+            # Only process files, not directories
+            if os.path.isfile(item_path):
+                match = pattern.search(item)
+                if match:
+                    round_x = int(match.group(1))
+                    if round_x >= round_num:
+                        os.remove(item_path)
+                        deleted_files.append(item)
+                        logger.info(f"  {item_path}")
+        
+        if deleted_files:
+            logger.info(f"Deleted {len(deleted_files)} files with round >= {round_num}")
+        else:
+            logger.info(f"No files with round >= {round_num} found to delete")
 
 def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
     """
@@ -92,7 +230,7 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
 class TrainingPipeline:
     """Training pipeline"""
     
-    def __init__(self, config, background_data: np.ndarray, strategy=None):
+    def __init__(self, config, background_data: np.ndarray, strategy=None, start_round=1):
         """
         Initialize training pipeline
         
@@ -101,7 +239,7 @@ class TrainingPipeline:
             background_data: Preprocessed background observations
         """
         self.config = config
-        self.strategy = strategy or tf.distribute.get_strategy()
+        self.strategy = strategy or tf.distribute.get_strategy()  # NOTE: is this the source of our setup_gpu_config() issues? 
         
         # Store background data
         self.background_data = background_data.astype(np.float32)
@@ -133,18 +271,10 @@ class TrainingPipeline:
         }
         
         # Setup directories
-        self.setup_directories()
+        self.setup_directories(start_round)
 
         # Setup TensorBoard logging
-        self.log_dir = os.path.join(config.output_path, 'logs')
-        os.makedirs(self.log_dir, exist_ok=True)
-        
-        # Create TensorBoard writers
-        self.train_writer = tf.summary.create_file_writer(os.path.join(self.log_dir, 'train'))
-        self.val_writer = tf.summary.create_file_writer(os.path.join(self.log_dir, 'validation'))
-        
-        # Global step counter for TensorBoard
-        self.global_step = 0
+        self.setup_tensorboard_logging(start_round)
         
         logger.info(f"TensorBoard logs will be written to: {self.log_dir}")
 
@@ -155,11 +285,43 @@ class TrainingPipeline:
         if hasattr(self, 'val_writer'):
             self.val_writer.close()
     
-    def setup_directories(self):
+    def setup_directories(self, start_round=1):
         """Create necessary directories"""
-        os.makedirs(self.config.model_path, exist_ok=True)
-        os.makedirs(os.path.join(self.config.model_path, 'checkpoints'), exist_ok=True)
-        os.makedirs(os.path.join(self.config.output_path, 'plots'), exist_ok=True)
+        logger.info("Setting up directories")
+
+        checkpoints_dir = os.path.join(self.config.model_path, 'checkpoints')
+        archive_directory(checkpoints_dir, target_dirs=None, round_num=start_round)
+        
+        plots_dir = os.path.join(self.config.output_path, 'plots')
+        archive_directory(plots_dir, target_dirs=None, round_num=start_round)
+        
+        logger.info(f"Setup directories complete")
+
+    def setup_tensorboard_logging(self, start_round=1):
+        """Setup TensorBoard logging"""
+        logger.info("Setting up TensorBoard logging")
+
+        logs_dir = os.path.join(self.config.output_path, 'logs')
+        archive_directory(logs_dir, target_dirs=['train', 'validation'], round_num=start_round)
+
+        if start_round == 1:
+            self.global_step = 0
+            logger.info("Starting fresh TensorBoard logs")
+
+        else:
+            # NOTE: assuming fixed epochs per round
+            self.global_step = (start_round - 1) * self.config.training.epochs_per_round  
+            logger.info(f"Resuming TensorBoard logs from step {self.global_step} (round {start_round})")
+
+        # Create TensorBoard writers
+        train_log_dir = os.path.join(logs_dir, 'train')
+        val_log_dir = os.path.join(logs_dir, 'validation')
+
+        self.train_writer = tf.summary.create_file_writer(train_log_dir)
+        self.val_writer = tf.summary.create_file_writer(val_log_dir)
+
+        logger.info(f"TensorBoard logs directory: {logs_dir}")
+        logger.info(f"Initial global_step: {self.global_step}")
 
     def update_learning_rate(self, val_losses):
         """
@@ -520,7 +682,12 @@ class TrainingPipeline:
                 if attempts > 0:
                     logger.info(f"Retrying training from round {current_round}")
 
-                if current_round > 1:
+                if current_round > n_rounds: 
+                    raise MaxRoundsExceededError(
+                        f"Current round ({current_round}) is more than total rounds ({n_rounds})."
+                        "Check model checkpoints, config.py, or CLI args."
+                    )
+                elif current_round > 1:
                     logger.info(f"Resuming training from round {current_round}/{n_rounds}")
                 else:
                     logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
@@ -562,9 +729,14 @@ class TrainingPipeline:
                     )
             
             except KeyboardInterrupt:
-                # Don't retry on  user interruption 
+                # Don't retry on user interruption 
                 logger.info("Training interupted by user")
                 raise 
+
+            except MaxRoundsExceededError as e: 
+                # Don't retry on fatal configuration error 
+                logger.error(f"Fatal configuration error: {e}")
+                raise
 
             except Exception as e:
                 attempts += 1 
@@ -961,7 +1133,7 @@ def train_full_pipeline(config, background_data: np.ndarray,
         Trained pipeline object
     """
     # Create pipeline
-    pipeline = TrainingPipeline(config, background_data, strategy)
+    pipeline = TrainingPipeline(config, background_data, strategy, start_round)
 
     # Resume from checkpoint if provided
     if tag:

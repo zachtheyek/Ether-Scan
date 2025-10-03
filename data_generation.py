@@ -1,3 +1,4 @@
+# NOTE: come back to this later
 """
 Synthetic data generation for SETI ML Pipeline
 """
