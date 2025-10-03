@@ -276,8 +276,6 @@ class TrainingPipeline:
         # Setup TensorBoard logging
         self.setup_tensorboard_logging(start_round)
         
-        logger.info(f"TensorBoard logs will be written to: {self.log_dir}")
-
     def __del__(self):
         """Cleanup TensorBoard writers"""
         if hasattr(self, 'train_writer'):
