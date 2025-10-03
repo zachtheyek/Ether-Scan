@@ -5,7 +5,7 @@ Training pipeline for SETI ML models
 from random import sample
 import numpy as np
 import tensorflow as tf
-from typing import Dict, Optional, Tuple
+from typing import List, Optional, Tuple
 import logging
 import os
 import shutil
