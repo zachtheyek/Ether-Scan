@@ -12,6 +12,8 @@ import glob
 import re
 from datetime import datetime
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+from matplotlib.gridspec import GridSpec
 import gc
 import psutil
 import subprocess
@@ -194,41 +196,6 @@ def archive_directory(base_dir: str, target_dirs: Optional[List[str]] = None, ro
         else:
             logger.info(f"No files with round >= {round_num} found to delete")
 
-def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
-    """
-    Calculate SNR parameters for curriculum learning
-    
-    Args:
-        round_idx: Current training round (0-indexed)
-        total_rounds: Total number of training rounds
-        config: Training configuration
-        
-    Returns:
-        (snr_base, snr_range) tuple
-    """
-    # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
-    progress = round_idx / (total_rounds - 1)
-    
-    if config.curriculum_schedule == "linear":
-        # Linear progression from wide to narrow SNR range
-        current_range = config.initial_snr_range - progress * (config.initial_snr_range - config.final_snr_range)
-    elif config.curriculum_schedule == "exponential":
-        # Exponential decay - start easy, then get hard quickly
-        current_range = config.final_snr_range + (config.initial_snr_range - config.final_snr_range) * np.exp(config.exponential_decay_rate * progress)
-    elif config.curriculum_schedule == "step":
-        # Step function - easy for first part, hard for second part
-        # TODO: add mechanism for more step changes
-        if round_idx < config.easy_rounds:
-            current_range = config.initial_snr_range
-        else:
-            current_range = config.final_snr_range
-    else:
-        raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
-    
-    return config.snr_base, int(current_range)
-
-# NOTE: artifact of moving fault tolerance logic from iterative_training() to train_command()
-# TODO: clean up "finding latest tag" instances with this function (e.g. in load_models())
 def get_latest_tag(checkpoints_dir: str) -> str:
     """
     Find the latest checkpoint tag from the checkpoints directory
@@ -303,6 +270,39 @@ def get_latest_tag(checkpoints_dir: str) -> str:
     filtered_tags.sort(key=sort_key)
     tag = filtered_tags[-1]  # Get the latest
     return tag
+
+def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
+    """
+    Calculate SNR parameters for curriculum learning
+    
+    Args:
+        round_idx: Current training round (0-indexed)
+        total_rounds: Total number of training rounds
+        config: Training configuration
+        
+    Returns:
+        (snr_base, snr_range) tuple
+    """
+    # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
+    progress = round_idx / (total_rounds - 1)
+    
+    if config.curriculum_schedule == "linear":
+        # Linear progression from wide to narrow SNR range
+        current_range = config.initial_snr_range - progress * (config.initial_snr_range - config.final_snr_range)
+    elif config.curriculum_schedule == "exponential":
+        # Exponential decay - start easy, then get hard quickly
+        current_range = config.final_snr_range + (config.initial_snr_range - config.final_snr_range) * np.exp(config.exponential_decay_rate * progress)
+    elif config.curriculum_schedule == "step":
+        # Step function - easy for first part, hard for second part
+        # TODO: add mechanism for more step changes
+        if round_idx < config.easy_rounds:
+            current_range = config.initial_snr_range
+        else:
+            current_range = config.final_snr_range
+    else:
+        raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
+    
+    return config.snr_base, int(current_range)
 
 class TrainingPipeline:
     """Training pipeline"""
@@ -899,9 +899,6 @@ class TrainingPipeline:
     # TODO: add function to plot RF training curves
     def plot_training_progress(self, save_path: Optional[str] = None):
         """Plot beta-VAE training history"""
-        from matplotlib.gridspec import GridSpec
-        import matplotlib.lines as mlines
-            
         fig = plt.figure(figsize=(25, 12))
         gs = GridSpec(2, 4, height_ratios=[1, 1], hspace=0.3, wspace=0.3)
         

@@ -11,10 +11,12 @@ from datetime import datetime
 import json
 import gc
 import time
+from skimage.transform import downscale_local_mean
 
 from config import Config
-from preprocessing import DataPreprocessor
-from training import get_latest_tag, train_full_pipeline
+from preprocessing import DataPreprocessor, pre_proc
+from data_generation import DataGenerator
+from training import train_full_pipeline, get_latest_tag
 from inference import run_inference
 
 # Setup logging
@@ -74,8 +76,6 @@ def load_background_data(config: Config) -> np.ndarray:
     """
     Load, downsample, and normalize background data
     """
-    from preprocessing import pre_proc
-    
     logger.info(f"Loading background data from {config.data_path}")
     
     # Use config values for memory management
@@ -135,7 +135,6 @@ def load_background_data(config: Config) -> np.ndarray:
                         continue
                     
                     # Downsample & normalize each observation separately
-                    from skimage.transform import downscale_local_mean
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
                     
                     for obs_idx in range(6):
@@ -278,16 +277,16 @@ def train_command(args):
         except Exception as e:
             logger.error(f"Training attempt {attempt+1} failed with error: {e}")
 
-            if attempt + 1 < max_retries:
+            if attempt < max_retries - 1:
                 # Retry taining after delay
                 logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
 
                 try:
                     # Find the latest checkpoint & determine where to resume from
-                    checkpoints_dir = os.path.join(config.model_path, 'checkpoints')
-                    model_tag = get_latest_tag(checkpoints_dir)
-                    if model_tag.startswith("round_"):
-                        start_round = int(model_tag.split("_")[1]) + 1  # Start training from the round proceeding model checkpoint
+                    dir = 'checkpoints'
+                    tag = get_latest_tag(os.path.join(config.model_path, dir))
+                    if tag.startswith("round_"):
+                        start_round = int(tag.split("_")[1]) + 1  # Start training from the round proceeding model checkpoint
                         logger.info(f"Loaded latest checkpoint from round {start_round-1}")
                     else:
                         logger.info("No valid checkpoints loaded")
@@ -396,8 +395,6 @@ def evaluate_command(args):
     config = Config()
     
     # Import necessary modules
-    from preprocessing import DataPreprocessor
-    from data_generation import DataGenerator
     import tensorflow as tf
     from models.random_forest import RandomForestModel
     
