@@ -4,16 +4,12 @@ Synthetic data generation for SETI ML Pipeline
 """
 
 import numpy as np
-from numba import jit, prange, njit
 import setigen as stg
 from astropy import units as u
-from typing import Tuple, Optional, Dict, List
+from typing import Tuple, Dict
 import logging
 from random import random
-import math
 import gc
-
-from preprocessing import pre_proc
 
 logger = logging.getLogger(__name__)
 

@@ -4,14 +4,13 @@ Data preprocessing module for SETI ML Pipeline
 """
 
 import numpy as np
-from numba import jit, prange, njit
+from numba import jit, prange
 from skimage.transform import downscale_local_mean
-from typing import Tuple, List, Optional, Dict
+from typing import Tuple, List, Dict
 import logging
 
 logger = logging.getLogger(__name__)
 
-# @njit(nopython=True)  # Comment out temporarily
 def pre_proc(data: np.ndarray) -> np.ndarray:
     """
     Apply log normalization to data
