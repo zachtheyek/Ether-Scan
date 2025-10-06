@@ -2,15 +2,14 @@
 Training pipeline for SETI ML models
 """
 
-from random import sample
 import numpy as np
 import tensorflow as tf
 from typing import List, Optional, Tuple
 import logging
 import os
 import shutil
+import glob
 import re
-import time
 from datetime import datetime
 import matplotlib.pyplot as plt
 import gc
@@ -25,12 +24,13 @@ from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
-class MaxRoundsExceededError(Exception):
-    """
-    Raised when current_round > self.config.training.num_training_rounds during iterative training.
-    Immediately terminates iterative training
-    """
-    pass
+# NOTE: move assertions to main.py
+# class MaxRoundsExceededError(Exception):
+#     """
+#     Raised when current_round > self.config.training.num_training_rounds during iterative training.
+#     Immediately terminates iterative training
+#     """
+#     pass
 
 def log_system_resources():
     """Log system resource usage"""
@@ -226,6 +226,83 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
         raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
     
     return config.snr_base, int(current_range)
+
+# NOTE: artifact of moving fault tolerance logic from iterative_training() to train_command()
+# TODO: clean up "finding latest tag" instances with this function (e.g. in load_models())
+def get_latest_tag(checkpoints_dir: str) -> str:
+    """
+    Find the latest checkpoint tag from the checkpoints directory
+
+    Returns:
+        Latest checkpoint tag (e.g., "round_05")
+    """
+    if not os.path.exists(checkpoints_dir):
+        raise FileNotFoundError(f"Directory doesn't exist: {checkpoints_dir}")
+
+    # Find all encoder files
+    encoder_pattern = os.path.join(checkpoints_dir, 'vae_encoder_*.keras')
+    encoder_files = glob.glob(encoder_pattern)
+
+    if not encoder_files:
+        raise FileNotFoundError(f"No encoder files found in {checkpoints_dir}")
+
+    # Extract tags and find complete pairs
+    valid_tags = []
+    for file in encoder_files:
+        basename = os.path.basename(file)
+        match = re.search(r'vae_encoder_(.+)\.keras', basename)
+        if match:
+            tag = match.group(1)
+            # Verify decoder exists
+            decoder_file = os.path.join(checkpoints_dir, f'vae_decoder_{tag}.keras')
+            if os.path.exists(decoder_file):
+                valid_tags.append(tag)
+
+    if not valid_tags:
+        raise FileNotFoundError(f"No valid model pairs found in {checkpoints_dir}")
+
+    # Sort tags to find the latest
+    def sort_key(tag_str):
+        # Handle final_vX format with highest priority
+        if tag_str.startswith("final_"):
+            try:
+                final_ver = int(tag_str.split('_v')[1])
+                return (0, final_ver)
+            except:
+                return (1, tag_str)
+        # Handle round_XX format with secondary priority
+        elif tag_str.startswith('round_'):
+            try:
+                round_num = int(tag_str.split('_')[1])
+                return (2, round_num)
+            except:
+                return (3, tag_str)
+        # Handle timestamp format YYYYMMDD_HHMMSS lowest priority
+        elif re.match(r'\d{8}_\d{6}', tag_str):
+            try:
+                timestamp = datetime.strptime(tag_str, '%Y%m%d_%H%M%S')
+                return (4, timestamp)
+            except:
+                return (5, tag_str)
+        # Fallback for all other formats
+        else:
+            return (99, tag_str)
+
+    # Filter for the highest priority group
+    priorities = [sort_key(t)[0] for t in valid_tags]
+    highest_priority = min(priorities)  # smaller = higher priority
+
+    if highest_priority == 99:
+        raise FileNotFoundError(
+            f"No valid model tags found (e.g. final_vX, round_XX, YYYYMMDD_HHMMSS)"
+        )
+
+    filtered_tags = [t for t in valid_tags if sort_key(t)[0] == highest_priority]
+
+    # Select the latest tag within highest priority group
+    filtered_tags.sort(key=sort_key)
+    tag = filtered_tags[-1]  # Get the latest
+    return tag
 
 class TrainingPipeline:
     """Training pipeline"""
@@ -663,110 +740,59 @@ class TrainingPipeline:
     
     def iterative_training(self, start_round=1):
         """
-        Perform iterative training with curriculum learning & fault tolerance
+        Perform iterative training with curriculum learning
         """
         n_rounds = self.config.training.num_training_rounds
         epochs = self.config.training.epochs_per_round
-        max_retries = self.config.training.max_retries
-        retry_delay = self.config.training.retry_delay
 
-        attempts = 0 
-        current_round = start_round
-
-        while attempts < max_retries:
-            try: 
-                logger.info(f"Training attempt: {attempts+1}/{max_retries}")
-
-                if attempts > 0:
-                    logger.info(f"Retrying training from round {current_round}")
-
-                if current_round > n_rounds: 
-                    raise MaxRoundsExceededError(
-                        f"Current round ({current_round}) is more than total rounds ({n_rounds})."
-                        "Check model checkpoints, config.py, or CLI args."
-                    )
-                elif current_round > 1:
-                    logger.info(f"Resuming training from round {current_round}/{n_rounds}")
-                else:
-                    logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
-                
-                for round_idx in range(current_round-1, n_rounds):
-                    snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
-
-                    logger.info(f"\n{'='*50}")
-                    logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
-                    logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
-                    logger.info(f"{'='*50}")
-
-                    # Reset learning rate & adaptive state before new curriculum stage
-                    original_lr = self.config.training.base_learning_rate
-                    current_lr = self.vae.optimizer.learning_rate.numpy()
-                    self.vae.optimizer.learning_rate.assign(original_lr)
-                    
-                    if hasattr(self, 'best_val_loss'):
-                        delattr(self, 'best_val_loss')
-                    if hasattr(self, 'patience_counter'):
-                        delattr(self, 'patience_counter')
-
-                    logger.info(f"Curriculum LR reset: {current_lr:.2e} → {original_lr:.2e}")
-                    
-                    self.train_round(
-                        round_idx=round_idx,
-                        epochs=epochs,
-                        snr_base=snr_base,
-                        snr_range=snr_range
-                    )
-                    
-                    # Plot progress every round
-                    self.plot_training_progress(
-                        save_path=os.path.join(
-                            self.config.output_path,
-                            'plots',
-                            f'training_progress_round_{round_idx+1}.png'
-                        )
-                    )
-            
-            except KeyboardInterrupt:
-                # Don't retry on user interruption 
-                logger.info("Training interupted by user")
-                raise 
-
-            except MaxRoundsExceededError as e: 
-                # Don't retry on fatal configuration error 
-                logger.error(f"Fatal configuration error: {e}")
-                raise
-
-            except Exception as e:
-                attempts += 1 
-                logger.error(f"Training failed with error: {e}")
-
-                if attempts < max_retries:
-                    logger.info(f"Attempting to recover from failure: attempt {attempts+1}/{max_retries}")
-
-                    try:
-                        # Find the latest checkpoint & determine where to resume from
-                        model_tag = self.load_models(dir="checkpoints")
-                        if model_tag.startswith("round_"):
-                            current_round = int(model_tag.split("_")[1]) + 1 # Start after the last completed round
-                            logger.info(f"Loaded latest checkpoint from round {current_round-1}")
-                        else:
-                            logger.info("No valid checkpoints loaded")
-                            raise
-                        
-                        logger.info(f"Waiting {retry_delay} seconds before retry...")
-                        time.sleep(retry_delay)
-                    
-                    except Exception as recovery_error:
-                        logger.error(f"Recovery failed: {recovery_error}")
-                        logger.info(f"Restarting training from round {current_round} in {retry_delay} seconds")
-                        time.sleep(retry_delay)
-
-                else:
-                    # Max retries exceeded
-                    logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
-                    logger.error(f"Final error: {e}")
-                    raise Exception(f"Training attempts exceeded maximum retries ({max_retries}). Final error: {e}")
+        # NOTE: move assertions to main.py
+        # if start_round > n_rounds: 
+        #     raise MaxRoundsExceededError(
+        #         f"Current round ({current_round}) is more than total rounds ({n_rounds})."
+        #         "Check model checkpoints, config.py, or CLI args."
+        #     )
         
+        if start_round > 1:
+            logger.info(f"Resuming training from round {start_round}/{n_rounds}")
+        else:
+            logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
+        
+        for round_idx in range(start_round-1, n_rounds):
+            snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
+
+            logger.info(f"\n{'='*50}")
+            logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
+            logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
+            logger.info(f"{'='*50}")
+
+            # Reset learning rate & adaptive state before new curriculum stage
+            original_lr = self.config.training.base_learning_rate
+            current_lr = self.vae.optimizer.learning_rate.numpy()
+            self.vae.optimizer.learning_rate.assign(original_lr)
+            
+            if hasattr(self, 'best_val_loss'):
+                delattr(self, 'best_val_loss')
+            if hasattr(self, 'patience_counter'):
+                delattr(self, 'patience_counter')
+
+            logger.info(f"Curriculum LR reset: {current_lr:.2e} → {original_lr:.2e}")
+            
+            self.train_round(
+                round_idx=round_idx,
+                epochs=epochs,
+                snr_base=snr_base,
+                snr_range=snr_range
+            )
+            
+            # Plot progress every round
+            self.plot_training_progress(
+                save_path=os.path.join(
+                    self.config.output_path,
+                    'plots',
+                    f'training_progress_round_{round_idx+1}.png'
+                )
+            )
+            
     # NOTE: come back to this later
     def train_random_forest(self):
         """Train Random Forest"""
@@ -978,9 +1004,6 @@ class TrainingPipeline:
     def load_models(self, tag: Optional[str] = None, dir: Optional[str] = None):
         """Load model weights"""
         import tensorflow as tf
-        import glob
-        import re
-        from datetime import datetime
 
         if tag is None:
             logger.info("No tag specified. Defaulting to 'final'")
@@ -1003,74 +1026,13 @@ class TrainingPipeline:
         if not (os.path.exists(encoder_path) and os.path.exists(decoder_path)):
             logger.warning(f"No models tagged as '{original_tag}' in {base_dir}, looking for latest tag instead...")
 
-            if os.path.exists(base_dir):
-                # Find all encoder files in the directory
-                encoder_pattern = os.path.join(base_dir, 'vae_encoder_*.keras')
-                encoder_files = glob.glob(encoder_pattern)
-                
-                if encoder_files:
-                    # Extract tags and find ones with complete pairs (encoder + decoder)
-                    valid_tags = []
-                    for file in encoder_files:
-                        basename = os.path.basename(file)
-                        match = re.search(r'vae_encoder_(.+)\.keras', basename)
-                        if match:
-                            extracted_tag = match.group(1)
-                            # Check if corresponding decoder exists
-                            decoder_file = os.path.join(base_dir, f'vae_decoder_{extracted_tag}.keras')
-                            if os.path.exists(decoder_file):
-                                valid_tags.append(extracted_tag)
-                    
-                    if valid_tags:
-                        # Sort tags to find the latest
-                        def sort_key(tag_str):
-                           # Handle final_vX format with highest priority
-                            if tag_str.startswith("final_"):
-                                try:
-                                    final_ver = int(tag_str.split('_v')[1])
-                                    return (0, final_ver)
-                                except:
-                                    return (1, tag_str)
-                            # Handle round_XX format with secondary priority
-                            elif tag_str.startswith('round_'):
-                                try:
-                                    round_num = int(tag_str.split('_')[1])
-                                    return (2, round_num)
-                                except:
-                                    return (3, tag_str)
-                            # Handle timestamp format YYYYMMDD_HHMMSS lowest priority
-                            elif re.match(r'\d{8}_\d{6}', tag_str):
-                                try:
-                                    timestamp = datetime.strptime(tag_str, '%Y%m%d_%H%M%S')
-                                    return (4, timestamp)
-                                except:
-                                    return (5, tag_str)
-                            # Fallback for all other formats
-                            else:
-                                return (99, tag_str)
-
-                        # Filer for the highest priority group
-                        priorities = [sort_key(t)[0] for t in valid_tags]
-                        highest_priority = min(priorities)  # smaller = higher priority
-                        if highest_priority == 99:
-                            raise FileNotFoundError(f"No valid model tags found (e.g. final_vX, round_XX, YYYYMMDD_HHMMSS)")
-                        filtered_tags = [t for t in valid_tags if sort_key(t)[0] == highest_priority]
-
-                        # Select the latest tag within highest priority group
-                        filtered_tags.sort(key=sort_key)
-                        tag = filtered_tags[-1]  # Get the latest
-                        logger.info(f"Tag '{original_tag}' not found. Loading latest model with tag: '{tag}'")
-                        
-                        # Reconstruct paths with new tag
-                        encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.keras')
-                        decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.keras')
-                        rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
-                    else:
-                        raise FileNotFoundError(f"No valid model pairs found in directory: {base_dir}")
-                else:
-                    raise FileNotFoundError(f"No encoder files found in directory: {base_dir}")
-            else:
-                raise FileNotFoundError(f"Directory doesn't exist: {base_dir}")
+            tag = get_latest_tag(base_dir)
+            logger.info(f"Tag '{original_tag}' not found. Loading latest model with tag: '{tag}'")
+            
+            # Reconstruct paths with new tag
+            encoder_path = os.path.join(base_dir, f'vae_encoder_{tag}.keras')
+            decoder_path = os.path.join(base_dir, f'vae_decoder_{tag}.keras')
+            rf_path = os.path.join(base_dir, f'random_forest_{tag}.joblib')
 
         # Load the models
         try:

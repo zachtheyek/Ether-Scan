@@ -10,10 +10,11 @@ import numpy as np
 from datetime import datetime
 import json
 import gc
+import time
 
 from config import Config
 from preprocessing import DataPreprocessor
-from training import train_full_pipeline
+from training import get_latest_tag, train_full_pipeline
 from inference import run_inference
 
 # Setup logging
@@ -243,21 +244,69 @@ def train_command(args):
     
     logger.info(f"Background data loaded: {background_data.shape}")
 
-    # Train models
+    # Train models with fault tolerance
     logger.info("\nStarting training pipeline...")
 
-    try:
-        pipeline = train_full_pipeline(
-            config,
-            background_data,
-            strategy=strategy,
-            tag=tag,
-            dir=dir,
-            start_round=start_round
-        )
-    except Exception as e:
-        logger.error(f"Training failed: {e}")
-        raise
+    max_retries = config.training.max_retries
+    retry_delay = config.training.retry_delay
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Training attempt: {attempt+1}/{max_retries}")
+
+            if attempt > 0:
+                logger.info(f"Retrying training from round {start_round}")
+
+            # Reinitialize training pipeline on each attempt so no corrupted state is persisted
+            pipeline = train_full_pipeline(
+                config,
+                background_data,
+                strategy=strategy,
+                tag=tag,
+                dir=dir,
+                start_round=start_round
+            )
+
+            # If we get here, training succeeded
+            break
+
+        except KeyboardInterrupt:
+            # Don't retry on user interruption 
+            logger.info("Training interupted by user")
+            raise 
+
+        except Exception as e:
+            logger.error(f"Training attempt {attempt+1} failed with error: {e}")
+
+            if attempt + 1 < max_retries:
+                # Retry taining after delay
+                logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
+
+                try:
+                    # Find the latest checkpoint & determine where to resume from
+                    checkpoints_dir = os.path.join(config.model_path, 'checkpoints')
+                    model_tag = get_latest_tag(checkpoints_dir)
+                    if model_tag.startswith("round_"):
+                        start_round = int(model_tag.split("_")[1]) + 1  # Start training from the round proceeding model checkpoint
+                        logger.info(f"Loaded latest checkpoint from round {start_round-1}")
+                    else:
+                        logger.info("No valid checkpoints loaded")
+                        raise
+                    
+                    logger.info(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                
+                except Exception as recovery_error:
+                    # If no checkpoints loaded, restart from last valid start_round
+                    logger.error(f"Recovery failed: {recovery_error}")
+                    logger.info(f"Restarting training from round {start_round} in {retry_delay} seconds")
+                    time.sleep(retry_delay)
+
+            else:
+                # Max retries exceeded
+                logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
+                logger.error(f"Final error: {e}")
+                raise Exception(f"Training attempts exceeded maximum retries ({max_retries}). Final error: {e}")
     
     # Save configuration
     config_path = os.path.join(config.model_path, 'config_final_v1.json')
@@ -398,7 +447,6 @@ def evaluate_command(args):
     logger.info("="*60)
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
-# TODO: think deeply about UX, which params to expose, and how to integrate across pipeline
 # NOTE: come back to this later
 def main():
     """Main entry point"""

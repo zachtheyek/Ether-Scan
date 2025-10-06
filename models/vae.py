@@ -6,7 +6,7 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.regularizers import l1, l2
-from typing import Tuple, List
+from typing import Tuple
 import logging
 
 logger = logging.getLogger(__name__)
