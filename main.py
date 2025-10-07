@@ -282,6 +282,12 @@ def train_command(args):
                 logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
 
                 try:
+                    # Clean up failed pipeline
+                    if 'pipeline' in locals():
+                        del pipeline 
+                    gc.collect()
+                    logger.info("Cleaned up failed pipeline")
+
                     # Find the latest checkpoint & determine where to resume from
                     dir = 'checkpoints'
                     tag = get_latest_tag(os.path.join(config.model_path, dir))
