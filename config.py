@@ -57,7 +57,7 @@ class TrainingConfig:
     train_logical_batch_size: int = 32  # Actual batch size for convergence 
     validation_batch_size: int = 1024
 
-    target_backgrounds: int = 10000  # Number of background cadences to load
+    num_target_backgrounds: int = 10000  # Number of background cadences to load
     max_chunk_size: int = 1000  # Maximum samples per chunk during generation
     num_samples_train: int = 5000
     num_samples_test: int = 2000
@@ -165,7 +165,7 @@ class Config:
                 'train_physical_batch_size': self.training.train_physical_batch_size,
                 'train_logical_batch_size': self.training.train_logical_batch_size,
                 'validation_batch_size': self.training.validation_batch_size,
-                'target_backgrounds': self.training.target_backgrounds,
+                'num_target_backgrounds': self.training.num_target_backgrounds,
                 'max_chunk_size': self.training.max_chunk_size,
                 'num_samples_train': self.training.num_samples_train,
                 'num_samples_test': self.training.num_samples_test,

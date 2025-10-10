@@ -316,7 +316,7 @@ class TrainingPipeline:
             background_data: Preprocessed background observations
         """
         self.config = config
-        self.strategy = strategy or tf.distribute.get_strategy()  # NOTE: is this the source of our setup_gpu_config() issues? 
+        self.strategy = strategy or tf.distribute.get_strategy()
         
         # Store background data
         self.background_data = background_data.astype(np.float32)
@@ -384,7 +384,6 @@ class TrainingPipeline:
             logger.info("Starting fresh TensorBoard logs")
 
         else:
-            # NOTE: assuming fixed epochs per round
             self.global_step = (start_round - 1) * self.config.training.epochs_per_round  
             logger.info(f"Resuming TensorBoard logs from step {self.global_step} (round {start_round})")
 
@@ -444,10 +443,6 @@ class TrainingPipeline:
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
         
-        # Update generator SNR parameters
-        self.config.training.snr_base = snr_base
-        self.config.training.snr_range = snr_range
-        
         # Use physical batch sizes for memory efficiency
         physical_batch = self.config.training.train_physical_batch_size
         logical_batch = self.config.training.train_logical_batch_size
@@ -460,7 +455,7 @@ class TrainingPipeline:
                    f"{accumulation_steps} accumulation steps")
         
         # Generate training data 
-        train_data = self.data_generator.generate_training_batch(n_samples * 3)
+        train_data = self.data_generator.generate_training_batch(n_samples * 3, snr_base, snr_range)
         
         # Split and trim
         n_train = int(n_samples * 3 * train_val_split)
@@ -838,6 +833,7 @@ class TrainingPipeline:
         logger.info(f"Using chunk size: {max_chunk_size}")
         
         try:
+            # NOTE: are we using curiculum learning for RF? 
             # Generate RF data with config-specified batching
             rf_data = self.data_generator.generate_training_batch(n_samples * 2)
             

@@ -1,4 +1,3 @@
-# NOTE: come back to this later
 """
 Data preprocessing module for SETI ML Pipeline
 """
@@ -24,6 +23,10 @@ def pre_proc(data: np.ndarray) -> np.ndarray:
     if data.max() > 0:
         data = data / data.max()
     return data
+
+# NOTE: come back to this later (start here)
+# NOTE: preprocess_cadence() is used in inference.py, everything else unused? 
+# NOTE: maybe repurpose preprocess.py to do bandpass removal & energy detection? 
 
 @jit(nopython=True, parallel=True)
 def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:

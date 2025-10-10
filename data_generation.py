@@ -1,4 +1,3 @@
-# NOTE: come back to this later
 """
 Synthetic data generation for SETI ML Pipeline
 """
@@ -151,6 +150,7 @@ def create_false(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10
     """
     choice = random()
     
+    # NOTE: make this deterministic
     if choice > 0.5:
         # Inject RFI in all observations
         index = int(plate.shape[0] * random())
@@ -175,39 +175,41 @@ def create_false(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10
     return total
 
 def create_full_cadence(function, samples: int, plate: np.ndarray, 
-                        snr_base: float = 300, snr_range: float = 10,
+                        snr_base: int = 10, snr_range: float = 40,
                         factor: float = 1, width_bin: int = 512) -> np.ndarray:
     """
-    Create multiple cadences in parallel
-    Cannot use @jit decorator because function arguments are not supported in nopython mode
+    Batch wrapper for creating multiple cadences by calling generation function n times
     """
+    # Pre-allocate output array
     data = np.zeros((samples, 6, 16, width_bin))
     
     for i in range(samples):  # Changed from prange to range since no @jit
+        # Each function call generates 1 complete cadence (6 observations)
         data[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range,
                                    factor=factor, width_bin=width_bin)
     
     return data
 
-def create_mixed_training_batch(data_generator, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Create a mixed training batch for VAE training
-    Wrapper function to match training pipeline expectations
-    
-    Args:
-        data_generator: DataGenerator instance
-        batch_size: Size of batch to generate
-        
-    Returns:
-        Tuple of (concatenated, true, false) data arrays
-    """
-    batch_data = data_generator.generate_training_batch(batch_size)
-    
-    return (
-        batch_data['concatenated'],
-        batch_data['true'], 
-        batch_data['false']
-    )
+# NOTE: what is this for? 
+# def create_mixed_training_batch(data_generator, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+#     """
+#     Create a mixed training batch for VAE training
+#     Wrapper function to match training pipeline expectations
+#
+#     Args:
+#         data_generator: DataGenerator instance
+#         batch_size: Size of batch to generate
+#
+#     Returns:
+#         Tuple of (concatenated, true, false) data arrays
+#     """
+#     batch_data = data_generator.generate_training_batch(batch_size)
+#
+#     return (
+#         batch_data['concatenated'],
+#         batch_data['true'], 
+#         batch_data['false']
+#     )
 
 class DataGenerator:
     """Synthetic data generator"""
@@ -224,20 +226,21 @@ class DataGenerator:
         self.config = config
         self.backgrounds = background_plates
         self.n_backgrounds = len(background_plates)
-        
-        # Pre-compute width_bin from config
-        self.width_bin = config.data.width_bin 
-        
+        # Sanity check downsampling working as expected
+        width_bin_downsampled = config.data.width_bin // config.data.downsample_factor
+        if background_plates.shape[3] == width_bin_downsampled:
+            self.width_bin = width_bin_downsampled  # NOTE: passed into create_full_cadence() from generate_test_batch()
+        else:
+            raise ValueError(f"Expected {width_bin_downsampled} channels. Got {background_plates.shape[3]} instead")
+
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
         
-    def generate_training_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
+    def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
-        Generate training batch using config-specified chunking parameters
+        Generate training batch using chunking
         """
-        # Use config for chunk size, with fallback for memory efficiency
-        max_chunk_size = getattr(self.config.training, 'max_chunk_size', 1000)
-        
+        max_chunk_size = self.config.training.max_chunk_size
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
@@ -253,39 +256,37 @@ class DataGenerator:
                 
             logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} samples")
             
+            # Split chunk into 4 equal parts (balanced classes)
             quarter = max(1, chunk_size // 4)
             
-            # Use config values for SNR and width_bin
-            width_bin = self.config.data.width_bin // self.config.data.downsample_factor
-            
-            # Generate each type for this chunk
+            # Generate each class for current chunk
             false_no_signal = create_full_cadence(
                 create_false, quarter, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
-                width_bin=width_bin
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin
             )
             
             true_single = create_full_cadence(
                 create_true_single_shot, quarter, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
-                width_bin=width_bin
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin
             )
             
             true_double = create_full_cadence(
                 create_true, quarter, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
+                snr_base=snr_base,
+                snr_range=snr_range,
                 factor=1,
-                width_bin=width_bin
+                width_bin=self.width_bin
             )
             
             false_with_rfi = create_full_cadence(
                 create_false, quarter, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
-                width_bin=width_bin
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin
             )
             
             # Concatenate for main training data
@@ -293,19 +294,20 @@ class DataGenerator:
                 false_no_signal, true_single, true_double, false_with_rfi
             ], axis=0)
             
+            # NOTE: why do we create separate true/false instead of sampling true_double & false_with_rfi by quarter? 
             # Generate separate true/false for clustering loss
             chunk_true = create_full_cadence(
                 create_true, chunk_size, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
-                width_bin=width_bin
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin
             )
             
             chunk_false = create_full_cadence(
                 create_false, chunk_size, self.backgrounds,
-                snr_base=self.config.training.snr_base,
-                snr_range=self.config.training.snr_range,
-                width_bin=width_bin
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin
             )
             
             # Store chunks
@@ -327,6 +329,20 @@ class DataGenerator:
             'true': np.concatenate(all_true, axis=0),
             'false': np.concatenate(all_false, axis=0)
         }
+
+        # NOTE: temporary block to check nan/inf
+        # ADD NORMALIZATION CHECKS HERE:
+        # Verify post-injection data normalization
+        for key in ['concatenated', 'true', 'false']:
+            min_val = np.min(result[key])
+            max_val = np.max(result[key])
+            mean_val = np.mean(result[key])
+            logger.info(f"Post-injection {key} stats: min={min_val:.6f}, max={max_val:.6f}, mean={mean_val:.6f}")
+            if max_val > 1.0:
+                logger.error(f"Post-injection {key} values too large! Max: {max_val}")
+                raise ValueError(f"Post-injection {key} normalization check failed")
+            else:
+                logger.info(f"Post-injection {key} data properly normalized")
         
         # Final cleanup
         del all_concatenated, all_true, all_false
@@ -334,6 +350,7 @@ class DataGenerator:
         
         return result
     
+    # NOTE: come back to this later
     def generate_test_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
         """Generate test batch with balanced classes"""
         n_each = n_samples // 3

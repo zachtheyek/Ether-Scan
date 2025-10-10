@@ -19,12 +19,13 @@ from data_generation import DataGenerator
 from training import train_full_pipeline, get_latest_tag
 from inference import run_inference
 
+# FIX: not printing datetime or writing to train_pipeline.log
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Only print INFO, WARNING, ERROR, CRITICAL (ignore DEBUG)
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log'),
+        logging.FileHandler('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log', mode='w'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -65,9 +66,11 @@ def setup_gpu_config():
             
             logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
             return strategy
+
         except RuntimeError as e:
             logger.error(f"GPU configuration error: {e}")
             return None
+
     else:
         logger.warning("No GPUs detected, running on CPU")
         return None
@@ -79,13 +82,13 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Loading background data from {config.data_path}")
     
     # Use config values for memory management
-    target_backgrounds = config.training.target_backgrounds
+    num_target_backgrounds = config.training.num_target_backgrounds
     chunk_size = config.data.chunk_size_loading
     max_chunks = config.data.max_chunks_per_file
     downsample_factor = config.data.downsample_factor
     final_width = config.data.width_bin // downsample_factor
     
-    logger.info(f"Target backgrounds: {target_backgrounds}")
+    logger.info(f"Target backgrounds: {num_target_backgrounds}")
     logger.info(f"Processing chunks of: {chunk_size}")
     logger.info(f"Final resolution: {final_width}")
     
@@ -113,7 +116,7 @@ def load_background_data(config: Config) -> np.ndarray:
             
             logger.info(f"  Raw data shape: {raw_data.shape}")
             
-            # Process in config-specified chunks
+            # Divide background into equal chunks, then cutoff if exceeds max_chunks
             n_chunks = min(max_chunks, (raw_data.shape[0] + chunk_size - 1) // chunk_size)
             
             for chunk_idx in range(n_chunks):
@@ -125,7 +128,7 @@ def load_background_data(config: Config) -> np.ndarray:
                 
                 # Process each cadence in chunk
                 for cadence_idx in range(chunk_data.shape[0]):
-                    if len(all_backgrounds) >= target_backgrounds:
+                    if len(all_backgrounds) >= num_target_backgrounds:
                         break
                         
                     cadence = chunk_data[cadence_idx]  # Shape: (6, 16, 4096)
@@ -138,12 +141,12 @@ def load_background_data(config: Config) -> np.ndarray:
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
                     
                     for obs_idx in range(6):
-                        # 1. Downsample first
+                        # Downsample first to preserve intensity units
                         downsampled_obs = downscale_local_mean(
                             cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
                         
-                        # 2. Normalize each observation using pre_proc
+                        # Normalize each observation using pre_proc
                         downsampled_cadence[obs_idx] = pre_proc(downsampled_obs)
                     
                     all_backgrounds.append(downsampled_cadence)
@@ -152,7 +155,7 @@ def load_background_data(config: Config) -> np.ndarray:
                 del chunk_data
                 gc.collect()
                 
-                if len(all_backgrounds) >= target_backgrounds:
+                if len(all_backgrounds) >= num_target_backgrounds:
                     break
             
             logger.info(f"  Processed {len(all_backgrounds)} cadences so far")
@@ -182,13 +185,13 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Background mean: {mean_val:.6f}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
     
-    if max_val > 2.0:
+    if max_val > 1.0:
         logger.error(f"Background values still too large! Max: {max_val}")
         raise ValueError("Background normalization failed")
     else:
         logger.info(f"Background data properly normalized")
     
-    logger.info(f"Background data ready at {final_width} resolution")
+    logger.info(f"Background data ready at {background_array.shape[3]} resolution")
     
     return background_array
 
@@ -214,7 +217,7 @@ def train_command(args):
     if args.load_tag:
         tag = args.load_tag
         if tag.startswith('round_'):
-            start_round = int(tag.split('_')[1]) + 1 # Start training from the round proceeding model checkpoint
+            start_round = int(tag.split('_')[1]) + 1  # Start training from the round proceeding model checkpoint
         else:
             start_round = 1
     else: 
@@ -278,7 +281,7 @@ def train_command(args):
             logger.error(f"Training attempt {attempt+1} failed with error: {e}")
 
             if attempt < max_retries - 1:
-                # Retry taining after delay
+                # Retry taining
                 logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
 
                 try:
