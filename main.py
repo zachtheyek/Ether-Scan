@@ -14,7 +14,7 @@ import time
 from skimage.transform import downscale_local_mean
 
 from config import Config
-from preprocessing import DataPreprocessor, pre_proc
+from preprocessing import DataPreprocessor
 from data_generation import DataGenerator
 from training import train_full_pipeline, get_latest_tag
 from inference import run_inference
@@ -137,17 +137,13 @@ def load_background_data(config: Config) -> np.ndarray:
                     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
                         continue
                     
-                    # Downsample & normalize each observation separately
+                    # Downsample each observation separately
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
                     
                     for obs_idx in range(6):
-                        # Downsample first to preserve intensity units
-                        downsampled_obs = downscale_local_mean(
+                        downsampled_cadence[obs_idx] = downscale_local_mean(
                             cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
-                        
-                        # Normalize each observation using pre_proc
-                        downsampled_cadence[obs_idx] = pre_proc(downsampled_obs)
                     
                     all_backgrounds.append(downsampled_cadence)
                 
@@ -174,23 +170,16 @@ def load_background_data(config: Config) -> np.ndarray:
     # Stack all backgrounds
     background_array = np.array(all_backgrounds, dtype=np.float32)
     
-    # Verify that values are now in [0,1] range
+    # Sanity check: print descriptive stats
     min_val = np.min(background_array)
     max_val = np.max(background_array)
     mean_val = np.mean(background_array)
-    
+
     logger.info(f"Total background cadences loaded: {background_array.shape[0]}")
     logger.info(f"Background array shape: {background_array.shape}")
     logger.info(f"Background value range: [{min_val:.6f}, {max_val:.6f}]")
     logger.info(f"Background mean: {mean_val:.6f}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
-    
-    if max_val > 1.0:
-        logger.error(f"Background values still too large! Max: {max_val}")
-        raise ValueError("Background normalization failed")
-    else:
-        logger.info(f"Background data properly normalized")
-    
     logger.info(f"Background data ready at {background_array.shape[3]} resolution")
     
     return background_array

@@ -2,7 +2,6 @@
 Synthetic data generation for SETI ML Pipeline
 """
 
-from time import time
 import numpy as np
 import setigen as stg
 from astropy import units as u
@@ -12,6 +11,23 @@ from random import random
 import gc
 
 logger = logging.getLogger(__name__)
+
+def log_norm(data: np.ndarray) -> np.ndarray:
+    """
+    Apply log normalization to data
+    """
+    # Add small epsilon to avoid log(0)
+    data = data + 1e-10
+    
+    # Transform data into log-space
+    data = np.log(data)
+    # Shift data to be >= 0
+    data = data - data.min()
+    # Normalize data to [0, 1]
+    if data.max() > 0:
+        data = data / data.max()
+
+    return data
 
 # NOTE: not 100% sure how this function works. ported from Peter's code. comments added by Claude. assuming it works as intended? 
 def new_cadence(data: np.ndarray, snr: float, width_bin: int, 
@@ -106,16 +122,15 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
     """
     # Select random background from plate
     background_index = int(plate.shape[0] * random())
+    base = plate[background_index, :, :, :]
+
+    # Initialize empty output array
+    n_obs = plate.shape[1]
+    n_time = plate.shape[2]
+    final = np.zeros((n_obs, n_time, width_bin))
 
     # Inject RFI into all 6 observations
     if inject:
-        base = plate[background_index, :, :, :]
-
-        # Initialize empty output array
-        n_obs = plate.shape[1]
-        n_time = plate.shape[2]
-        final = np.zeros((n_obs, n_time, width_bin))
-        
         # Prepare data for signal injection by stacking all 6 observations vertically
         # (6, 16, 512) -> (96, 512)
         # Obs 0: rows 0-15, Obs 1: rows 16-31, Obs 2: rows 32-47, ...
@@ -127,13 +142,15 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
         snr = random() * snr_range + snr_base
         cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
         
-        # Reshape stacked data back into original shape after signal injection
+        # Reshape stacked data back into original shape & log-normalize after signal injection
         for i in range(n_obs):
-            final[i, :, :] = cadence[i*n_time:(i+1)*n_time, :]
+            final[i, :, :] = log_norm(cadence[i*n_time:(i+1)*n_time, :])
 
     # Just return background. No signal injection 
     else:
-        final = plate[background_index, :, :, :]
+        # Log-normalize base background
+        for i in range(n_obs):
+            final[i, :, :] = log_norm(base[i, :, :])
     
     return final
 
@@ -164,14 +181,14 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
     snr = random() * snr_range + snr_base
     cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
 
-    # Reshape stacked data back into original shape after signal injection
+    # Reshape stacked data back into original shape & log-normalize after signal injection
     for i in range(n_obs):
         if i % 2 == 0:
             # ONs: injected signal
-            final[i, :, :] = cadence[i*n_time:(i+1)*n_time, :]
+            final[i, :, :] = log_norm(cadence[i*n_time:(i+1)*n_time, :])
         else:
             # OFFs: original background
-            final[i, :, :] = data[i*n_time:(i+1)*n_time, :]
+            final[i, :, :] = log_norm(data[i*n_time:(i+1)*n_time, :])
     
     return final
 
@@ -211,14 +228,14 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
         if slope_1 != slope_2 and check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
             break
 
-    # Split back into 6 observations
+    # Reshape stacked data back into original shape & log-normalize after signal injection
     for i in range(n_obs):
         if i % 2 == 0:
             # ONs: 2 injected signals (ETI + RFI)
-            final[i, :, :] = cadence_2[i*n_time:(i+1)*n_time, :]
+            final[i, :, :] = log_norm(cadence_2[i*n_time:(i+1)*n_time, :])
         else:
             # OFFs: 1 injected signal (RFI only)
-            final[i, :, :] = cadence_1[i*n_time:(i+1)*n_time, :]
+            final[i, :, :] = log_norm(cadence_1[i*n_time:(i+1)*n_time, :])
     
     return final
 
@@ -403,9 +420,7 @@ class DataGenerator:
             'false': np.concatenate(all_false, axis=0)
         }
 
-        # NOTE: temporary block to check nan/inf
-        # ADD NORMALIZATION CHECKS HERE:
-        # Verify post-injection data normalization
+        # Sanity check: verify post-injection data normalization
         for key in ['concatenated', 'true', 'false']:
             min_val = np.min(result[key])
             max_val = np.max(result[key])
@@ -413,6 +428,15 @@ class DataGenerator:
             logger.info(f"Post-injection {key} stats: min={min_val:.6f}, max={max_val:.6f}, mean={mean_val:.6f}")
             if max_val > 1.0:
                 logger.error(f"Post-injection {key} values too large! Max: {max_val}")
+                raise ValueError(f"Post-injection {key} normalization check failed")
+            elif min_val < 0.0: 
+                logger.error(f"Post-injection {key} values too small! Min: {min_val}")
+                raise ValueError(f"Post-injection {key} normalization check failed")
+            elif np.isnan(result[key]).any():
+                logger.error(f"Post-injection {key} contains NaN values!")
+                raise ValueError(f"Post-injection {key} normalization check failed")
+            elif np.isinf(result[key]).any():
+                logger.error(f"Post-injection {key} contains Inf values!")
                 raise ValueError(f"Post-injection {key} normalization check failed")
             else:
                 logger.info(f"Post-injection {key} data properly normalized")
@@ -425,7 +449,7 @@ class DataGenerator:
     
     # NOTE: come back to this later
     def generate_test_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
-        """Generate test batch using chunking"""
+        """Generate test batch"""
         n_each = n_samples // 3
         
         false_data = create_full_cadence(

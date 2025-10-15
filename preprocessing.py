@@ -10,20 +10,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def pre_proc(data: np.ndarray) -> np.ndarray:
-    """
-    Apply log normalization to data
-    """
-    # Add small epsilon to avoid log(0)
-    data = data + 1e-10
-    
-    # Normalization sequence
-    data = np.log(data)
-    data = data - data.min()
-    if data.max() > 0:
-        data = data / data.max()
-    return data
-
 # NOTE: come back to this later (start here)
 # NOTE: preprocess_cadence() is used in inference.py, everything else unused? 
 # NOTE: maybe repurpose preprocess.py to do bandpass removal & energy detection? 
