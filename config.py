@@ -20,8 +20,8 @@ class ModelConfig:
 class DataConfig:
     """Data processing configuration"""
     width_bin: int = 4096  # Frequency bins per snippet
-    time_bins: int = 16    # Time bins per observation
     downsample_factor: int = 8  # Downsampling factor
+    time_bins: int = 16    # Time bins per observation
     num_observations: int = 6  # Per cadence (3 ON, 3 OFF)
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
