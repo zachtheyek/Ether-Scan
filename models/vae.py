@@ -133,6 +133,7 @@ class BetaVAE(keras.Model):
         difference += self.loss_diff(a3, d)
         
         # Same terms (ON-ON and OFF-OFF should be minimized, so use loss_same)
+        # Note, we avoid inverse pairs since loss_same is symmetric (no double dipping)
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
@@ -184,13 +185,14 @@ class BetaVAE(keras.Model):
         difference += self.loss_same(a3, c)
         difference += self.loss_same(a3, d)
 
+        # Note, we avoid inverse pairs since loss_same is symmetric (no double dipping)
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
         same += self.loss_same(a2, a3)
         same += self.loss_same(b, c)
-        same += self.loss_same(c, d)
         same += self.loss_same(b, d)
+        same += self.loss_same(c, d)
         
         similarity = same + difference
         return similarity

@@ -2,214 +2,243 @@
 Synthetic data generation for SETI ML Pipeline
 """
 
+from time import time
 import numpy as np
 import setigen as stg
 from astropy import units as u
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 import logging
 from random import random
 import gc
 
 logger = logging.getLogger(__name__)
 
-def new_cadence(data: np.ndarray, snr: float, width_bin: int = 512) -> Tuple[np.ndarray, float, float]:
+# NOTE: not 100% sure how this function works. ported from Peter's code. comments added by Claude. assuming it works as intended? 
+def new_cadence(data: np.ndarray, snr: float, width_bin: int, 
+                freq_resolution: float, time_resolution: float) -> Tuple[np.ndarray, float, float]:
     """
-    Create a cadence with injected signal
+    Inject a single drifting narrowband signal into a stacked cadence array
     """
-    CONST = 3
-    start = int(random() * (width_bin - 1)) + 1
+    # Set noise parameter (for simulating randomness in drift rate calculation)
+    noise = 3
+
+    # Randomly select a starting frequency bin (channel) to start the signal injection 
+    # Avoids edges (bin 0)
+    starting_bin = int(random() * (width_bin - 1)) + 1
+
+    # Get the total number of time samples in stacked array (typically 96 for 6 obs x 16 time bins)
+    total_time = data.shape[0]
    
-    # FIXED: removed drift rate bias bug from using (-1)**(int(random()*3+1))
+    # Randomly select a positive or negative drift direction
     if np.random.choice([-1, 1]) > 0:
-        true_slope = (96/start)
-        slope = (true_slope) * (18.25361108/2.7939677238464355) + random()*CONST
+        # Positive drift
+        slope_pixel = (total_time / starting_bin)  # Signal drifts upward in frequency
+        # Convert from pixel space to physical units by multiplying by time_resolution / freq_resolution ratio
+        # Then add random noise to make drift rates more realistic
+        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) + random() * noise
     else:
-        true_slope = (96/(start-width_bin))
-        slope = (true_slope) * (18.25361108/2.7939677238464355) - random()*CONST
+        # Negative drift
+        slope_pixel = (total_time / (starting_bin - width_bin))  # Signal drifts downward in frequency
+        # Convert from pixel space to physical units by multiplying by time_resolution / freq_resolution ratio
+        # Then add random noise to make drift rates more realistic
+        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) - random() * noise
     
-    drift = -1*(1/slope)
-    width = random()*50 + abs(drift)*18./1
-    b = 96 - true_slope*(start)
+    # Convert slope to drift rate
+    drift_rate = -1 * (1 / slope_physical)
+
+    # Calculate signal width (in Hz)
+    # Base random component: 0-50 Hz
+    # Add component proportional to drift rate magnitude to keep signal coherent 
+    signal_width = random() * 50 + abs(drift_rate) * 18. / 1
+
+    # Calculate y-intercept for linear signal trajectory
+    y_intercept = total_time - slope_pixel * (starting_bin)
     
+    # Create setigen Frame 
     frame = stg.Frame.from_data(
-        df=2.7939677238464355*u.Hz,
-        dt=18.25361108*u.s,
-        fch1=0*u.MHz,
-        data=data,  # Already normalized background
-        ascending=True
+        df=freq_resolution*u.Hz,
+        dt=time_resolution*u.s,
+        fch1=0*u.MHz,  # Set reference frequency (center frequency offset)
+        data=data,
+        ascending=True  # Frequency increases with channel index
     )
     
+    # Inject signal
     signal = frame.add_signal(
+        # Use linear drift trajectory starting at starting_bin & with the calculated drift rate
         stg.constant_path(
-            f_start=frame.get_frequency(index=start),
-            drift_rate=drift*u.Hz/u.s
+            f_start=frame.get_frequency(index=starting_bin),
+            drift_rate=drift_rate*u.Hz/u.s
         ),
+        # Constant intensity over time, calibrated to achieve target snr
         stg.constant_t_profile(level=frame.get_intensity(snr=snr)),
-        stg.gaussian_f_profile(width=width*u.Hz),
+        # Gaussian shape in frequency domain with calculated signal width
+        stg.gaussian_f_profile(width=signal_width*u.Hz),
+        # Constant bandpass profile (no frequency-dependent scaling)
         stg.constant_bp_profile(level=1)
     )
     
-    # Data is already normalized, just return it
-    result_data = frame.data.copy()
+    # Extract the modified data (with signal injection) from the setigen Frame
+    modified_data = frame.data.copy()
     
-    return result_data, true_slope, b
+    # Return the modified data array, slope (in pixel coordinates), and y-intercept
+    return modified_data, slope_pixel, y_intercept
 
-def intersection(m1, m2, b1, b2):
-    """Check if two drifting signals intersect in valid regions"""
-    solution = (b2-b1)/(m1-m2)
-    y = m1*solution + b1
-    
-    # Check if intersection is in OFF regions (should return False)
-    if y >= 80 and y <= 96:
-        return False
-    elif y >= 64 and y <= 80:
-        return False
-    elif y >= 32 and y <= 48:
-        return False
-    elif y >= 0 and y <= 16:
-        return False
-    else:
-        return True
-
-def create_true(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10, 
-                factor: float = 1, index: int = 1, width_bin: int = 512) -> np.ndarray:
+def check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
     """
-    Create true ETI signal
-    Signal appears in ON observations (0, 2, 4) with consistent drift
+    Check if 2 drifting signals intersect in the ON regions
+    """
+    x_intersect = (intercept_2 - intercept_1) / (slope_1 - slope_2)
+    y_intersect = slope_1 * x_intersect + intercept_1
+
+    on_y_coords = [(0, 16), (32, 48), (64, 80)]
+    for y_lower, y_upper in on_y_coords:
+        if y_lower <= y_intersect <= y_upper:
+            return False
+    return True
     
-    Args:
-        plate: Background data (n_backgrounds, 6, 16, width_bin)
-        snr_base: Base SNR
-        snr_range: SNR range
-        factor: Multiplication factor for second signal
-        index: Not used (for compatibility)
-        width_bin: Frequency bins
+def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
+                 width_bin: int, freq_resolution: float, time_resolution: float, 
+                 inject: bool = True, intensity_factor: Optional[float] = None) -> np.ndarray:
+    """
+    Create false signal class
+    If specified, RFI is injected into all 6 observations. Otherwise, no RFI is injected
+    """
+    # Select random background from plate
+    background_index = int(plate.shape[0] * random())
+
+    # Inject RFI into all 6 observations
+    if inject:
+        base = plate[background_index, :, :, :]
+
+        # Initialize empty output array
+        n_obs = plate.shape[1]
+        n_time = plate.shape[2]
+        final = np.zeros((n_obs, n_time, width_bin))
         
-    Returns:
-        Cadence with true ETI signal (6, 16, width_bin)
-    """
-    # Random background selection
-    index = int(plate.shape[0] * random())
-    total = np.zeros((6, plate.shape[2], plate.shape[3]))
-    base = plate[index, :, :, :]
-    
-    # Combine into single 96x512 array for signal injection
-    data = np.zeros((96, width_bin))
-    for el in range(6):
-        data[16*el:(el+1)*16, :] = base[el, :, :]
-    
-    # Keep trying until we get non-intersecting signals
-    while True:
+        # Prepare data for signal injection by stacking all 6 observations vertically
+        # (6, 16, 512) -> (96, 512)
+        # Obs 0: rows 0-15, Obs 1: rows 16-31, Obs 2: rows 32-47, ...
+        data = np.zeros((n_obs * n_time, width_bin))
+        for i in range(n_obs):
+            data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
+        
+        # Select a random SNR from the given range & inject RFI into all 6 observations
         snr = random() * snr_range + snr_base
-        cadence, m1, b1 = new_cadence(data, snr, width_bin)
-        injection_plate, m2, b2 = new_cadence(cadence, snr*factor, width_bin)
+        cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
         
-        if m1 != m2:
-            if intersection(m1, m2, b1, b2):
-                break
-    
-    # Split back into 6 observations
-    total[0, :, :] = injection_plate[0:16, :]
-    total[1, :, :] = cadence[16:32, :]
-    total[2, :, :] = injection_plate[32:48, :]
-    total[3, :, :] = cadence[48:64, :]
-    total[4, :, :] = injection_plate[64:80, :]
-    total[5, :, :] = cadence[80:96, :]
-    
-    return total
+        # Reshape stacked data back into original shape after signal injection
+        for i in range(n_obs):
+            final[i, :, :] = cadence[i*n_time:(i+1)*n_time, :]
 
-def create_true_single_shot(plate: np.ndarray, snr_base: float = 10, snr_range: float = 5,
-                            factor: float = 1, index: int = 1, width_bin: int = 512) -> np.ndarray:
-    """
-    Create single-shot true signal (appears in ON observations only)
-    """
-    index = int(plate.shape[0] * random())
-    total = np.zeros((6, plate.shape[2], plate.shape[3]))
-    base = plate[index, :, :, :]
+    # Just return background. No signal injection 
+    else:
+        final = plate[background_index, :, :, :]
     
-    data = np.zeros((96, width_bin))
-    for el in range(6):
-        data[16*el:(el+1)*16, :] = base[el, :, :]
+    return final
+
+def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
+                       width_bin: int, freq_resolution: float, time_resolution: float, 
+                       inject: Optional[bool] = None, intensity_factor: Optional[float] = None) -> np.ndarray:
+    """
+    Create true-single signal class
+    ETI signal is injected into the ON observations only
+    """
+    # Select random background from plate
+    background_index = int(plate.shape[0] * random())
+    base = plate[background_index, :, :, :]
+
+    # Initialize empty output array
+    n_obs = plate.shape[1]
+    n_time = plate.shape[2]
+    final = np.zeros((n_obs, n_time, width_bin))
+
+    # Prepare data for signal injection by stacking all 6 observations vertically
+    # (6, 16, 512) -> (96, 512)
+    # Obs 0: rows 0-15, Obs 1: rows 16-31, Obs 2: rows 32-47, ...
+    data = np.zeros((n_obs * n_time, width_bin))
+    for i in range(n_obs):
+        data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
     
+    # Select a random SNR from the given range & inject RFI 
     snr = random() * snr_range + snr_base
-    injection_plate, m2, b2 = new_cadence(data, snr, width_bin)
-    
-    total[0, :, :] = injection_plate[0:16, :]
-    total[1, :, :] = data[16:32, :]  # OFF - no signal
-    total[2, :, :] = injection_plate[32:48, :]
-    total[3, :, :] = data[48:64, :]  # OFF - no signal
-    total[4, :, :] = injection_plate[64:80, :]
-    total[5, :, :] = data[80:96, :]  # OFF - no signal
-    
-    return total
+    cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
 
-def create_false(plate: np.ndarray, snr_base: float = 300, snr_range: float = 10,
-                factor: float = 1, index: int = 1, width_bin: int = 512) -> np.ndarray:
-    """
-    Create false signal (RFI) - appears in all observations or none
-    """
-    choice = random()
+    # Reshape stacked data back into original shape after signal injection
+    for i in range(n_obs):
+        if i % 2 == 0:
+            # ONs: injected signal
+            final[i, :, :] = cadence[i*n_time:(i+1)*n_time, :]
+        else:
+            # OFFs: original background
+            final[i, :, :] = data[i*n_time:(i+1)*n_time, :]
     
-    # NOTE: make this deterministic
-    if choice > 0.5:
-        # Inject RFI in all observations
-        index = int(plate.shape[0] * random())
-        total = np.zeros((6, plate.shape[2], plate.shape[3]))
-        base = plate[index, :, :, :]
-        
-        data = np.zeros((96, width_bin))
-        for el in range(6):
-            data[16*el:(el+1)*16, :] = base[el, :, :]
-        
-        snr = random() * snr_range + snr_base
-        cadence, m1, b1 = new_cadence(data, snr, width_bin)
-        
-        # RFI appears in all observations
-        for i in range(6):
-            total[i, :, :] = cadence[i*16:(i+1)*16, :]
-    else:
-        # Just return background
-        index = int(plate.shape[0] * random())
-        total = plate[index, :, :, :]
-    
-    return total
+    return final
 
-def create_full_cadence(function, samples: int, plate: np.ndarray, 
-                        snr_base: int = 10, snr_range: float = 40,
-                        factor: float = 1, width_bin: int = 512) -> np.ndarray:
+def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
+                       width_bin: int, freq_resolution: float, time_resolution: float, 
+                       inject: Optional[bool] = None, intensity_factor: float = 1) -> np.ndarray:
     """
-    Batch wrapper for creating multiple cadences by calling generation function n times
+    Create true-double signal class 
+    Non-intersecting ETI & RFI signals are injected into ON-only & ON-OFF, respectively
+    """
+    # Select random background from plate
+    background_index = int(plate.shape[0] * random())
+    base = plate[background_index, :, :, :]
+
+    # Initialize empty output array
+    n_obs = plate.shape[1]
+    n_time = plate.shape[2]
+    final = np.zeros((n_obs, n_time, width_bin))
+
+    # Prepare data for signal injection by stacking all 6 observations vertically
+    # (6, 16, 512) -> (96, 512)
+    # Obs 0: rows 0-15, Obs 1: rows 16-31, Obs 2: rows 32-47, ...
+    data = np.zeros((n_obs * n_time, width_bin))
+    for i in range(n_obs):
+        data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
+    
+    # Select a random SNR from the given range
+    snr = random() * snr_range + snr_base
+
+    # Retry signal injection until we get valid non-intersecting signals
+    while True:
+        # Inject RFI
+        cadence_1, slope_1, intercept_1 = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
+        # Inject ETI
+        cadence_2, slope_2, intercept_2 = new_cadence(cadence_1, snr*intensity_factor, width_bin, freq_resolution, time_resolution)
+
+        if slope_1 != slope_2 and check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
+            break
+
+    # Split back into 6 observations
+    for i in range(n_obs):
+        if i % 2 == 0:
+            # ONs: 2 injected signals (ETI + RFI)
+            final[i, :, :] = cadence_2[i*n_time:(i+1)*n_time, :]
+        else:
+            # OFFs: 1 injected signal (RFI only)
+            final[i, :, :] = cadence_1[i*n_time:(i+1)*n_time, :]
+    
+    return final
+
+def batch_create_cadence(function, samples: int, plate: np.ndarray, 
+                        snr_base: int = 10, snr_range: float = 40, width_bin: int = 512, 
+                        freq_resolution: float = 2.7939677238464355, time_resolution: float = 18.25361108,
+                        inject: Optional[bool] = None, intensity_factor: Optional[float] = None) -> np.ndarray:
+    """
+    Batch wrapper for creating multiple cadences by calling generating function n times
     """
     # Pre-allocate output array
-    data = np.zeros((samples, 6, 16, width_bin))
+    cadence = np.zeros((samples, 6, 16, width_bin))
     
-    for i in range(samples):  # Changed from prange to range since no @jit
+    for i in range(samples):
         # Each function call generates 1 complete cadence (6 observations)
-        data[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range,
-                                   factor=factor, width_bin=width_bin)
+        cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin, 
+                                       freq_resolution=freq_resolution, time_resolution=time_resolution, 
+                                       inject=inject, intensity_factor=intensity_factor)
     
-    return data
-
-# NOTE: what is this for? 
-# def create_mixed_training_batch(data_generator, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-#     """
-#     Create a mixed training batch for VAE training
-#     Wrapper function to match training pipeline expectations
-#
-#     Args:
-#         data_generator: DataGenerator instance
-#         batch_size: Size of batch to generate
-#
-#     Returns:
-#         Tuple of (concatenated, true, false) data arrays
-#     """
-#     batch_data = data_generator.generate_training_batch(batch_size)
-#
-#     return (
-#         batch_data['concatenated'],
-#         batch_data['true'], 
-#         batch_data['false']
-#     )
+    return cadence
 
 class DataGenerator:
     """Synthetic data generator"""
@@ -217,21 +246,32 @@ class DataGenerator:
     def __init__(self, config, background_plates: np.ndarray):
         """
         Initialize generator
-        
+
         Args:
             config: Configuration object
             background_plates: Array of background observations
                               Shape: (n_backgrounds, 6, 16, 512) after preprocessing
         """
         self.config = config
+
+        # Sanity check: verify no NaN or Inf values in background plates
+        if np.isnan(background_plates).any():
+            raise ValueError("background_plates contains NaN values")
+        if np.isinf(background_plates).any():
+            raise ValueError("background_plates contains Inf values")
+
         self.backgrounds = background_plates
         self.n_backgrounds = len(background_plates)
-        # Sanity check downsampling working as expected
+
+        # Sanity check: verify downsampling working as expected
         width_bin_downsampled = config.data.width_bin // config.data.downsample_factor
-        if background_plates.shape[3] == width_bin_downsampled:
-            self.width_bin = width_bin_downsampled  # NOTE: passed into create_full_cadence() from generate_test_batch()
-        else:
+
+        if background_plates.shape[3] != width_bin_downsampled:
             raise ValueError(f"Expected {width_bin_downsampled} channels. Got {background_plates.shape[3]} instead")
+
+        self.width_bin = width_bin_downsampled
+        self.freq_resolution = self.config.data.freq_resolution
+        self.time_resolution = self.config.data.time_resolution
 
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
@@ -245,7 +285,7 @@ class DataGenerator:
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
         
-        all_concatenated = []
+        all_main = []
         all_true = []
         all_false = []
         
@@ -256,68 +296,101 @@ class DataGenerator:
                 
             logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} samples")
             
-            # Split chunk into 4 equal parts (balanced classes)
+            # Split chunk into equal partitions (for balanced classes)
             quarter = max(1, chunk_size // 4)
+            half = max(1, chunk_size // 2)
             
-            # Generate each class for current chunk
-            false_no_signal = create_full_cadence(
+            # Pure background 
+            false_no_signal = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
-                width_bin=self.width_bin
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                inject=False
             )
             
-            true_single = create_full_cadence(
-                create_true_single_shot, quarter, self.backgrounds,
-                snr_base=snr_base,
-                snr_range=snr_range,
-                width_bin=self.width_bin
-            )
-            
-            true_double = create_full_cadence(
-                create_true, quarter, self.backgrounds,
-                snr_base=snr_base,
-                snr_range=snr_range,
-                factor=1,
-                width_bin=self.width_bin
-            )
-            
-            false_with_rfi = create_full_cadence(
+            # RFI only
+            false_with_rfi = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
-                width_bin=self.width_bin
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                inject=True
             )
             
-            # Concatenate for main training data
-            chunk_concatenated = np.concatenate([
-                false_no_signal, true_single, true_double, false_with_rfi
+            # ETI only
+            true_single = batch_create_cadence(
+                create_true_single, quarter, self.backgrounds,
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution
+            )
+            
+            # ETI + RFI
+            true_double = batch_create_cadence(
+                create_true_double, quarter, self.backgrounds,
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                intensity_factor=1
+            )
+            
+            # Concatenate for main training data (collapsed cadences)
+            chunk_main = np.concatenate([
+                false_no_signal, false_with_rfi, true_single, true_double
             ], axis=0)
             
-            # NOTE: why do we create separate true/false instead of sampling true_double & false_with_rfi by quarter? 
-            # Generate separate true/false for clustering loss
-            chunk_true = create_full_cadence(
-                create_true, chunk_size, self.backgrounds,
+            # Generate separate true/false non-collapsed cadences for training set diversity (used to calculate clustering loss)
+            chunk_true = batch_create_cadence(
+                create_true_single, chunk_size, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
-                width_bin=self.width_bin
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution
             )
             
-            chunk_false = create_full_cadence(
-                create_false, chunk_size, self.backgrounds,
+            chunk_false_no_signal = batch_create_cadence(
+                create_false, half, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
-                width_bin=self.width_bin
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                inject=False
             )
             
+            chunk_false_with_rfi = batch_create_cadence(
+                create_false, half, self.backgrounds,
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                inject=True
+            )
+
+            chunk_false = np.concatenate([
+                chunk_false_no_signal, chunk_false_with_rfi
+            ], axis=0)
+
             # Store chunks
-            all_concatenated.append(chunk_concatenated.astype(np.float32))
+            all_main.append(chunk_main.astype(np.float32))
             all_true.append(chunk_true.astype(np.float32))
             all_false.append(chunk_false.astype(np.float32))
             
             # Clean up chunk data immediately
-            del false_no_signal, true_single, true_double, false_with_rfi
-            del chunk_concatenated, chunk_true, chunk_false
+            del false_no_signal, false_with_rfi, true_single, true_double
+            del chunk_false_no_signal, chunk_false_with_rfi
+            del chunk_main, chunk_true, chunk_false
             gc.collect()
             
             logger.info(f"Chunk {chunk_idx + 1} complete, memory cleared")
@@ -325,7 +398,7 @@ class DataGenerator:
         # Combine all chunks
         logger.info("Combining all chunks...")
         result = {
-            'concatenated': np.concatenate(all_concatenated, axis=0),
+            'concatenated': np.concatenate(all_main, axis=0),
             'true': np.concatenate(all_true, axis=0),
             'false': np.concatenate(all_false, axis=0)
         }
@@ -345,14 +418,14 @@ class DataGenerator:
                 logger.info(f"Post-injection {key} data properly normalized")
         
         # Final cleanup
-        del all_concatenated, all_true, all_false
+        del all_main, all_true, all_false
         gc.collect()
         
         return result
     
     # NOTE: come back to this later
     def generate_test_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
-        """Generate test batch with balanced classes"""
+        """Generate test batch using chunking"""
         n_each = n_samples // 3
         
         false_data = create_full_cadence(

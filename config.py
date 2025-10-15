@@ -31,8 +31,8 @@ class DataConfig:
     max_chunks_per_file: int = 30  # Max backgrounds per file = max_chunks_per_file * chunk_size_loading
     
     # Data files
-    training_files: List[str] = None
-    test_files: List[str] = None
+    training_files: Optional[List[str]] = None
+    test_files: Optional[List[str]] = None
     
     def __post_init__(self):
         """Set default file lists"""
@@ -145,7 +145,6 @@ class Config:
                 'alpha': self.model.alpha,
                 'beta': self.model.beta,
                 'gamma': self.model.gamma,
-                'learning_rate': self.model.learning_rate
             },
             'data': {
                 'width_bin': self.data.width_bin,
@@ -171,6 +170,11 @@ class Config:
                 'num_samples_test': self.training.num_samples_test,
                 'num_samples_rf': self.training.num_samples_rf,
                 'train_val_split': self.training.train_val_split,
+                'base_learning_rate': self.training.base_learning_rate,
+                'min_learning_rate': self.training.min_learning_rate,
+                'min_pct_improvement': self.training.min_pct_improvement,
+                'patience_threshold': self.training.patience_threshold,
+                'reduction_factor': self.training.reduction_factor,
                 'snr_base': self.training.snr_base,
                 'initial_snr_range': self.training.initial_snr_range,
                 'final_snr_range': self.training.final_snr_range,
