@@ -784,7 +784,7 @@ class TrainingPipeline:
                 save_path=os.path.join(
                     self.config.output_path,
                     'plots',
-                    f'training_progress_round_{round_idx+1}.png'
+                    f'training_progress_round_{round_idx+1:02d}.png'
                 )
             )
             
