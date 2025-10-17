@@ -133,14 +133,19 @@ class BetaVAE(keras.Model):
         difference += self.loss_diff(a3, d)
         
         # Same terms (ON-ON and OFF-OFF should be minimized, so use loss_same)
-        # Note, we avoid inverse pairs since loss_same is symmetric (no double dipping)
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
+        same += self.loss_same(a2, a1)
         same += self.loss_same(a2, a3)
+        same += self.loss_same(a3, a1)
+        same += self.loss_same(a3, a2)
         same += self.loss_same(b, c)
         same += self.loss_same(b, d)
+        same += self.loss_same(c, b)
         same += self.loss_same(c, d)
+        same += self.loss_same(d, b)
+        same += self.loss_same(d, c)
         
         similarity = same + difference
         return similarity
@@ -185,15 +190,20 @@ class BetaVAE(keras.Model):
         difference += self.loss_same(a3, c)
         difference += self.loss_same(a3, d)
 
-        # Note, we avoid inverse pairs since loss_same is symmetric (no double dipping)
         same = 0.0
         same += self.loss_same(a1, a2)
         same += self.loss_same(a1, a3)
+        same += self.loss_same(a2, a1)
         same += self.loss_same(a2, a3)
+        same += self.loss_same(a3, a1)
+        same += self.loss_same(a3, a2)
         same += self.loss_same(b, c)
         same += self.loss_same(b, d)
+        same += self.loss_same(c, b)
         same += self.loss_same(c, d)
-        
+        same += self.loss_same(d, b)
+        same += self.loss_same(d, c)
+
         similarity = same + difference
         return similarity
 
@@ -264,7 +274,7 @@ class BetaVAE(keras.Model):
 
         # Compute and apply gradients
         gradients = tape.gradient(scaled_loss, self.trainable_variables)
-        gradients, _ = tf.clip_by_global_norm(gradients, 1.0)  # Use gradient clipping as a safety layer for training stability
+        gradients, _ = tf.clip_by_global_norm(gradients, 1.0)  # NOTE: Use gradient clipping as a safety layer for training stability
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
         # Update metrics
