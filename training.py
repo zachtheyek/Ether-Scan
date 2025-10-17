@@ -4,6 +4,8 @@ Training pipeline for SETI ML models
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras.initializers import HeNormal, GlorotNormal
+from tensorflow.keras.layers import Conv2D, Dense
 from typing import List, Optional, Tuple
 import logging
 import os
@@ -19,7 +21,6 @@ import psutil
 import subprocess
 
 from config import TrainingConfig
-from preprocessing import DataPreprocessor
 from data_generation import DataGenerator
 from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
@@ -304,6 +305,61 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
     
     return config.snr_base, int(current_range)
 
+def compute_expected_std(layer):
+    """Compute expected std based on initializer."""
+    weights = layer.get_weights()
+    if not weights:
+        return None
+    
+    kernel = weights[0]
+    
+    if isinstance(layer.kernel_initializer, HeNormal):
+        # HeNormal: std = sqrt(2 / fan_in)
+        fan_in = np.prod(kernel.shape[:-1])
+        expected_std = np.sqrt(2.0 / fan_in)
+    elif isinstance(layer.kernel_initializer, GlorotNormal):
+        # GlorotNormal: std = sqrt(2 / (fan_in + fan_out))
+        fan_in = np.prod(kernel.shape[:-1])
+        fan_out = kernel.shape[-1]
+        expected_std = np.sqrt(2.0 / (fan_in + fan_out))
+    else:
+        return None
+    
+    return expected_std
+
+def check_encoder_trained(encoder, threshold=0.2):
+    """
+    Checks all Conv2D and Dense layers in encoder for deviation from initializer.
+    Returns True if at least one layer shows substantial deviation (i.e. the encoder was likely trained).
+    """
+    trained_layers = []
+    for layer in encoder.layers:
+        if isinstance(layer, (Conv2D, Dense)):
+            weights = layer.get_weights()
+            if not weights:
+                continue  # skip layers without weights
+            
+            kernel = weights[0]
+            actual_std = np.std(kernel)
+            expected_std = compute_expected_std(layer)
+            if expected_std is None:
+                continue  # skip layers with no expected std
+            
+            relative_dev = abs(actual_std - expected_std) / expected_std
+            
+            logger.info(f"{layer.name}: actual std={actual_std:.5f}, expected std={expected_std:.5f}, deviation={relative_dev:.2%}")
+            
+            if relative_dev > threshold:
+                trained_layers.append(layer.name)
+    
+    if trained_layers:
+        logger.info("Encoder appears trained (substantial deviation detected in layers):")
+        logger.info(f"{trained_layers}")
+        return True
+    else:
+        logger.info("Encoder appears untrained (all layers close to initializer).")
+        return False
+
 class TrainingPipeline:
     """Training pipeline"""
     
@@ -323,7 +379,6 @@ class TrainingPipeline:
         logger.info(f"Background data shape: {background_data.shape}")
         
         # Initialize components
-        self.preprocessor = DataPreprocessor(config)
         self.data_generator = DataGenerator(config, background_data)
         
         # Create VAE model
@@ -797,16 +852,8 @@ class TrainingPipeline:
         logger.info("Checking if encoder weights appear trained")
 
         try:
-            sample_encoder_weights = self.vae.encoder.layers[1].get_weights()[0]  # First conv layer weights
-            mean_absolute_threshold = 0.01
-
-            # Assume trained if mean absolute weights exceed some small threshold
-            if np.mean(np.abs(sample_encoder_weights)) > mean_absolute_threshold:   
-                logger.info(f"Encoder weights appear trained (>{mean_absolute_threshold})")
-
-            else: 
-                logger.info(f"Encoder weights appear random (<{mean_absolute_threshold})")
-
+            encoder = self.vae.encoder 
+            if not check_encoder_trained(encoder, threshold=0.2):
                 try:
                     logger.info(f"Loading pre-trained encoder weights with tag 'final_v1'")
                     self.load_models(tag="final_v1")
@@ -821,6 +868,7 @@ class TrainingPipeline:
                     except Exception as e: 
                         logger.warning(f"Failed to load latest checkpointed weights: {e}")
                         logger.warning("Proceeding with current encoder weights")
+
         except Exception as e: 
             logger.warning(f"Could not verify encoder weights status: {e}")
             logger.warning(f"Proceeding with current encoder weights")

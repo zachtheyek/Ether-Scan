@@ -418,7 +418,7 @@ def build_encoder(latent_dim: int = 8,
     
     z_log_var = layers.Dense(latent_dim, name="z_log_var",
                             kernel_initializer=GlorotNormal(),
-                            bias_initializer=Constant(-3.0),
+                            bias_initializer=Constant(-3.0),  # Use negative bias initialization to tighten initial posterior 
                             activity_regularizer=l1(0.001),
                             kernel_regularizer=l2(0.01),
                             bias_regularizer=l2(0.01))(x)
