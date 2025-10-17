@@ -1,5 +1,5 @@
 """
-Memory-efficient data verification script
+Data verification script
 Uses memory mapping to avoid loading entire files into RAM
 """
 
@@ -7,7 +7,7 @@ import numpy as np
 import os
 import gc
 import psutil
-from typing import Dict, Any
+from typing import Dict, Optional, Any
 
 def get_memory_usage():
     """Get current memory usage in GB"""
@@ -86,18 +86,14 @@ def verify_data_file(filepath: str) -> Dict[str, Any]:
     
     return info
 
-def verify_data_format(data_path: str, max_files: int = None):
+def verify_data_format(data_path: str):
     """
     Verify data format for all files in a directory
     
     Args:
         data_path: Directory containing .npy files
-        max_files: Maximum number of files to check
     """
     files = sorted([f for f in os.listdir(data_path) if f.endswith('.npy')])
-    
-    if max_files:
-        files = files[:max_files]
     
     print(f"Found {len(files)} .npy files")
     print(f"Initial memory usage: {get_memory_usage():.2f} GB")
@@ -170,15 +166,17 @@ def main():
     test_info = verify_data_format('/datax/scratch/zachy/data/etherscan/testing')
     
     # Print summaries
-    print_summary(training_info)
+    all_info = training_info + test_info
+    print_summary(all_info)
     
     # Recommendations
     print("\n" + "="*60)
     print("RECOMMENDATIONS")
     print("="*60)
     
-    if training_info:
-        sample_info = training_info[0]
+    if all_info:
+        sample_info = all_info[0]
+        # Heuristic check: if 1 file alone > 80% of available memory, warn user of dangerous potential memory pressure
         if sample_info['expected_memory_gb'] > available_memory * 0.8:
             print("WARNING: Data files are too large to load entirely into memory!")
             print("Recommendations:")

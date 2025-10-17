@@ -1,5 +1,5 @@
 """
-Validate trained models are saved & loaded properly
+Verify trained models are saved & can be loaded properly
 """
 
 import tensorflow as tf
