@@ -184,6 +184,8 @@ def main():
             print("2. Process data in smaller chunks")
             print("3. Consider downsampling or using a subset for initial testing")
             print("4. Upgrade to a machine with more RAM if full loading is required")
+        else:
+            print("None")
     
     print("\nVerification complete!")
 
