@@ -82,8 +82,8 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Loading background data from {config.data_path}")
     
     # Use config values for memory management
-    num_target_backgrounds = config.training.num_target_backgrounds
-    chunk_size = config.data.chunk_size_loading
+    num_target_backgrounds = config.data.num_target_backgrounds
+    chunk_size = config.data.background_load_chunk_size
     max_chunks = config.data.max_chunks_per_file
     downsample_factor = config.data.downsample_factor
     final_width = config.data.width_bin // downsample_factor

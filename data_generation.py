@@ -298,7 +298,7 @@ class DataGenerator:
         """
         Generate training batch using chunking
         """
-        max_chunk_size = self.config.training.max_chunk_size
+        max_chunk_size = self.config.training.signal_injection_chunk_size
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")

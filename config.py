@@ -26,9 +26,10 @@ class DataConfig:
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
-    # Memory management parameters
-    chunk_size_loading: int = 150  # Cadences to process at once during background loading
-    max_chunks_per_file: int = 30  # Max backgrounds per file = max_chunks_per_file * chunk_size_loading
+    # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
+    num_target_backgrounds: int = 15000  # Number of background cadences to load
+    background_load_chunk_size: int = 200  # Maximum cadences to process at once during background loading
+    max_chunks_per_file: int = 25  # Maximum chunks (~cadences) to load from a single file
     
     # Data files
     training_files: Optional[List[str]] = None
@@ -57,12 +58,12 @@ class TrainingConfig:
     train_logical_batch_size: int = 32  # Actual batch size for convergence 
     validation_batch_size: int = 1024
 
-    num_target_backgrounds: int = 10000  # Number of background cadences to load
-    max_chunk_size: int = 1000  # Maximum samples per chunk during generation
-    num_samples_train: int = 5000
-    num_samples_test: int = 2000
-    num_samples_rf: int = 10000
+    num_samples_train: int = 120000
+    num_samples_test: int = 120000
+    num_samples_rf: int = 24000
     train_val_split: float = 0.8
+    signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
+    prepare_latents_chunk_size: int = 1000  # Maximum cadences to process through encoder at once during RF training
 
     # Adaptive LR params
     base_learning_rate: float = 0.001
@@ -81,8 +82,8 @@ class TrainingConfig:
     step_hard_rounds: int = 15  # Number of rounds with challenging signals
 
     # Fault tolerance params
-    max_retries: int = 5 
-    retry_delay: int = 30 # seconds 
+    max_retries: int = 5
+    retry_delay: int = 60 # seconds 
 
 # NOTE: come back to this later
 @dataclass
@@ -125,16 +126,18 @@ class Config:
     
     def get_file_subset(self, filename: str) -> Tuple[Optional[int], Optional[int]]:
         """Get subset parameters for a file (start, end indices)"""
-        # Define subsets for specific files to manage memory usage
+        # Option to define subsets for specific files to manage memory usage
         subset_map = {
-            'real_filtered_LARGE_HIP110750.npy': (None, 5000),  # First 5000
-            'real_filtered_LARGE_HIP13402.npy': (8000, 10000),  # Middle 2000
-            'real_filtered_LARGE_HIP8497.npy': (11000, None),  # Last 3567
-            'real_filtered_LARGE_testHIP83043.npy': (None, None)  # Full file
+            'real_filtered_LARGE_HIP110750.npy': (None, 5000),
+            'real_filtered_LARGE_HIP13402.npy': (3000, 10000), 
+            'real_filtered_LARGE_HIP8497.npy': (8000, None),
+            'real_filtered_LARGE_testHIP83043.npy': (None, None)
         }
         return subset_map.get(filename, (None, None))
     
-    # NOTE: update anytime config.py is modified
+    # TODO: make sure config params are properly used throughout code base 
+    # TODO: remove unaccessed config params 
+    # TODO: update to_dict to match config params
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {
@@ -153,7 +156,8 @@ class Config:
                 'num_observations': self.data.num_observations,
                 'freq_resolution': self.data.freq_resolution,
                 'time_resolution': self.data.time_resolution,
-                'chunk_size_loading': self.data.chunk_size_loading,
+                'num_target_backgrounds': self.data.num_target_backgrounds,
+                'background_load_chunk_size': self.data.background_load_chunk_size,
                 'max_chunks_per_file': self.data.max_chunks_per_file,
                 'training_files': self.data.training_files,
                 'test_files': self.data.test_files
@@ -164,12 +168,12 @@ class Config:
                 'train_physical_batch_size': self.training.train_physical_batch_size,
                 'train_logical_batch_size': self.training.train_logical_batch_size,
                 'validation_batch_size': self.training.validation_batch_size,
-                'num_target_backgrounds': self.training.num_target_backgrounds,
-                'max_chunk_size': self.training.max_chunk_size,
                 'num_samples_train': self.training.num_samples_train,
                 'num_samples_test': self.training.num_samples_test,
                 'num_samples_rf': self.training.num_samples_rf,
                 'train_val_split': self.training.train_val_split,
+                'signal_injection_chunk_size': self.training.signal_injection_chunk_size,
+                'prepare_latents_chunk_size': self.training.prepare_latents_chunk_size,
                 'base_learning_rate': self.training.base_learning_rate,
                 'min_learning_rate': self.training.min_learning_rate,
                 'min_pct_improvement': self.training.min_pct_improvement,

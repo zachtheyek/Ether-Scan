@@ -825,6 +825,7 @@ class TrainingPipeline:
             logger.warning(f"Could not verify encoder weights status: {e}")
             logger.warning(f"Proceeding with current encoder weights")
         
+        # NOTE: max_chunk_size replaced with prepare_latents_chunk_size
         # Use config values
         n_samples = self.config.training.num_samples_rf // 2  # Split between true/false
         max_chunk_size = self.config.training.max_chunk_size
