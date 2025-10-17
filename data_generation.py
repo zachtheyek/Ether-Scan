@@ -30,6 +30,7 @@ def log_norm(data: np.ndarray) -> np.ndarray:
     return data
 
 # NOTE: not 100% sure how this function works. ported from Peter's code. comments added by Claude. assuming it works as intended? 
+# NOTE: verify that we're randomly drawing a combo of snr, drift_rate, and signal_width for each injection?
 def new_cadence(data: np.ndarray, snr: float, width_bin: int, 
                 freq_resolution: float, time_resolution: float) -> Tuple[np.ndarray, float, float]:
     """
