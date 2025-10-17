@@ -5,6 +5,7 @@ Beta-VAE model implementation for SETI ML Pipeline
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+from tensorflow.keras.initializers import HeNormal, GlorotNormal, Constant, Zeros
 from tensorflow.keras.regularizers import l1, l2
 from typing import Tuple
 import logging
@@ -335,46 +336,64 @@ def build_encoder(latent_dim: int = 8,
     
     # Convolutional layers with regularization
     x = layers.Conv2D(16, kernel_size, activation="relu", strides=2, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(encoder_inputs)
     
     x = layers.Conv2D(16, kernel_size, activation="relu", strides=1, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(32, kernel_size, activation="relu", strides=2, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(32, kernel_size, activation="relu", strides=1, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(32, kernel_size, activation="relu", strides=1, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(64, kernel_size, activation="relu", strides=2, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(64, kernel_size, activation="relu", strides=1, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(128, kernel_size, activation="relu", strides=1, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2D(256, kernel_size, activation="relu", strides=2, padding="same",
+                      kernel_initializer=HeNormal(),
+                      bias_initializer=Zeros(),
                       activity_regularizer=l1(0.001),
                       kernel_regularizer=l2(0.01),
                       bias_regularizer=l2(0.01))(x)
@@ -383,17 +402,23 @@ def build_encoder(latent_dim: int = 8,
     x = layers.Flatten()(x)
     
     x = layers.Dense(dense_size, activation="relu",
+                    kernel_initializer=HeNormal(),
+                    bias_initializer=Zeros(),
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(x)
     
     # Latent space
     z_mean = layers.Dense(latent_dim, name="z_mean",
+                         kernel_initializer=GlorotNormal(),
+                         bias_initializer=Zeros(),
                          activity_regularizer=l1(0.001),
                          kernel_regularizer=l2(0.01),
                          bias_regularizer=l2(0.01))(x)
     
     z_log_var = layers.Dense(latent_dim, name="z_log_var",
+                            kernel_initializer=GlorotNormal(),
+                            bias_initializer=Constant(-3.0),
                             activity_regularizer=l1(0.001),
                             kernel_regularizer=l2(0.01),
                             bias_regularizer=l2(0.01))(x)
@@ -414,12 +439,16 @@ def build_decoder(latent_dim: int = 8,
     
     # Dense layers with regularization
     x = layers.Dense(dense_size, activation="relu",
+                    kernel_initializer=HeNormal(),
+                    bias_initializer=Zeros(),
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(latent_inputs)
     
     # Reshape to start transposed convolutions
     x = layers.Dense(1 * 32 * 256, activation="relu",
+                    kernel_initializer=HeNormal(),
+                    bias_initializer=Zeros(),
                     activity_regularizer=l1(0.001),
                     kernel_regularizer=l2(0.01),
                     bias_regularizer=l2(0.01))(x)
@@ -428,52 +457,72 @@ def build_decoder(latent_dim: int = 8,
     
     # Transposed convolutions (exact reverse of encoder)
     x = layers.Conv2DTranspose(256, kernel_size, activation="relu", strides=2, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(128, kernel_size, activation="relu", strides=1, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=1, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(64, kernel_size, activation="relu", strides=2, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=1, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(32, kernel_size, activation="relu", strides=2, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=1, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     x = layers.Conv2DTranspose(16, kernel_size, activation="relu", strides=2, padding="same",
+                              kernel_initializer=HeNormal(),
+                              bias_initializer=Zeros(),
                               activity_regularizer=l1(0.001),
                               kernel_regularizer=l2(0.01),
                               bias_regularizer=l2(0.01))(x)
     
     # Output layer with sigmoid activation
-    decoder_outputs = layers.Conv2DTranspose(1, kernel_size, activation="sigmoid", padding="same")(x)
+    decoder_outputs = layers.Conv2DTranspose(1, kernel_size, activation="sigmoid", padding="same",
+                                            kernel_initializer=GlorotNormal(),
+                                            bias_initializer=Zeros())(x)
     
     decoder = keras.Model(latent_inputs, decoder_outputs, name="decoder")
     
