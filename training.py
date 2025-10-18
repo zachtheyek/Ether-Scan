@@ -937,7 +937,6 @@ class TrainingPipeline:
             del rf_data, true_data, false_data, true_latents, false_latents
             gc.collect()
 
-            # TODO: no train-val split for RF training? 
             # Train Random Forest classifier
             self.rf_model.train(true_latents_contiguous, false_latents_contiguous)
             
@@ -951,7 +950,6 @@ class TrainingPipeline:
             logger.error(f"Random Forest training failed: {e}")
             raise
     
-    # TODO: add function to plot RF training curves
     def plot_beta_vae_training_progress(self, tag: Optional[str] = None, dir: Optional[str] = None):
         """Plot beta-VAE training history"""
         fig = plt.figure(figsize=(25, 12))

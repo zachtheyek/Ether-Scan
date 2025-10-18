@@ -34,8 +34,8 @@ class DataConfig:
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
-    # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
     num_target_backgrounds: int = 15000  # Number of background cadences to load
+    # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
     background_load_chunk_size: int = 200  # Maximum cadences to process at once during background loading
     max_chunks_per_file: int = 25  # Maximum chunks to load from a single file
     
@@ -67,7 +67,7 @@ class TrainingConfig:
     validation_batch_size: int = 1024
 
     num_samples_beta_vae: int = 120000
-    num_samples_rf: int = 12000
+    num_samples_rf: int = 24000
     train_val_split: float = 0.8
     signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
     prepare_latents_chunk_size: int = 1000  # Maximum cadences to process through encoder at once during RF training
