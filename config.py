@@ -7,29 +7,37 @@ from dataclasses import dataclass
 from typing import Tuple, Optional, List, Dict
 
 @dataclass
-class ModelConfig:
+class BetaVAEConfig:
     """VAE model configuration"""
-    latent_dim: int = 8
-    dense_layer_size: int = 512
-    kernel_size: Tuple[int, int] = (3, 3)
-    alpha: float = 10.0  # Clustering loss weight 
+    latent_dim: int = 8  # Bottleneck size
+    dense_layer_size: int = 512  # Should match num frequency bins after downsampling
+    kernel_size: Tuple[int, int] = (3, 3)  # For Conv2D & Conv2DTranspose layers
     beta: float = 1.5    # KL divergence weight
-    gamma: float = 0.0   # Not used
+    alpha: float = 10.0  # Clustering loss weight 
     
+@dataclass
+class RandomForestConfig:
+    """Random Forest configuration"""
+    n_estimators: int = 1000  # Number of trees
+    bootstrap: bool = True  # Whether to use bootstrap sampling when building each tree (True = bagging)
+    max_features: str = 'sqrt'  # Random feature selection (sqrt, log2, float)
+    n_jobs: int = -1  # Number of parallel jobs to run (-1 = use all available CPU cores)
+    seed: int = 11
+
 @dataclass
 class DataConfig:
     """Data processing configuration"""
-    width_bin: int = 4096  # Frequency bins per snippet
-    downsample_factor: int = 8  # Downsampling factor
+    num_observations: int = 6  # Per cadence snippet (3 ON, 3 OFF)
+    width_bin: int = 4096  # Frequency bins per observation
+    downsample_factor: int = 8  # Frequency bins downsampling factor
     time_bins: int = 16    # Time bins per observation
-    num_observations: int = 6  # Per cadence (3 ON, 3 OFF)
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
     # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
     num_target_backgrounds: int = 15000  # Number of background cadences to load
     background_load_chunk_size: int = 200  # Maximum cadences to process at once during background loading
-    max_chunks_per_file: int = 25  # Maximum chunks (~cadences) to load from a single file
+    max_chunks_per_file: int = 25  # Maximum chunks to load from a single file
     
     # Data files
     training_files: Optional[List[str]] = None
@@ -58,9 +66,8 @@ class TrainingConfig:
     train_logical_batch_size: int = 32  # Actual batch size for convergence 
     validation_batch_size: int = 1024
 
-    num_samples_train: int = 120000
-    num_samples_test: int = 120000
-    num_samples_rf: int = 24000
+    num_samples_beta_vae: int = 120000
+    num_samples_rf: int = 12000
     train_val_split: float = 0.8
     signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
     prepare_latents_chunk_size: int = 1000  # Maximum cadences to process through encoder at once during RF training
@@ -77,7 +84,7 @@ class TrainingConfig:
     initial_snr_range: int = 40
     final_snr_range: int = 20
     curriculum_schedule: str = "exponential"  # "linear", "exponential", "step"
-    exponential_decay_rate: int = -3  # How quickly training should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
+    exponential_decay_rate: int = -3  # How quickly schedule should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
     step_easy_rounds: int = 5  # Number of rounds with easy signals
     step_hard_rounds: int = 15  # Number of rounds with challenging signals
 
@@ -87,28 +94,21 @@ class TrainingConfig:
 
 # NOTE: come back to this later
 @dataclass
-class RandomForestConfig:
-    """Random Forest configuration"""
-    n_estimators: int = 1000
-    bootstrap: bool = True
-    max_features: str = 'sqrt'
-    n_jobs: int = -1
-
-# NOTE: come back to this later
-@dataclass
 class InferenceConfig:
     """Inference configuration"""
+    # num_samples_test: int = 120000
     classification_threshold: float = 0.5
-    batch_size: int = 5000
+    batch_size: int = 4048
     max_drift_rate: float = 10.0  # Hz/s
+    # overlap search
 
 class Config:
     """Main configuration class"""
     def __init__(self):
-        self.model = ModelConfig()
+        self.beta_vae = BetaVAEConfig()
+        self.rf = RandomForestConfig()
         self.data = DataConfig()
         self.training = TrainingConfig()
-        self.rf = RandomForestConfig()
         self.inference = InferenceConfig()
         
         # Paths
@@ -141,19 +141,25 @@ class Config:
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {
-            'model': {
-                'latent_dim': self.model.latent_dim,
-                'dense_layer_size': self.model.dense_layer_size,
-                'kernel_size': self.model.kernel_size,
-                'alpha': self.model.alpha,
-                'beta': self.model.beta,
-                'gamma': self.model.gamma,
+            'beta_vae': {
+                'latent_dim': self.beta_vae.latent_dim,
+                'dense_layer_size': self.beta_vae.dense_layer_size,
+                'kernel_size': self.beta_vae.kernel_size,
+                'beta': self.beta_vae.beta,
+                'alpha': self.beta_vae.alpha,
+            },
+            'rf': {
+                'n_estimators': self.rf.n_estimators,
+                'bootstrap': self.rf.bootstrap,
+                'max_features': self.rf.max_features,
+                'n_jobs': self.rf.n_jobs,
+                'seed': self.rf.seed
             },
             'data': {
-                'width_bin': self.data.width_bin,
-                'time_bins': self.data.time_bins,
-                'downsample_factor': self.data.downsample_factor,
                 'num_observations': self.data.num_observations,
+                'width_bin': self.data.width_bin,
+                'downsample_factor': self.data.downsample_factor,
+                'time_bins': self.data.time_bins,
                 'freq_resolution': self.data.freq_resolution,
                 'time_resolution': self.data.time_resolution,
                 'num_target_backgrounds': self.data.num_target_backgrounds,
@@ -168,8 +174,7 @@ class Config:
                 'train_physical_batch_size': self.training.train_physical_batch_size,
                 'train_logical_batch_size': self.training.train_logical_batch_size,
                 'validation_batch_size': self.training.validation_batch_size,
-                'num_samples_train': self.training.num_samples_train,
-                'num_samples_test': self.training.num_samples_test,
+                'num_samples_beta_vae': self.training.num_samples_beta_vae,
                 'num_samples_rf': self.training.num_samples_rf,
                 'train_val_split': self.training.train_val_split,
                 'signal_injection_chunk_size': self.training.signal_injection_chunk_size,
@@ -188,12 +193,6 @@ class Config:
                 'step_hard_rounds': self.training.step_hard_rounds,
                 'max_retries': self.training.max_retries,
                 'retry_delay': self.training.retry_delay
-            },
-            'rf': {
-                'n_estimators': self.rf.n_estimators,
-                'bootstrap': self.rf.bootstrap,
-                'max_features': self.rf.max_features,
-                'n_jobs': self.rf.n_jobs
             },
             'inference': {
                 'classification_threshold': self.inference.classification_threshold,

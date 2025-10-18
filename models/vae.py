@@ -28,7 +28,7 @@ class BetaVAE(keras.Model):
     Includes robust tensor handling for distributed training
     """
     
-    def __init__(self, encoder, decoder, alpha=10, beta=1.5, gamma=0, **kwargs):
+    def __init__(self, encoder, decoder, alpha=10, beta=1.5, **kwargs):
         super(BetaVAE, self).__init__(**kwargs)
         self.encoder = encoder
         self.decoder = decoder
@@ -36,7 +36,6 @@ class BetaVAE(keras.Model):
         # Hyperparameters
         self.alpha = alpha  
         self.beta = beta    
-        self.gamma = gamma  
         
         # Loss trackers
         self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
@@ -534,22 +533,21 @@ def create_vae_model(config):
     logger.info("Creating VAE model...")
     
     encoder = build_encoder(
-        latent_dim=config.model.latent_dim,
-        dense_size=config.model.dense_layer_size,
-        kernel_size=config.model.kernel_size
+        latent_dim=config.beta_vae.latent_dim,
+        dense_size=config.beta_vae.dense_layer_size,
+        kernel_size=config.beta_vae.kernel_size
     )
     
     decoder = build_decoder(
-        latent_dim=config.model.latent_dim,
-        dense_size=config.model.dense_layer_size,
-        kernel_size=config.model.kernel_size
+        latent_dim=config.beta_vae.latent_dim,
+        dense_size=config.beta_vae.dense_layer_size,
+        kernel_size=config.beta_vae.kernel_size
     )
     
     vae = BetaVAE(
         encoder, decoder,
-        alpha=config.model.alpha,
-        beta=config.model.beta,
-        gamma=config.model.gamma
+        alpha=config.beta_vae.alpha,
+        beta=config.beta_vae.beta,
     )
     
     vae.compile(
@@ -558,8 +556,8 @@ def create_vae_model(config):
         )
     )
     
-    logger.info(f"Created VAE model: latent_dim={config.model.latent_dim}, "
-               f"beta={config.model.beta}, alpha={config.model.alpha}")
+    logger.info(f"Created VAE model: latent_dim={config.beta_vae.latent_dim}, "
+               f"beta={config.beta_vae.beta}, alpha={config.beta_vae.alpha}")
     logger.info(f"{encoder.summary()}")
     logger.info(f"{decoder.summary()}")
     

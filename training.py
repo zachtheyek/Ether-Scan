@@ -419,11 +419,11 @@ class TrainingPipeline:
         """Create necessary directories"""
         logger.info("Setting up directories")
 
-        checkpoints_dir = os.path.join(self.config.model_path, 'checkpoints')
-        archive_directory(checkpoints_dir, target_dirs=None, round_num=start_round)
+        model_checkpoints_dir = os.path.join(self.config.model_path, 'checkpoints')
+        archive_directory(model_checkpoints_dir , target_dirs=None, round_num=start_round)
         
-        plots_dir = os.path.join(self.config.output_path, 'plots')
-        archive_directory(plots_dir, target_dirs=None, round_num=start_round)
+        plot_checkpoints_dir = os.path.join(self.config.output_path, 'plots', 'checkpoints')
+        archive_directory(plot_checkpoints_dir, target_dirs=None, round_num=start_round)
         
         logger.info(f"Setup directories complete")
 
@@ -503,14 +503,14 @@ class TrainingPipeline:
         logical_batch = self.config.training.train_logical_batch_size
         accumulation_steps = logical_batch // physical_batch
         val_batch_size = self.config.training.validation_batch_size
-        n_samples = self.config.training.num_samples_train
+        n_samples = self.config.training.num_samples_beta_vae
         train_val_split = self.config.training.train_val_split
         
         logger.info(f"Gradient accumulation: {physical_batch} physical, {logical_batch} logical, "
                    f"{accumulation_steps} accumulation steps")
         
         # Generate training data 
-        train_data = self.data_generator.generate_training_batch(n_samples * 3, snr_base, snr_range)
+        train_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
         
         # Split and trim
         n_train = int(n_samples * 3 * train_val_split)
@@ -633,6 +633,12 @@ class TrainingPipeline:
         
         # Save checkpoint
         self.save_models(
+            tag=f"round_{round_idx+1:02d}",
+            dir="checkpoints"
+        )
+
+        # Plot progress
+        self.plot_beta_vae_training_progress(
             tag=f"round_{round_idx+1:02d}",
             dir="checkpoints"
         )
@@ -834,26 +840,23 @@ class TrainingPipeline:
                 snr_range=snr_range
             )
             
-            # Plot progress every round
-            self.plot_training_progress(
-                save_path=os.path.join(
-                    self.config.output_path,
-                    'plots',
-                    f'training_progress_round_{round_idx+1:02d}.png'
-                )
-            )
-            
-    # NOTE: come back to this later
     def train_random_forest(self):
         """Train Random Forest"""
         logger.info("Training Random Forest classifier...")
+
+        # Initialize RF model 
+        if self.rf_model is None:
+            self.rf_model = RandomForestModel(self.config)
+
+        elif self.rf_model.is_trained:
+            logger.info("Random Forest classifier already trained. Exiting training loop.")
+            return
 
         # Load encoder weights if untrained 
         logger.info("Checking if encoder weights appear trained")
 
         try:
-            encoder = self.vae.encoder 
-            if not check_encoder_trained(encoder, threshold=0.2):
+            if not check_encoder_trained(self.vae.encoder, threshold=0.2):
                 try:
                     logger.info(f"Loading pre-trained encoder weights with tag 'final_v1'")
                     self.load_models(tag="final_v1")
@@ -872,69 +875,76 @@ class TrainingPipeline:
         except Exception as e: 
             logger.warning(f"Could not verify encoder weights status: {e}")
             logger.warning(f"Proceeding with current encoder weights")
-        
-        # NOTE: max_chunk_size replaced with prepare_latents_chunk_size
-        # Use config values
-        n_samples = self.config.training.num_samples_rf // 2  # Split between true/false
-        max_chunk_size = self.config.training.max_chunk_size
-        
-        logger.info(f"Generating {n_samples*2} samples for Random Forest...")
-        logger.info(f"Using chunk size: {max_chunk_size}")
-        
+
         try:
-            # NOTE: are we using curiculum learning for RF? 
-            # Generate RF data with config-specified batching
-            rf_data = self.data_generator.generate_training_batch(n_samples * 2)
+            n_samples = self.config.training.num_samples_rf
+            snr_base = self.config.training.snr_base
+            snr_range = self.config.training.initial_snr_range
+            max_chunk_size = self.config.training.prepare_latents_chunk_size
+            n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
+            batch_size = self.config.training.validation_batch_size
+
+            # Generate training data
+            logger.info(f"Preparing training set with SNR: {snr_base}-{snr_base+snr_range}")
+
+            rf_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
             
-            # Separate true and false
             true_data = rf_data['true']
             false_data = rf_data['false']
-            
-            # Use config values for processing chunks
-            chunk_size = min(max_chunk_size, 1000)  # Don't exceed memory limits
-            batch_size = min(self.config.training.train_logical_batch_size, 100)  # Small batches for encoder
+
+            # Prepare latent vectors
+            logger.info(f"Generating {n_samples} latents in {n_chunks} chunks of max {max_chunk_size}")
             
             true_latents = []
             false_latents = []
             
-            # Process true data in chunks
-            logger.info("Processing true data through encoder...")
-            for i in range(0, true_data.shape[0], chunk_size):
-                chunk = true_data[i:i+chunk_size]
-                chunk_reshaped = chunk.reshape(-1, 16, 
-                                             self.config.data.width_bin // self.config.data.downsample_factor, 1)
-                _, _, latents = self.vae.encoder.predict(chunk_reshaped, batch_size=batch_size)
-                true_latents.append(latents)
-                del chunk, chunk_reshaped
+            for chunk_idx in range(n_chunks):
+                chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
+                if chunk_size <= 0:
+                    break
+
+                start_idx = chunk_idx * max_chunk_size
+                end_idx = start_idx + chunk_size
+
+                true_chunk = true_data[start_idx:end_idx]
+                false_chunk = false_data[start_idx:end_idx]
+
+                # Reshape inputs for encoder -- expects (batch_size * 6, 16, 512, 1)
+                true_chunk_reshaped = true_chunk.reshape(-1, 16,
+                                                         self.config.data.width_bin // self.config.data.downsample_factor, 1)
+                false_chunk_reshaped = false_chunk.reshape(-1, 16,
+                                                           self.config.data.width_bin // self.config.data.downsample_factor, 1)
+
+                # Pass through encoder to get latents
+                logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} latents")
+
+                _, _, true_latent_chunk = self.vae.encoder.predict(true_chunk_reshaped, batch_size=batch_size)
+                _, _, false_latent_chunk = self.vae.encoder.predict(false_chunk_reshaped, batch_size=batch_size)
+
+                true_latents.append(true_latent_chunk)
+                false_latents.append(false_latent_chunk)
+
+                # Clean up
+                del true_chunk, false_chunk, true_chunk_reshaped, false_chunk_reshaped
+                del true_latent_chunk, false_latent_chunk
                 gc.collect()
             
-            # Process false data in chunks
-            logger.info("Processing false data through encoder...")
-            for i in range(0, false_data.shape[0], chunk_size):
-                chunk = false_data[i:i+chunk_size]
-                chunk_reshaped = chunk.reshape(-1, 16, 
-                                             self.config.data.width_bin // self.config.data.downsample_factor, 1)
-                _, _, latents = self.vae.encoder.predict(chunk_reshaped, batch_size=batch_size)
-                false_latents.append(latents)
-                del chunk, chunk_reshaped
-                gc.collect()
-            
-            # Combine latents
-            all_true_latents = np.concatenate(true_latents, axis=0)
-            all_false_latents = np.concatenate(false_latents, axis=0)
+            # Collect latents into contiguous array
+            true_latents_contiguous = np.concatenate(true_latents, axis=0)
+            false_latents_contiguous = np.concatenate(false_latents, axis=0)
             
             # Clear intermediate data
             del rf_data, true_data, false_data, true_latents, false_latents
             gc.collect()
-            
-            # Train Random Forest (uses config values internally)
-            self.rf_model = RandomForestModel(self.config)
-            self.rf_model.train(all_true_latents, all_false_latents)
+
+            # TODO: no train-val split for RF training? 
+            # Train Random Forest classifier
+            self.rf_model.train(true_latents_contiguous, false_latents_contiguous)
             
             logger.info("Random Forest training complete")
             
             # Clean up
-            del all_true_latents, all_false_latents
+            del true_latents_contiguous, false_latents_contiguous            
             gc.collect()
             
         except Exception as e:
@@ -942,7 +952,7 @@ class TrainingPipeline:
             raise
     
     # TODO: add function to plot RF training curves
-    def plot_training_progress(self, save_path: Optional[str] = None):
+    def plot_beta_vae_training_progress(self, tag: Optional[str] = None, dir: Optional[str] = None):
         """Plot beta-VAE training history"""
         fig = plt.figure(figsize=(25, 12))
         gs = GridSpec(2, 4, height_ratios=[1, 1], hspace=0.3, wspace=0.3)
@@ -1004,15 +1014,17 @@ class TrainingPipeline:
                   shadow=True)
         
         plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
+        # Save plot
+        if tag is None:
+            tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if dir is not None: 
+            save_path = os.path.join(self.config.output_path, 'plots', dir, f'beta_vae_training_progress_{tag}.png')
         else:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            plt.savefig(
-                os.path.join(self.config.output_path, 'plots', f'training_progress_{timestamp}.png'),
-                dpi=300, bbox_inches='tight'
-            )
+            save_path = os.path.join(self.config.output_path, 'plots', f'beta_vae_training_progress_{tag}.png')
+        
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         
         plt.close()
     
@@ -1106,11 +1118,10 @@ class TrainingPipeline:
             if os.path.exists(rf_path):
                 # Initialize RF model if it doesn't exist yet
                 if self.rf_model is None:
-                    from models.random_forest import RandomForestModel
                     self.rf_model = RandomForestModel(self.config)
                 
                 self.rf_model.load(rf_path)
-                logger.info("Random Forest laoded successfully")
+                logger.info("Random Forest loaded successfully")
             else:
                 logger.info(f"Random Forest not found at {rf_path} - this is normal if RF hasn't been trained yet")
             
@@ -1152,7 +1163,7 @@ def train_full_pipeline(config, background_data: np.ndarray,
     pipeline.save_models(tag="final_v1")
     
     # Final plot
-    pipeline.plot_training_progress(save_path=os.path.join(config.output_path, 'plots', 'training_progress_final_v1.png'))
+    pipeline.plot_beta_vae_training_progress(tag="final_v1")
     
     logger.info("Training complete!")
     

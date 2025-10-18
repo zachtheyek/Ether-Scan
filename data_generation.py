@@ -116,7 +116,7 @@ def check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
     
 def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
                  width_bin: int, freq_resolution: float, time_resolution: float, 
-                 inject: bool = True, intensity_factor: Optional[float] = None) -> np.ndarray:
+                 inject: bool = True, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
     Create false signal class
     If specified, RFI is injected into all 6 observations. Otherwise, no RFI is injected
@@ -157,7 +157,7 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
 
 def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
                        width_bin: int, freq_resolution: float, time_resolution: float, 
-                       inject: Optional[bool] = None, intensity_factor: Optional[float] = None) -> np.ndarray:
+                       inject: Optional[bool] = None, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
     Create true-single signal class
     ETI signal is injected into the ON observations only
@@ -195,7 +195,7 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
 
 def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
                        width_bin: int, freq_resolution: float, time_resolution: float, 
-                       inject: Optional[bool] = None, intensity_factor: float = 1) -> np.ndarray:
+                       inject: Optional[bool] = None, dynamic_range: float = 1) -> np.ndarray:
     """
     Create true-double signal class 
     Non-intersecting ETI & RFI signals are injected into ON-only & ON-OFF, respectively
@@ -224,7 +224,7 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
         # Inject RFI
         cadence_1, slope_1, intercept_1 = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
         # Inject ETI
-        cadence_2, slope_2, intercept_2 = new_cadence(cadence_1, snr*intensity_factor, width_bin, freq_resolution, time_resolution)
+        cadence_2, slope_2, intercept_2 = new_cadence(cadence_1, snr*dynamic_range, width_bin, freq_resolution, time_resolution)
 
         if slope_1 != slope_2 and check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
             break
@@ -243,7 +243,7 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
 def batch_create_cadence(function, samples: int, plate: np.ndarray, 
                         snr_base: int = 10, snr_range: float = 40, width_bin: int = 512, 
                         freq_resolution: float = 2.7939677238464355, time_resolution: float = 18.25361108,
-                        inject: Optional[bool] = None, intensity_factor: Optional[float] = None) -> np.ndarray:
+                        inject: Optional[bool] = None, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
     Batch wrapper for creating multiple cadences by calling generating function n times
     """
@@ -254,7 +254,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
         # Each function call generates 1 complete cadence (6 observations)
         cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin, 
                                        freq_resolution=freq_resolution, time_resolution=time_resolution, 
-                                       inject=inject, intensity_factor=intensity_factor)
+                                       inject=inject, dynamic_range=dynamic_range)
     
     return cadence
 
@@ -297,6 +297,16 @@ class DataGenerator:
     def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
         Generate training batch using chunking
+
+        main: collapsed cadences 
+          - total: n_samples
+          - split: 1/4 balanced between false-no-signal, false-with-rfi, true-single, true-double
+        false: non-collapsed false cadences 
+          - total: n_samples 
+          - split: 1/2 balanced between false-no-signal, false-with-rfi
+        true: non-collapsed true cadences 
+          - total: n_samples 
+          - split: 1/2 balanced between true-single, true-double
         """
         max_chunk_size = self.config.training.signal_injection_chunk_size
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
@@ -304,8 +314,8 @@ class DataGenerator:
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
         
         all_main = []
-        all_true = []
         all_false = []
+        all_true = []
         
         for chunk_idx in range(n_chunks):
             chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
@@ -319,7 +329,7 @@ class DataGenerator:
             half = max(1, chunk_size // 2)
             
             # Pure background 
-            false_no_signal = batch_create_cadence(
+            quarter_false_no_signal = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
@@ -330,7 +340,7 @@ class DataGenerator:
             )
             
             # RFI only
-            false_with_rfi = batch_create_cadence(
+            quarter_false_with_rfi = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
@@ -341,7 +351,7 @@ class DataGenerator:
             )
             
             # ETI only
-            true_single = batch_create_cadence(
+            quarter_true_single = batch_create_cadence(
                 create_true_single, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
@@ -351,32 +361,24 @@ class DataGenerator:
             )
             
             # ETI + RFI
-            true_double = batch_create_cadence(
+            quarter_true_double = batch_create_cadence(
                 create_true_double, quarter, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                intensity_factor=1
+                dynamic_range=1
             )
             
             # Concatenate for main training data (collapsed cadences)
             chunk_main = np.concatenate([
-                false_no_signal, false_with_rfi, true_single, true_double
+                quarter_false_no_signal, quarter_false_with_rfi, quarter_true_single, quarter_true_double
             ], axis=0)
             
-            # Generate separate true/false non-collapsed cadences for training set diversity (used to calculate clustering loss)
-            chunk_true = batch_create_cadence(
-                create_true_single, chunk_size, self.backgrounds,
-                snr_base=snr_base,
-                snr_range=snr_range,
-                width_bin=self.width_bin,
-                freq_resolution=self.freq_resolution,
-                time_resolution=self.time_resolution
-            )
-            
-            chunk_false_no_signal = batch_create_cadence(
+            # Generate separate true/false non-collapsed cadences for training set diversity 
+            # Used to calculate clustering loss & train RF
+            half_false_no_signal = batch_create_cadence(
                 create_false, half, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
@@ -386,7 +388,7 @@ class DataGenerator:
                 inject=False
             )
             
-            chunk_false_with_rfi = batch_create_cadence(
+            half_false_with_rfi = batch_create_cadence(
                 create_false, half, self.backgrounds,
                 snr_base=snr_base,
                 snr_range=snr_range,
@@ -396,19 +398,42 @@ class DataGenerator:
                 inject=True
             )
 
+            half_true_single = batch_create_cadence(
+                create_true_single, half, self.backgrounds,
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution
+            )
+            
+            half_true_double = batch_create_cadence(
+                create_true_double, half, self.backgrounds,
+                snr_base=snr_base,
+                snr_range=snr_range,
+                width_bin=self.width_bin,
+                freq_resolution=self.freq_resolution,
+                time_resolution=self.time_resolution,
+                dynamic_range=1
+            )
+
             chunk_false = np.concatenate([
-                chunk_false_no_signal, chunk_false_with_rfi
+                half_false_no_signal, half_false_with_rfi
+            ], axis=0)
+
+            chunk_true = np.concatenate([
+                half_true_single, half_true_double
             ], axis=0)
 
             # Store chunks
             all_main.append(chunk_main.astype(np.float32))
-            all_true.append(chunk_true.astype(np.float32))
             all_false.append(chunk_false.astype(np.float32))
+            all_true.append(chunk_true.astype(np.float32))
             
             # Clean up chunk data immediately
-            del false_no_signal, false_with_rfi, true_single, true_double
-            del chunk_false_no_signal, chunk_false_with_rfi
-            del chunk_main, chunk_true, chunk_false
+            del quarter_false_no_signal, quarter_false_with_rfi, quarter_true_single, quarter_true_double
+            del half_false_no_signal, half_false_with_rfi, half_true_single, half_true_double
+            del chunk_main, chunk_false, chunk_true
             gc.collect()
             
             logger.info(f"Chunk {chunk_idx + 1} complete, memory cleared")
@@ -417,12 +442,12 @@ class DataGenerator:
         logger.info("Combining all chunks...")
         result = {
             'concatenated': np.concatenate(all_main, axis=0),
-            'true': np.concatenate(all_true, axis=0),
-            'false': np.concatenate(all_false, axis=0)
+            'false': np.concatenate(all_false, axis=0),
+            'true': np.concatenate(all_true, axis=0)
         }
 
         # Sanity check: verify post-injection data normalization
-        for key in ['concatenated', 'true', 'false']:
+        for key in ['concatenated', 'false', 'true']:
             min_val = np.min(result[key])
             max_val = np.max(result[key])
             mean_val = np.mean(result[key])
@@ -443,7 +468,7 @@ class DataGenerator:
                 logger.info(f"Post-injection {key} data properly normalized")
         
         # Final cleanup
-        del all_main, all_true, all_false
+        del all_main, all_false, all_true
         gc.collect()
         
         return result

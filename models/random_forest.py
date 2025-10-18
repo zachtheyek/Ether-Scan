@@ -46,7 +46,7 @@ class RandomForestModel:
             bootstrap=config.rf.bootstrap,
             max_features=config.rf.max_features,
             n_jobs=config.rf.n_jobs,
-            random_state=42
+            random_state=config.rf.seed
         )
         self.is_trained = False
         
@@ -152,7 +152,7 @@ class RandomForestModel:
         return decisions, confidences
     
     def save(self, filepath: str):
-        """Save the trained model"""
+        """Save RF model weights"""
         if not self.is_trained:
             raise RuntimeError("Cannot save untrained model")
         
@@ -160,39 +160,39 @@ class RandomForestModel:
         logger.info(f"Saved Random Forest model to {filepath}")
     
     def load(self, filepath: str):
-        """Load a trained model"""
+        """Load RF model weights"""
         self.model = joblib.load(filepath)
         self.is_trained = True
         logger.info(f"Loaded Random Forest model from {filepath}")
 
-def train_random_forest(vae_encoder, training_data, config):
-    """
-    Train Random Forest classifier using VAE encoder
-    
-    Args:
-        vae_encoder: Trained VAE encoder model
-        training_data: Dict with 'true' and 'false' data arrays
-        config: Configuration object
-        
-    Returns:
-        Trained RandomForestModel
-    """
-    rf_model = RandomForestModel(config)
-    
-    # Extract latent representations
-    logger.info("Extracting latent representations...")
-    
-    true_latents = vae_encoder.predict(
-        training_data['true'], 
-        batch_size=config.training.train_logical_batch_size
-    )[2]  # Get z vectors
-    
-    false_latents = vae_encoder.predict(
-        training_data['false'],
-        batch_size=config.training.train_logical_batch_size
-    )[2]
-    
-    # Train Random Forest
-    rf_model.train(true_latents, false_latents)
-    
-    return rf_model
+# def train_random_forest(vae_encoder, training_data, config):
+#     """
+#     Train Random Forest classifier using VAE encoder
+#
+#     Args:
+#         vae_encoder: Trained VAE encoder model
+#         training_data: Dict with 'true' and 'false' data arrays
+#         config: Configuration object
+#
+#     Returns:
+#         Trained RandomForestModel
+#     """
+#     rf_model = RandomForestModel(config)
+#
+#     # Extract latent representations
+#     logger.info("Extracting latent representations...")
+#
+#     true_latents = vae_encoder.predict(
+#         training_data['true'], 
+#         batch_size=config.training.train_logical_batch_size
+#     )[2]  # Get z vectors
+#
+#     false_latents = vae_encoder.predict(
+#         training_data['false'],
+#         batch_size=config.training.train_logical_batch_size
+#     )[2]
+#
+#     # Train Random Forest
+#     rf_model.train(true_latents, false_latents)
+#
+#     return rf_model
