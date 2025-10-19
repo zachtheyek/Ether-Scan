@@ -61,9 +61,9 @@ class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
 
-    train_physical_batch_size: int = 32  # Micro batch size for memory efficiency
-    train_logical_batch_size: int = 32  # Actual batch size for convergence 
-    validation_batch_size: int = 1024
+    train_physical_batch_size: int = 64  # Micro batch size (for memory efficiency)
+    train_logical_batch_size: int = 1024  # Effective batch size (for convergence)
+    validation_batch_size: int = 4048
 
     num_samples_beta_vae: int = 120000
     num_samples_rf: int = 24000
