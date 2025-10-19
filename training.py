@@ -858,8 +858,8 @@ class TrainingPipeline:
         try:
             if not check_encoder_trained(self.vae.encoder, threshold=0.2):
                 try:
-                    logger.info(f"Loading pre-trained encoder weights with tag 'final_v1'")
-                    self.load_models(tag="final_v1")
+                    logger.info(f"Loading latest pre-trained encoder weights")
+                    self.load_models()
 
                 except Exception as e: 
                     logger.warning(f"Failed to load pre-trained encoder weights: {e}")
@@ -1130,8 +1130,8 @@ class TrainingPipeline:
             logger.error(f"Failed to load models: {e}")
             raise
 
-def train_full_pipeline(config, background_data: np.ndarray,
-                       strategy=None, tag=None, dir=None, start_round=1) -> TrainingPipeline:
+def train_full_pipeline(config, background_data: np.ndarray, strategy=None, 
+                        tag=None, dir=None, start_round=1, final_tag=None) -> TrainingPipeline:
     """
     Train complete SETI ML pipeline
     
@@ -1158,10 +1158,10 @@ def train_full_pipeline(config, background_data: np.ndarray,
     pipeline.train_random_forest()
     
     # Save final models
-    pipeline.save_models(tag="final_v1")
+    pipeline.save_models(tag=final_tag)
     
     # Final plot
-    pipeline.plot_beta_vae_training_progress(tag="final_v1")
+    pipeline.plot_beta_vae_training_progress(tag=final_tag)
     
     logger.info("Training complete!")
     

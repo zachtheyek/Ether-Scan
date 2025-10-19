@@ -79,10 +79,6 @@ class RandomForestModel:
     def train(self, true_latents: np.ndarray, false_latents: np.ndarray):
         """
         Train the Random Forest model
-        
-        Args:
-            true_latents: Latent vectors from true signals
-            false_latents: Latent vectors from false signals
         """
         features, labels = self.prepare_training_data(true_latents, false_latents)
         
@@ -90,61 +86,44 @@ class RandomForestModel:
         self.model.fit(features, labels)
         self.is_trained = True
         
-    # NOTE: pick back up from commented sections. focus on creating visualizations for training performance (evaluation.py?)
-    #     # Log feature importances
-    #     importances = self.model.feature_importances_
-    #     logger.info(f"Feature importance stats - Mean: {np.mean(importances):.4f}, "
-    #                f"Std: {np.std(importances):.4f}")
-    #
-    # def predict_proba(self, latent_vectors: np.ndarray) -> np.ndarray:
-    #     """
-    #     Predict probabilities for cadences
-    #
-    #     Args:
-    #         latent_vectors: Latent vectors from encoder
-    #
-    #     Returns:
-    #         Probability array of shape (n_samples, 2)
-    #     """
-    #     if not self.is_trained:
-    #         raise RuntimeError("Model must be trained before prediction")
-    #
-    #     features = prepare_latent_features(latent_vectors)
-    #     return self.model.predict_proba(features)
-    #
-    # def predict(self, latent_vectors: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-    #     """
-    #     Predict classes for cadences
-    #
-    #     Args:
-    #         latent_vectors: Latent vectors from encoder
-    #         threshold: Classification threshold
-    #
-    #     Returns:
-    #         Binary predictions
-    #     """
-    #     probas = self.predict_proba(latent_vectors)
-    #     return (probas[:, 1] > threshold).astype(int)
-    #
-    # def evaluate_cadence_pattern(self, probas: np.ndarray, 
-    #                             threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
-    #     """
-    #     Evaluate cadence patterns for strong signal detection
-    #
-    #     Args:
-    #         probas: Probability array
-    #         threshold: Classification threshold
-    #
-    #     Returns:
-    #         Binary decisions and confidence scores
-    #     """
-    #     # Check if probability exceeds threshold
-    #     decisions = probas[:, 1] > threshold
-    #
-    #     # Confidence score is the probability of the predicted class
-    #     confidences = np.where(decisions, probas[:, 1], probas[:, 0])
-    #
-    #     return decisions, confidences
+        # TODO: rethink RF visualizations *return feature importance & create plots in training.py? or create directly from here? in evaluation.py)?
+        # Log feature importances
+        importances = self.model.feature_importances_
+        logger.info(f"Feature importance stats - Mean: {np.mean(importances):.4f}, "
+                   f"Std: {np.std(importances):.4f}")
+
+    def predict_proba(self, latent_vectors: np.ndarray) -> np.ndarray:
+        """
+        Predict binary probabilities given some input latent cadences
+        """
+        if not self.is_trained:
+            logger.warning("Making predictions with untrained model")
+
+        features = prepare_latent_features(latent_vectors)
+        return self.model.predict_proba(features)
+
+    def predict(self, latent_vectors: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        """
+        Predict binary classes given some input latent cadences
+        Returns 1 if probability of true signal > threshold, else 0
+        """
+        probas = self.predict_proba(latent_vectors)
+        return (probas[:, 1] > threshold).astype(int)
+
+    def predict_verbose(self, latent_vectors: np.ndarray, 
+                        threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Predict binary classes given some input latent cadences
+        Returns 1 if probability of true signal > threshold, else 0
+        Also outputs confidence score (predicted probability of output class)
+        """
+        probas = self.predict_proba(latent_vectors)
+        predictions = (probas[:, 1] > threshold).astype(int)
+
+        # Confidence score = the probability of the predicted class
+        confidences = np.where(predictions, probas[:, 1], probas[:, 0])
+
+        return predictions, confidences
     
     def save(self, filepath: str):
         """Save RF model weights"""

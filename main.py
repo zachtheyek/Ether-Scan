@@ -19,7 +19,7 @@ from data_generation import DataGenerator
 from training import train_full_pipeline, get_latest_tag
 from inference import run_inference
 
-# FIX: not printing datetime or writing to train_pipeline.log
+# BUG: not printing datetime or writing to train_pipeline.log
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,  # Only print INFO, WARNING, ERROR, CRITICAL (ignore DEBUG)
@@ -77,7 +77,7 @@ def setup_gpu_config():
 
 def load_background_data(config: Config) -> np.ndarray:
     """
-    Load, downsample, and normalize background data
+    Load & downsample background plates for pipeline
     """
     logger.info(f"Loading background data from {config.data_path}")
     
@@ -196,7 +196,7 @@ def train_command(args):
     # Load configuration
     config = Config()
     
-    # Override config with command line args
+    # Override config values with CLI args
     if args.rounds:
         config.training.num_training_rounds = args.rounds
     if args.epochs:
@@ -216,11 +216,15 @@ def train_command(args):
         dir = args.load_dir
     else: 
         dir = None
+    if args.save_tag:
+        final_tag = args.save_tag
+    else:
+        final_tag = None
     
     logger.info(f"Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
     logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
-    logger.info(f"  Batch size: {config.training.train_logical_batch_size}")
+    logger.info(f"  Effective batch size: {config.training.train_logical_batch_size}")
     logger.info(f"  Data path: {config.data_path}")
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
@@ -255,7 +259,8 @@ def train_command(args):
                 strategy=strategy,
                 tag=tag,
                 dir=dir,
-                start_round=start_round
+                start_round=start_round, 
+                final_tag=final_tag
             )
 
             # If we get here, training succeeded
@@ -306,7 +311,7 @@ def train_command(args):
                 raise Exception(f"Training attempts exceeded maximum retries ({max_retries}). Final error: {e}")
     
     # Save configuration
-    config_path = os.path.join(config.model_path, 'config_final_v1.json')
+    config_path = os.path.join(config.model_path, f'config_{final_tag}.json')
     with open(config_path, 'w') as f:
         json.dump(config.to_dict(), f, indent=2)
     logger.info(f"Configuration saved to {config_path}")
@@ -316,130 +321,130 @@ def train_command(args):
     logger.info("="*60)
 
 # NOTE: come back to this later
-def inference_command(args):
-    """Execute inference command"""
-    logger.info("Starting inference pipeline...")
-    
-    # Setup GPU
-    setup_gpu_config()
-    
-    # Load configuration
-    config = Config()
-    
-    # Load saved config if provided
-    if args.config:
-        with open(args.config, 'r') as f:
-            saved_config = json.load(f)
-            # Update config with saved values
-            for section_key, section_value in saved_config.items():
-                if hasattr(config, section_key) and isinstance(section_value, dict):
-                    for key, value in section_value.items():
-                        if hasattr(getattr(config, section_key), key):
-                            setattr(getattr(config, section_key), key, value)
-    
-    # Prepare observation files
-    observation_files = []
-    
-    # Check for prepared test cadences
-    test_dir = os.path.join(config.data_path, 'testing', 'prepared_cadences')
-    if os.path.exists(test_dir):
-        # Load prepared cadences
-        for cadence_idx in range(args.n_bands):
-            cadence_files = []
-            for obs_idx in range(6):
-                obs_file = os.path.join(test_dir, f'cadence_{cadence_idx:04d}_obs_{obs_idx}.npy')
-                if os.path.exists(obs_file):
-                    cadence_files.append(obs_file)
-            
-            if len(cadence_files) == 6:
-                observation_files.append(cadence_files)
-    
-    if not observation_files:
-        logger.error("No observation files found. Please prepare test data first.")
-        sys.exit(1)
-    
-    logger.info(f"Found {len(observation_files)} cadences for inference")
-    
-    # Run inference
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
-    
-    results = run_inference(
-        config,
-        observation_files,
-        args.vae_model,
-        args.rf_model,
-        output_path
-    )
-    
-    logger.info(f"Inference completed. Results saved to {output_path}")
-    
-    # Print summary
-    if results is not None and not results.empty:
-        n_total = len(results)
-        n_high_conf = len(results[results['confidence'] > 0.9])
-        logger.info(f"Total detections: {n_total}")
-        logger.info(f"High confidence (>90%): {n_high_conf}")
+# def inference_command(args):
+#     """Execute inference command"""
+#     logger.info("Starting inference pipeline...")
+#
+#     # Setup GPU
+#     setup_gpu_config()
+#
+#     # Load configuration
+#     config = Config()
+#
+#     # Load saved config if provided
+#     if args.config:
+#         with open(args.config, 'r') as f:
+#             saved_config = json.load(f)
+#             # Update config with saved values
+#             for section_key, section_value in saved_config.items():
+#                 if hasattr(config, section_key) and isinstance(section_value, dict):
+#                     for key, value in section_value.items():
+#                         if hasattr(getattr(config, section_key), key):
+#                             setattr(getattr(config, section_key), key, value)
+#
+#     # Prepare observation files
+#     observation_files = []
+#
+#     # Check for prepared test cadences
+#     test_dir = os.path.join(config.data_path, 'testing', 'prepared_cadences')
+#     if os.path.exists(test_dir):
+#         # Load prepared cadences
+#         for cadence_idx in range(args.n_bands):
+#             cadence_files = []
+#             for obs_idx in range(6):
+#                 obs_file = os.path.join(test_dir, f'cadence_{cadence_idx:04d}_obs_{obs_idx}.npy')
+#                 if os.path.exists(obs_file):
+#                     cadence_files.append(obs_file)
+#
+#             if len(cadence_files) == 6:
+#                 observation_files.append(cadence_files)
+#
+#     if not observation_files:
+#         logger.error("No observation files found. Please prepare test data first.")
+#         sys.exit(1)
+#
+#     logger.info(f"Found {len(observation_files)} cadences for inference")
+#
+#     # Run inference
+#     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+#     output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
+#
+#     results = run_inference(
+#         config,
+#         observation_files,
+#         args.vae_model,
+#         args.rf_model,
+#         output_path
+#     )
+#
+#     logger.info(f"Inference completed. Results saved to {output_path}")
+#
+#     # Print summary
+#     if results is not None and not results.empty:
+#         n_total = len(results)
+#         n_high_conf = len(results[results['confidence'] > 0.9])
+#         logger.info(f"Total detections: {n_total}")
+#         logger.info(f"High confidence (>90%): {n_high_conf}")
 
 # NOTE: come back to this later
-def evaluate_command(args):
-    """Execute evaluation command"""
-    logger.info("Starting model evaluation...")
-    
-    # Setup GPU
-    setup_gpu_config()
-    
-    # Load configuration
-    config = Config()
-    
-    # Import necessary modules
-    import tensorflow as tf
-    from models.random_forest import RandomForestModel
-    
-    # Load models
-    logger.info(f"Loading VAE encoder from {args.vae_model}")
-    vae_encoder = tf.keras.models.load_model(args.vae_model)
-    
-    logger.info(f"Loading Random Forest from {args.rf_model}")
-    rf_model = RandomForestModel(config)
-    rf_model.load(args.rf_model)
-    
-    # Load or generate test data
-    if args.test_data:
-        logger.info(f"Loading test data from {args.test_data}")
-        test_data = np.load(args.test_data, allow_pickle=True).item()
-    else:
-        logger.info("Generating synthetic test data...")
-        # Load some background for generation
-        background_data = load_background_data(config)
-        generator = DataGenerator(config, background_data[:100])  # Use subset
-        test_data = generator.generate_test_set()
-    
-    # Evaluate
-    preprocessor = DataPreprocessor(config)
-    
-    # Prepare test data
-    test_true = preprocessor.prepare_batch(test_data['true'])
-    test_false = preprocessor.prepare_batch(test_data['false'])
-    
-    # Get predictions
-    _, _, true_latents = vae_encoder.predict(test_true, batch_size=64)
-    _, _, false_latents = vae_encoder.predict(test_false, batch_size=64)
-    
-    true_preds = rf_model.predict(true_latents)
-    false_preds = rf_model.predict(false_latents)
-    
-    # Calculate metrics
-    tpr = np.mean(true_preds == 1)
-    fpr = np.mean(false_preds == 1)
-    accuracy = np.mean(np.concatenate([true_preds == 1, false_preds == 0]))
-    
-    logger.info("="*60)
-    logger.info("Evaluation Results:")
-    logger.info(f"  True Positive Rate: {tpr:.3f}")
-    logger.info(f"  False Positive Rate: {fpr:.3f}")
-    logger.info(f"  Overall Accuracy: {accuracy:.3f}")
-    logger.info("="*60)
+# def evaluate_command(args):
+#     """Execute evaluation command"""
+#     logger.info("Starting model evaluation...")
+#
+#     # Setup GPU
+#     setup_gpu_config()
+#
+#     # Load configuration
+#     config = Config()
+#
+#     # Import necessary modules
+#     import tensorflow as tf
+#     from models.random_forest import RandomForestModel
+#
+#     # Load models
+#     logger.info(f"Loading VAE encoder from {args.vae_model}")
+#     vae_encoder = tf.keras.models.load_model(args.vae_model)
+#
+#     logger.info(f"Loading Random Forest from {args.rf_model}")
+#     rf_model = RandomForestModel(config)
+#     rf_model.load(args.rf_model)
+#
+#     # Load or generate test data
+#     if args.test_data:
+#         logger.info(f"Loading test data from {args.test_data}")
+#         test_data = np.load(args.test_data, allow_pickle=True).item()
+#     else:
+#         logger.info("Generating synthetic test data...")
+#         # Load some background for generation
+#         background_data = load_background_data(config)
+#         generator = DataGenerator(config, background_data[:100])  # Use subset
+#         test_data = generator.generate_test_set()
+#
+#     # Evaluate
+#     preprocessor = DataPreprocessor(config)
+#
+#     # Prepare test data
+#     test_true = preprocessor.prepare_batch(test_data['true'])
+#     test_false = preprocessor.prepare_batch(test_data['false'])
+#
+#     # Get predictions
+#     _, _, true_latents = vae_encoder.predict(test_true, batch_size=64)
+#     _, _, false_latents = vae_encoder.predict(test_false, batch_size=64)
+#
+#     true_preds = rf_model.predict(true_latents)
+#     false_preds = rf_model.predict(false_latents)
+#
+#     # Calculate metrics
+#     tpr = np.mean(true_preds == 1)
+#     fpr = np.mean(false_preds == 1)
+#     accuracy = np.mean(np.concatenate([true_preds == 1, false_preds == 0]))
+#
+#     logger.info("="*60)
+#     logger.info("Evaluation Results:")
+#     logger.info(f"  True Positive Rate: {tpr:.3f}")
+#     logger.info(f"  False Positive Rate: {fpr:.3f}")
+#     logger.info(f"  Overall Accuracy: {accuracy:.3f}")
+#     logger.info("="*60)
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
 # NOTE: come back to this later
@@ -455,34 +460,34 @@ def main():
     # Training command
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('--rounds', type=int, default=None,
-                            help='Number of training rounds (default: 20)')
+                              help='Number of training rounds (default: 20)')
     train_parser.add_argument('--epochs', type=int, default=None,
-                            help='Epochs per training round (default: 100)')
+                              help='Epochs per training round (default: 100)')
     train_parser.add_argument('--batch-size', type=int, default=None,
-                            help='Training batch size (default: 32)')
+                              help='Effective batch size (note: if >32, pipeline uses gradient accumulation)')
     train_parser.add_argument('--load-tag', type=str, default=None,
-                              help='Model tag to resume training from (accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS)')
+                              help='Model tag to resume training from. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS (loads latest tag if none provided)')
     train_parser.add_argument('--load-dir', type=str, default=None,
-                            help='Directory to load model tag from (loads latest tag if none provided)')
+                              help='Directory to load model tag from (loads from output path if none provided)')
+    train_parser.add_argument('--save-tag', type=str, default=None,
+                              help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
     # train_parser.add_argument('--start-round', type=int, default=None,
                             # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
-    # train_parser.add_argument('--save-tag', type=str, default=None,
-    #                         help='Model tag to save final model (recommended: final_vX)')
 
-    # Inference command
-    inf_parser = subparsers.add_parser('inference', help='Run inference on data')
-    inf_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
-    inf_parser.add_argument('rf_model', type=str, help='Path to Random Forest model')
-    inf_parser.add_argument('--config', type=str, help='Path to saved config file')
-    inf_parser.add_argument('--n-bands', type=int, default=16,
-                          help='Number of frequency bands to process')
-    inf_parser.add_argument('--output', type=str, help='Output file path')
-    
-    # Evaluation command
-    eval_parser = subparsers.add_parser('evaluate', help='Evaluate trained models')
-    eval_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
-    eval_parser.add_argument('rf_model', type=str, help='Path to Random Forest model')
-    eval_parser.add_argument('--test-data', type=str, help='Path to test data')
+    # # Inference command
+    # inf_parser = subparsers.add_parser('inference', help='Run inference on data')
+    # inf_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
+    # inf_parser.add_argument('rf_model', type=str, help='Path to Random Forest model')
+    # inf_parser.add_argument('--config', type=str, help='Path to saved config file')
+    # inf_parser.add_argument('--n-bands', type=int, default=16,
+    #                       help='Number of frequency bands to process')
+    # inf_parser.add_argument('--output', type=str, help='Output file path')
+    #
+    # # Evaluation command
+    # eval_parser = subparsers.add_parser('evaluate', help='Evaluate trained models')
+    # eval_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
+    # eval_parser.add_argument('rf_model', type=str, help='Path to Random Forest model')
+    # eval_parser.add_argument('--test-data', type=str, help='Path to test data')
     
     # Parse arguments
     args = parser.parse_args()
@@ -490,10 +495,10 @@ def main():
     # Execute command
     if args.command == 'train':
         train_command(args)
-    elif args.command == 'inference':
-        inference_command(args)
-    elif args.command == 'evaluate':
-        evaluate_command(args)
+    # elif args.command == 'inference':
+    #     inference_command(args)
+    # elif args.command == 'evaluate':
+    #     evaluate_command(args)
     else:
         parser.print_help()
         sys.exit(1)
