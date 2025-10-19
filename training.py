@@ -538,15 +538,40 @@ class TrainingPipeline:
         
         del train_data
         gc.collect()
-        
-        # Create datasets with physical batch size
-        train_dataset = tf.data.Dataset.from_tensor_slices((
-            (train_concat, train_true, train_false), train_concat
-        )).shuffle(1000).batch(physical_batch).repeat().prefetch(tf.data.AUTOTUNE)
-        
-        val_dataset = tf.data.Dataset.from_tensor_slices((
-            (val_concat, val_true, val_false), val_concat  
-        )).batch(val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
+
+        # Create generator functions for memory-efficient data loading
+        def train_generator():
+            indices = np.arange(len(train_concat))
+            np.random.shuffle(indices)  # Global shuffle 
+            for idx in indices:
+                yield (train_concat[idx], train_true[idx], train_false[idx]), train_concat[idx]
+
+        def val_generator():
+            for idx in range(len(val_concat)):
+                yield (val_concat[idx], val_true[idx], val_false[idx]), val_concat[idx]
+
+        # Determine output signature directly from data shape
+        sample_shape = train_concat.shape[1:]
+        output_signature = (
+            (
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+            ),
+            tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+        )
+
+        # Create datasets using generators to reduce GPU memory pressure
+        # Data is kept on CPU & transferred to GPU in batches on-demand
+        train_dataset = tf.data.Dataset.from_generator(
+            train_generator,
+            output_signature=output_signature
+        ).batch(physical_batch).repeat().prefetch(tf.data.AUTOTUNE)
+
+        val_dataset = tf.data.Dataset.from_generator(
+            val_generator,
+            output_signature=output_signature
+        ).batch(val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
         
         # Distribute datasets across GPUs
         train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
