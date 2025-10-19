@@ -207,6 +207,7 @@ class BetaVAE(keras.Model):
         similarity = same + difference
         return similarity
 
+    # NOTE: come back to this
     @tf.function
     def distributed_forward_pass(self, main_data, true_data, false_data, target_data, training=True):
         """
@@ -260,6 +261,7 @@ class BetaVAE(keras.Model):
             'false_loss': false_loss
         }
     
+    # NOTE: come back to this
     def train_step(self, data):
         """Model training step"""
         x, y = data
@@ -292,6 +294,7 @@ class BetaVAE(keras.Model):
             "false_loss": self.false_loss_tracker.result()
         }
 
+    # NOTE: come back to this
     def test_step(self, data):
         """Model validation step"""
         x, y = data

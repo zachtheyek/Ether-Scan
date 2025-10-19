@@ -690,7 +690,7 @@ class TrainingPipeline:
         train_iterator = iter(train_dataset)
         
         for step in range(steps_per_epoch):
-            accumulated_gradients = None
+            accumulated_gradients = None  # NOTE: not used? 
             step_losses = {
                 'total': 0.0,
                 'reconstruction': 0.0,
@@ -742,7 +742,7 @@ class TrainingPipeline:
         return epoch_losses
 
     def _train_epoch_direct(self, train_dataset, steps_per_epoch):
-        """Direct training without accumulation"""
+        """Direct training epoch without gradient accumulation"""
         epoch_losses = {
             'total': 0.0,
             'reconstruction': 0.0,
