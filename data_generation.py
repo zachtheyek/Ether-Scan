@@ -312,15 +312,19 @@ class DataGenerator:
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
-        
-        all_main = []
-        all_false = []
-        all_true = []
+
+        # Pre-allocate output arrays
+        all_main = np.empty((n_samples, 6, 16, self.width_bin), dtype=np.float32)
+        all_false = np.empty((n_samples, 6, 16, self.width_bin), dtype=np.float32)
+        all_true = np.empty((n_samples, 6, 16, self.width_bin), dtype=np.float32)
         
         for chunk_idx in range(n_chunks):
             chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
             if chunk_size <= 0:
                 break
+
+            start_idx = chunk_idx * max_chunk_size
+            end_idx = start_idx + chunk_size
                 
             logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} samples")
             
@@ -425,10 +429,10 @@ class DataGenerator:
                 half_true_single, half_true_double
             ], axis=0)
 
-            # Store chunks
-            all_main.append(chunk_main.astype(np.float32))
-            all_false.append(chunk_false.astype(np.float32))
-            all_true.append(chunk_true.astype(np.float32))
+            # Store chunks directly into output array
+            all_main[start_idx:end_idx] = chunk_main
+            all_false[start_idx:end_idx] = chunk_false
+            all_true[start_idx:end_idx] = chunk_true
             
             # Clean up chunk data immediately
             del quarter_false_no_signal, quarter_false_with_rfi, quarter_true_single, quarter_true_double
@@ -438,12 +442,11 @@ class DataGenerator:
             
             logger.info(f"Chunk {chunk_idx + 1} complete, memory cleared")
         
-        # Combine all chunks
-        logger.info("Combining all chunks...")
+        # Create result dictionary with references to pre-allocated arrays
         result = {
-            'concatenated': np.concatenate(all_main, axis=0),
-            'false': np.concatenate(all_false, axis=0),
-            'true': np.concatenate(all_true, axis=0)
+            'concatenated': all_main,
+            'false': all_false,
+            'true': all_true
         }
 
         # Sanity check: verify post-injection data normalization
@@ -466,10 +469,6 @@ class DataGenerator:
                 raise ValueError(f"Post-injection {key} normalization check failed")
             else:
                 logger.info(f"Post-injection {key} data properly normalized")
-        
-        # Final cleanup
-        del all_main, all_false, all_true
-        gc.collect()
         
         return result
     

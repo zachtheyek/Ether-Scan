@@ -652,6 +652,7 @@ class TrainingPipeline:
         del val_concat, val_true, val_false
         gc.collect()
 
+    # BUG: Gradient accumulation bug causes num_replicas small updates instead of 1 large update
     def _train_epoch_with_accumulation(self, train_dataset, steps_per_epoch, accumulation_steps):
         """Training epoch with gradient accumulation"""
         epoch_losses = {
@@ -884,9 +885,15 @@ class TrainingPipeline:
             n_samples = self.config.training.num_samples_rf
             snr_base = self.config.training.snr_base
             snr_range = self.config.training.initial_snr_range
+
             max_chunk_size = self.config.training.prepare_latents_chunk_size
             n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
             batch_size = self.config.training.validation_batch_size
+
+            latent_dim = self.config.model.latent_dim 
+            num_observations = self.config.data.num_observations
+            time_bins = self.config.data.time_bins
+            width_bin = self.config.data.width_bin // self.config.data.downsample_factor
 
             # Generate training data
             logger.info(f"Preparing training set with SNR: {snr_base}-{snr_base+snr_range}")
@@ -898,10 +905,11 @@ class TrainingPipeline:
 
             # Prepare latent vectors
             logger.info(f"Generating {n_samples} latents in {n_chunks} chunks of max {max_chunk_size}")
-            
-            true_latents = []
-            false_latents = []
-            
+
+            # Pre-allocate latent arrays
+            true_latents = np.empty((n_samples * num_observations, latent_dim), dtype=np.float32)
+            false_latents = np.empty((n_samples * num_observations, latent_dim), dtype=np.float32)
+
             for chunk_idx in range(n_chunks):
                 chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
                 if chunk_size <= 0:
@@ -914,10 +922,8 @@ class TrainingPipeline:
                 false_chunk = false_data[start_idx:end_idx]
 
                 # Reshape inputs for encoder -- expects (batch_size * 6, 16, 512, 1)
-                true_chunk_reshaped = true_chunk.reshape(-1, 16,
-                                                         self.config.data.width_bin // self.config.data.downsample_factor, 1)
-                false_chunk_reshaped = false_chunk.reshape(-1, 16,
-                                                           self.config.data.width_bin // self.config.data.downsample_factor, 1)
+                true_chunk_reshaped = true_chunk.reshape(-1, time_bins, width_bin, 1)
+                false_chunk_reshaped = false_chunk.reshape(-1, time_bins, width_bin, 1)
 
                 # Pass through encoder to get latents
                 logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} latents")
@@ -925,29 +931,26 @@ class TrainingPipeline:
                 _, _, true_latent_chunk = self.vae.encoder.predict(true_chunk_reshaped, batch_size=batch_size)
                 _, _, false_latent_chunk = self.vae.encoder.predict(false_chunk_reshaped, batch_size=batch_size)
 
-                true_latents.append(true_latent_chunk)
-                false_latents.append(false_latent_chunk)
+                # Store directly into pre-allocated arrays
+                true_latents[start_idx*num_observations:end_idx*num_observations] = true_latent_chunk
+                false_latents[start_idx*num_observations:end_idx*num_observations] = false_latent_chunk
 
                 # Clean up
                 del true_chunk, false_chunk, true_chunk_reshaped, false_chunk_reshaped
                 del true_latent_chunk, false_latent_chunk
                 gc.collect()
-            
-            # Collect latents into contiguous array
-            true_latents_contiguous = np.concatenate(true_latents, axis=0)
-            false_latents_contiguous = np.concatenate(false_latents, axis=0)
-            
+
             # Clear intermediate data
-            del rf_data, true_data, false_data, true_latents, false_latents
+            del rf_data, true_data, false_data
             gc.collect()
 
             # Train Random Forest classifier
-            self.rf_model.train(true_latents_contiguous, false_latents_contiguous)
-            
+            self.rf_model.train(true_latents, false_latents)
+
             logger.info("Random Forest training complete")
-            
+
             # Clean up
-            del true_latents_contiguous, false_latents_contiguous            
+            del true_latents, false_latents
             gc.collect()
             
         except Exception as e:
