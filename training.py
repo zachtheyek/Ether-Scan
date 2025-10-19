@@ -284,6 +284,10 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
     Returns:
         (snr_base, snr_range) tuple
     """
+    # Edge case: use initial snr range if only training for 1 round
+    if total_rounds == 1:
+        return config.snr_base, config.initial_snr_range
+
     # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
     progress = round_idx / (total_rounds - 1)
     
