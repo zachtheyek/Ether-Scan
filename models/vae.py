@@ -13,19 +13,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Sampling(layers.Layer):
-    """Sampling layer for VAE using reparameterization trick"""
+    """
+    Sampling layer for VAE using reparameterization trick
+
+    Since sampling is a non-differentiable operation (can't backprop through random sampling)
+    But we need to sample from the VAE's learned distribution to produce the latent vector (z)
+    We isolate the randomness (epsilon) to be independent of the learned params (z_mean, z_log_var)
+    Such that gradients can flow through without issue
+    """
     
     def call(self, inputs):
+        # Get the learned mean & log-varience of the latent distribution 
         z_mean, z_log_var = inputs
+
         batch = tf.shape(z_mean)[0]
         dim = tf.shape(z_mean)[1]
+
+        # Sample random noise from a standard normal N(0, 1) with same shape as z_mean
         epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
-        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+        # Compute latent vector using reparameterization 
+        # Equivalent to sampling from N(z_mean, exp(z_log_var))
+        z = z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+        return z
 
 class BetaVAE(keras.Model):
     """
     Beta-VAE model with custom loss functions for SETI
-    Includes robust tensor handling for distributed training
     """
     
     def __init__(self, encoder, decoder, alpha=10, beta=1.5, **kwargs):
@@ -52,32 +67,23 @@ class BetaVAE(keras.Model):
     
     def call(self, inputs, training=None):
         """
-        Forward pass through the VAE 
+        Forward pass through the VAE
         """
-        # Handle different input formats
-        if isinstance(inputs, (tuple, list)) and len(inputs) == 3:
-            # Training format: (concatenated, true, false)
-            main_input, true_data, false_data = inputs
-        else:
-            # Inference format: single tensor
-            main_input = inputs
-        
-        # Process main input through encoder-decoder
-        batch_size = tf.shape(main_input)[0]
-        
-        # Reshape for encoder
-        encoder_input = tf.reshape(main_input, (batch_size * 6, 16, 512, 1))
-        
-        # Encode
+        batch_size = tf.shape(inputs)[0]
+
+        # Reshape inputs for encoder
+        encoder_input = tf.reshape(inputs, (batch_size * 6, 16, 512, 1))
+
+        # Encode: observations -> latents
         z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
-        
-        # Decode
+
+        # Decode: latents -> observations
         reconstruction = self.decoder(z, training=training)
-        
-        # Reshape back to cadence format: (batch, 6, 16, 512)
+
+        # Reshape outputs back to cadence format
         reconstruction = tf.reshape(reconstruction, (batch_size, 6, 16, 512))
-        
-        return reconstruction
+
+        return reconstruction, z_mean, z_log_var, z
     
     @tf.function
     def loss_same(self, a: tf.Tensor, b: tf.Tensor) -> tf.Tensor:
@@ -94,11 +100,11 @@ class BetaVAE(keras.Model):
         return tf.reduce_mean(1.0 / (tf.reduce_sum(tf.square(a - b), axis=1) + 1e-8))
 
     @tf.function
-    def compute_clustering_loss_true_distributed(self, true_data: tf.Tensor) -> tf.Tensor:
+    def compute_clustering_loss_true(self, true_data: tf.Tensor) -> tf.Tensor:
         """
         Clustering loss for true signals
         """
-        # Add channel dimension if missing
+        # Add polarization dimension if missing
         if len(true_data.shape) == 4:
             true_data = tf.expand_dims(true_data, -1)  # (batch, 6, 16, 512, 1)
         
@@ -151,11 +157,11 @@ class BetaVAE(keras.Model):
         return similarity
 
     @tf.function
-    def compute_clustering_loss_false_distributed(self, false_data: tf.Tensor) -> tf.Tensor:
+    def compute_clustering_loss_false(self, false_data: tf.Tensor) -> tf.Tensor:
         """
         Clustering loss for false signals
         """
-        # Add channel dimension if missing
+        # Add polarization dimension if missing
         if len(false_data.shape) == 4:
             false_data = tf.expand_dims(false_data, -1)
 
@@ -207,51 +213,38 @@ class BetaVAE(keras.Model):
         similarity = same + difference
         return similarity
 
-    # NOTE: come back to this
     @tf.function
-    def distributed_forward_pass(self, main_data, true_data, false_data, target_data, training=True):
+    def compute_total_loss(self, main_data, true_data, false_data, target_data, training=True):
         """
-        Compute forward pass and losses without applying gradients
-        Can be reused by both train_step and gradient accumulation
+        Perform forward pass and compute losses
         """
-        batch_size = tf.shape(main_data)[0]
-        encoder_input = tf.reshape(main_data, (batch_size * 6, 16, 512, 1))
-        
-        # Encode
-        z_mean, z_log_var, z = self.encoder(encoder_input, training=training)
-        
-        # Decode
-        reconstruction = self.decoder(z, training=training)
-        
-        # Reshape reconstruction back to cadence format for loss computation
+        # Perform forward pass through VAE
+        reconstruction, z_mean, z_log_var, z = self.call(main_data, training=training)
+
+        # Ensure reconstruction shape matches target for loss computation
         reconstruction = tf.reshape(reconstruction, tf.shape(target_data))
-        
+
         # Compute reconstruction loss
         reconstruction_loss = tf.reduce_mean(
             tf.reduce_sum(
                 keras.losses.binary_crossentropy(
                     target_data, reconstruction, from_logits=False  # Use from_logits=False for stability since decoder's final activation is sigmoid (reconstruction is bounded [0,1])
-                ), axis=(1, 2)  
+                ), axis=(1, 2)
             )
         )
 
-        # NaN checking (used for debugging, can be safely removed if training is already stable)
-        reconstruction_loss = tf.debugging.check_numerics(
-            reconstruction_loss, "Reconstruction loss contains NaN or Inf"
-        )
-        
         # Compute KL loss
         kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
         kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-        
-        # Compute clustering losses (these handle their own reshaping)
-        false_loss = self.compute_clustering_loss_false_distributed(false_data)
-        true_loss = self.compute_clustering_loss_true_distributed(true_data)
-        
-        # Total loss formula
-        total_loss = (reconstruction_loss + 
-                     self.beta * kl_loss + 
-                     self.alpha * (1 * true_loss + false_loss))
+
+        # Compute clustering losses
+        false_loss = self.compute_clustering_loss_false(false_data)
+        true_loss = self.compute_clustering_loss_true(true_data)
+
+        # Compute total loss
+        total_loss = (reconstruction_loss +
+                     self.beta * kl_loss +
+                     self.alpha * (true_loss + false_loss))
 
         return {
             'total_loss': total_loss,
