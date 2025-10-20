@@ -508,7 +508,7 @@ def main():
                               help='Number of training samples for beta-vae')
     train_parser.add_argument('--num-samples-rf', type=int, default=None,
                               help='Number of training samples for random forest')
-    train_parser.add_argument('--train-val-split', type=int, default=None,
+    train_parser.add_argument('--train-val-split', type=float, default=None,
                               help='Training/validation split for beta-vae')
     train_parser.add_argument('--batch-size', type=int, default=None,
                               help='Per replica batch size for training')
