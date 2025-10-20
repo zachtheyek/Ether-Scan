@@ -2,7 +2,6 @@
 Training pipeline for Ether-Scan models
 """
 
-from _typeshed import TraceFunction
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.initializers import HeNormal, GlorotNormal
