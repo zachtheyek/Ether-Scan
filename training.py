@@ -896,6 +896,8 @@ class TrainingPipeline:
         Perform a single distributed training step
         Returns reduced gradients & losses
         """
+        num_replicas = self.strategy.num_replicas_in_sync
+
         def step_fn(data):
             """Per-replica training step"""
             x, y = data
@@ -908,7 +910,7 @@ class TrainingPipeline:
                 losses = self.vae.compute_total_loss(main_data, true_data, false_data, y, training=True)
 
                 # Scale loss by num_replicas for gradient averaging 
-                scaled_loss = losses['total_loss'] / tf.cast(tf.distribute.get_strategy().num_replicas_in_sync, tf.float32)
+                scaled_loss = losses['total_loss'] / tf.cast(num_replicas, tf.float32)
 
             # Compute gradients
             gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
