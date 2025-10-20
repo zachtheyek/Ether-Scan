@@ -299,7 +299,7 @@ def train_command(args):
     logger.info(f"Background data loaded: {background_data.shape}")
 
     # Train models with fault tolerance
-    logger.info("\nStarting training pipeline...")
+    logger.info("Starting training pipeline...")
 
     max_retries = config.training.max_retries
     retry_delay = config.training.retry_delay
