@@ -1,5 +1,5 @@
 """
-Training pipeline for SETI ML models
+Training pipeline for Ether-Scan models
 """
 
 import numpy as np
@@ -502,27 +502,24 @@ class TrainingPipeline:
         Train one round with distributed dataset handling & gradient accumulation
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
-        
-        # Use physical batch sizes for memory efficiency
-        physical_batch = self.config.training.train_physical_batch_size
-        logical_batch = self.config.training.train_logical_batch_size
-        accumulation_steps = logical_batch // physical_batch
-        val_batch_size = self.config.training.validation_batch_size
+
         n_samples = self.config.training.num_samples_beta_vae
         train_val_split = self.config.training.train_val_split
         
-        logger.info(f"Gradient accumulation: {physical_batch} physical, {logical_batch} logical, "
-                   f"{accumulation_steps} accumulation steps")
-        
+        per_replica_batch_size = self.config.training.per_replica_batch_size
+        global_batch_size = self.config.training.global_batch_size
+        per_replica_val_batch_size = self.config.training.per_replica_val_batch_size
+        num_replicas = self.strategy.num_replicas_in_sync
+
         # Generate training data 
         train_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
         
-        # Split and trim
-        n_train = int(n_samples * 3 * train_val_split)
-        n_val = (n_samples * 3) - n_train
+        # Split & trim to fit train/val batch size
+        n_train = int(n_samples * train_val_split)
+        n_val = n_samples - n_train
         
-        n_train_trimmed = (n_train // logical_batch) * logical_batch
-        n_val_trimmed = (n_val // val_batch_size) * val_batch_size
+        n_train_trimmed = (n_train // global_batch_size) * global_batch_size
+        n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
 
         logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
         
@@ -542,16 +539,20 @@ class TrainingPipeline:
 
         # Create generator functions for memory-efficient data loading
         def train_generator():
-            indices = np.arange(len(train_concat))
-            np.random.shuffle(indices)  # Global shuffle 
-            for idx in indices:
-                yield (train_concat[idx], train_true[idx], train_false[idx]), train_concat[idx]
+            while True:  # Make generators infinite to reset state between epochs
+                indices = np.arange(len(train_concat))
+                # Perform global shuffle on each epoch so each pass through the data is unique 
+                np.random.shuffle(indices)
+                for idx in indices:
+                    yield (train_concat[idx], train_true[idx], train_false[idx]), train_concat[idx]
 
         def val_generator():
-            for idx in range(len(val_concat)):
-                yield (val_concat[idx], val_true[idx], val_false[idx]), val_concat[idx]
+            while True:  # Make generators infinite to reset state between epochs 
+                # Maintain order on each epoch since no gradients are calculated during validation
+                for idx in range(len(val_concat)):
+                    yield (val_concat[idx], val_true[idx], val_false[idx]), val_concat[idx]
 
-        # Determine output signature directly from data shape
+        # Determine dataset output signature
         sample_shape = train_concat.shape[1:]
         output_signature = (
             (
@@ -564,25 +565,32 @@ class TrainingPipeline:
 
         # Create datasets using generators to reduce GPU memory pressure
         # Data is kept on CPU & transferred to GPU in batches on-demand
+        logger.info(f"Creating infinite datasets from generators with per replica batch size - "
+                    f"Train: {per_replica_batch_size}, Val: {per_replica_val_batch_size}")
+
         train_dataset = tf.data.Dataset.from_generator(
             train_generator,
             output_signature=output_signature
-        ).batch(physical_batch).repeat().prefetch(tf.data.AUTOTUNE)
+        ).batch(per_replica_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
 
         val_dataset = tf.data.Dataset.from_generator(
             val_generator,
             output_signature=output_signature
-        ).batch(val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
+        ).batch(per_replica_val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
         
         # Distribute datasets across GPUs
+        logger.info(f"Distributing datasets across {num_replicas} GPUs")
+
         train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
         
-        # Training loop with manual forward pass for gradient accumulation
-        steps_per_epoch = n_train_trimmed // logical_batch
-        val_steps = n_val_trimmed // val_batch_size
+        # Initialize training loop with manual forward pass for gradient accumulation
+        accumulation_steps = global_batch_size // (per_replica_batch_size * num_replicas)
+        steps_per_epoch = n_train_trimmed // global_batch_size
+        val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
 
-        logger.info(f"Infinite dataset setup: {steps_per_epoch} train steps, {val_steps} val steps")
+        logger.info(f"Initializing training loop with {steps_per_epoch} train steps, {val_steps} val steps")
+        logger.info(f"Gradients accumulated every {accumulation_steps} sub-steps")
         
         for epoch in range(epochs):
             # Log resources at start of epoch
@@ -917,7 +925,7 @@ class TrainingPipeline:
 
             max_chunk_size = self.config.training.prepare_latents_chunk_size
             n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
-            batch_size = self.config.training.validation_batch_size
+            batch_size = self.config.training.per_replica_val_batch_size * self.strategy.num_replicas_in_sync
 
             latent_dim = self.config.model.latent_dim 
             num_observations = self.config.data.num_observations
@@ -1091,8 +1099,6 @@ class TrainingPipeline:
 
     def load_models(self, tag: Optional[str] = None, dir: Optional[str] = None):
         """Load model weights"""
-        import tensorflow as tf
-
         if tag is None:
             logger.info("No tag specified. Defaulting to 'final'")
             tag = "final"
@@ -1169,7 +1175,7 @@ class TrainingPipeline:
 def train_full_pipeline(config, background_data: np.ndarray, strategy=None, 
                         tag=None, dir=None, start_round=1, final_tag=None) -> TrainingPipeline:
     """
-    Train complete SETI ML pipeline
+    Train complete Ether-Scan pipeline
     
     Args:
         config: Configuration object

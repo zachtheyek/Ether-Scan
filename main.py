@@ -1,5 +1,5 @@
 """
-Main entry point for SETI ML Pipeline
+Main entry point for Ether-Scan Pipeline
 """
 
 import argparse
@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import numpy as np
+import tensorflow as tf
 # from datetime import datetime
 import json
 import gc
@@ -34,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 def setup_gpu_config():
     """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
-    import tensorflow as tf
     
     os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Prevent memory fragmentation within each GPU
     os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'  # Aggressive cleanup of intermediate tensors
@@ -185,9 +185,9 @@ def load_background_data(config: Config) -> np.ndarray:
     return background_array
 
 def train_command(args):
-    """Execute training command with distributed strategy"""
+    """Execute training pipeline with distributed strategy & fault tolerance"""
     logger.info("="*60)
-    logger.info("Starting SETI ML Training Pipeline")
+    logger.info("Starting Ether-Scan Training Pipeline")
     logger.info("="*60)
     
     # Setup GPU and get strategy
@@ -201,8 +201,50 @@ def train_command(args):
         config.training.num_training_rounds = args.rounds
     if args.epochs:
         config.training.epochs_per_round = args.epochs
+    if args.num_samples_beta_vae:
+        config.training.num_samples_beta_vae = args.num_samples_beta_vae
+    if args.num_samples_rf:
+        config.training.num_samples_rf = args.num_samples_rf
+    if args.train_val_split:
+        config.training.train_val_split = args.train_val_split
     if args.batch_size:
-        config.training.train_logical_batch_size = args.batch_size
+        config.training.per_replica_batch_size = args.batch_size
+    if args.global_batch_size:
+        config.training.global_batch_size = args.global_batch_size
+    if args.val_batch_size:
+        config.training.per_replica_val_batch_size = args.val_batch_size
+    if args.signal_injection_chunk_size:
+        config.training.signal_injection_chunk_size = args.signal_injection_chunk_size
+    if args.prepare_latents_chunk_size:
+        config.training.prepare_latents_chunk_size = args.prepare_latents_chunk_size
+    if args.snr_base:
+        config.training.snr_base = args.snr_base
+    if args.initial_snr_range:
+        config.training.initial_snr_range = args.initial_snr_range
+    if args.final_snr_range:
+        config.training.final_snr_range = args.final_snr_range
+    if args.curriculum_schedule:
+        config.training.curriculum_schedule = args.curriculum_schedule
+    if args.exponential_decay_rate:
+        config.training.exponential_decay_rate = args.exponential_decay_rate
+    if args.step_easy_rounds:
+        config.training.step_easy_rounds = args.step_easy_rounds
+    if args.step_hard_rounds:
+        config.training.step_hard_rounds = args.step_hard_rounds
+    if args.base_learning_rate:
+        config.training.base_learning_rate = args.base_learning_rate
+    if args.min_learning_rate:
+        config.training.min_learning_rate = args.min_learning_rate
+    if args.min_pct_improvement:
+        config.training.min_pct_improvement = args.min_pct_improvement
+    if args.patience_threshold:
+        config.training.patience_threshold = args.patience_threshold
+    if args.reduction_factor:
+        config.training.reduction_factor = args.reduction_factor
+    if args.max_retries:
+        config.training.max_retries = args.max_retries
+    if args.retry_delay:
+        config.training.retry_delay = args.retry_delay
     if args.load_tag:
         tag = args.load_tag
         if tag.startswith('round_'):
@@ -224,7 +266,6 @@ def train_command(args):
     logger.info(f"Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
     logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
-    logger.info(f"  Effective batch size: {config.training.train_logical_batch_size}")
     logger.info(f"  Data path: {config.data_path}")
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
@@ -447,33 +488,76 @@ def train_command(args):
 #     logger.info("="*60)
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
-# NOTE: come back to this later
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='SETI ML Pipeline - Search for ETI signals using deep learning'
+        description='Ether-Scan Pipeline - Search for ETI signals using deep learning'
     )
     
     # Add subcommands
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     
+    # TODO: finish adding training args
     # Training command
-    train_parser = subparsers.add_parser('train', help='Train models')
+    train_parser = subparsers.add_parser('train', help='Training pipeline (defaults in config.py)')
     train_parser.add_argument('--rounds', type=int, default=None,
-                              help='Number of training rounds (default: 20)')
+                              help='Number of training rounds')
     train_parser.add_argument('--epochs', type=int, default=None,
-                              help='Epochs per training round (default: 100)')
+                              help='Epochs per training round')
+    train_parser.add_argument('--num-samples-beta-vae', type=int, default=None,
+                              help='Number of training samples for beta-vae')
+    train_parser.add_argument('--num-samples-rf', type=int, default=None,
+                              help='Number of training samples for random forest')
+    train_parser.add_argument('--train-val-split', type=int, default=None,
+                              help='Training/validation split for beta-vae')
     train_parser.add_argument('--batch-size', type=int, default=None,
-                              help='Effective batch size (note: if >32, pipeline uses gradient accumulation)')
+                              help='Per replica batch size for training')
+    train_parser.add_argument('--global-batch-size', type=int, default=None,
+                              help='Effective batch size for gradient accumulation')
+    train_parser.add_argument('--val-batch-size', type=int, default=None,
+                              help='Per replica batch size for validation')
+    train_parser.add_argument('--signal-injection-chunk-size', type=int, default=None,
+                              help='Maximum cadences to process at once during data generation')
+    train_parser.add_argument('--prepare-latents-chunk-size', type=int, default=None,
+                              help='Maximum cadences to process through encoder at once during RF training')
+    train_parser.add_argument('--snr-base', type=int, default=None,
+                              help='Base SNR for curriculum learning')
+    train_parser.add_argument('--initial-snr-range', type=int, default=None,
+                              help='Initial SNR range for curriculum learning')
+    train_parser.add_argument('--final-snr-range', type=int, default=None,
+                              help='Final SNR range for curriculum learning')
+    train_parser.add_argument('--curriculum-schedule', type=str, default=None,
+                              help='Curriculum learning schedule: linear, exponential, or step')
+    train_parser.add_argument('--exponential-decay-rate', type=int, default=None,
+                              help='Exponential decay rate for curriculum (must be <0)')
+    train_parser.add_argument('--step-easy-rounds', type=int, default=None,
+                              help='Number of rounds with easy signals (for step schedule)')
+    train_parser.add_argument('--step-hard-rounds', type=int, default=None,
+                              help='Number of rounds with challenging signals (for step schedule)')
+    train_parser.add_argument('--base-learning-rate', type=float, default=None,
+                              help='Base learning rate for training')
+    train_parser.add_argument('--min-learning-rate', type=float, default=None,
+                              help='Minimum learning rate for adaptive LR')
+    train_parser.add_argument('--min-pct-improvement', type=float, default=None,
+                              help='Minimum percentage improvement for adaptive LR')
+    train_parser.add_argument('--patience-threshold', type=int, default=None,
+                              help='Consecutive epochs with no improvement before LR reduction')
+    train_parser.add_argument('--reduction-factor', type=float, default=None,
+                              help='Factor to reduce learning rate by (e.g., 0.2 = 20% reduction)')
+    train_parser.add_argument('--max-retries', type=int, default=None,
+                              help='Maximum number of retries on training failure')
+    train_parser.add_argument('--retry-delay', type=int, default=None,
+                              help='Delay in seconds between retries')
     train_parser.add_argument('--load-tag', type=str, default=None,
-                              help='Model tag to resume training from. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS (loads latest tag if none provided)')
+                              help='Model tag to resume training from. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
     train_parser.add_argument('--load-dir', type=str, default=None,
-                              help='Directory to load model tag from (loads from output path if none provided)')
+                              help='Directory to load model tag from. Argument appended to outputs directory')
     train_parser.add_argument('--save-tag', type=str, default=None,
                               help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
     # train_parser.add_argument('--start-round', type=int, default=None,
                             # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
 
+    # NOTE: come back to this later
     # # Inference command
     # inf_parser = subparsers.add_parser('inference', help='Run inference on data')
     # inf_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
@@ -482,7 +566,8 @@ def main():
     # inf_parser.add_argument('--n-bands', type=int, default=16,
     #                       help='Number of frequency bands to process')
     # inf_parser.add_argument('--output', type=str, help='Output file path')
-    #
+
+    # NOTE: come back to this later
     # # Evaluation command
     # eval_parser = subparsers.add_parser('evaluate', help='Evaluate trained models')
     # eval_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')

@@ -1,5 +1,5 @@
 """
-Data preprocessing module for SETI ML Pipeline
+Data preprocessing module for Ether-Scan Pipeline
 """
 
 import numpy as np
@@ -8,8 +8,6 @@ import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
-
-
 
 # NOTE: come back to this later (start here)
 # NOTE: preprocess_cadence() is used in inference.py, everything else unused? 

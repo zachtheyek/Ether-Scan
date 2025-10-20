@@ -1,5 +1,5 @@
 """
-Random Forest classifier for SETI ML Pipeline
+Random Forest classifier for Ether-Scan Pipeline
 """
 
 import numpy as np

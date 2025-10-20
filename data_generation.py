@@ -1,5 +1,6 @@
+# TODO: make signal injection multi-threaded
 """
-Synthetic data generation for SETI ML Pipeline
+Synthetic data generation for Ether-Scan Pipeline
 """
 
 import numpy as np

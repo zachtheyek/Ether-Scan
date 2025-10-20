@@ -1,5 +1,5 @@
 """
-Beta-VAE model implementation for SETI ML Pipeline
+Beta-VAE model implementation for Ether-Scan Pipeline
 """
 
 import tensorflow as tf

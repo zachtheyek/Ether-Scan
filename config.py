@@ -1,5 +1,5 @@
 """
-Configuration module for SETI ML Pipeline
+Configuration module for Ether-Scan Pipeline
 """
 
 import os
@@ -61,22 +61,16 @@ class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
 
-    train_physical_batch_size: int = 128  # Micro batch size (for memory efficiency)
-    train_logical_batch_size: int = 1024  # Effective batch size (for convergence)
-    validation_batch_size: int = 4048
-
     num_samples_beta_vae: int = 120000
     num_samples_rf: int = 24000
     train_val_split: float = 0.8
+
+    per_replica_batch_size: int = 128
+    global_batch_size: int = 2048  # Effective batch size for gradient accumulation 
+    per_replica_val_batch_size: int = 4096 
+
     signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
     prepare_latents_chunk_size: int = 1000  # Maximum cadences to process through encoder at once during RF training
-
-    # Adaptive LR params
-    base_learning_rate: float = 0.001
-    min_learning_rate: float = 1e-6
-    min_pct_improvement: float = 0.001  # 0.1% val loss improvement
-    patience_threshold: int = 3  # consecutive epochs with no improvement
-    reduction_factor: float = 0.2  # 20% LR reduction
 
     # Curriculum learning params
     snr_base: int = 10 
@@ -86,6 +80,13 @@ class TrainingConfig:
     exponential_decay_rate: int = -3  # How quickly schedule should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
     step_easy_rounds: int = 5  # Number of rounds with easy signals
     step_hard_rounds: int = 15  # Number of rounds with challenging signals
+
+    # Adaptive LR params
+    base_learning_rate: float = 0.001
+    min_learning_rate: float = 1e-6
+    min_pct_improvement: float = 0.001  # 0.1% val loss improvement
+    patience_threshold: int = 3  # consecutive epochs with no improvement
+    reduction_factor: float = 0.2  # 20% LR reduction
 
     # Fault tolerance params
     max_retries: int = 5
@@ -170,19 +171,14 @@ class Config:
             'training': {
                 'num_training_rounds': self.training.num_training_rounds,
                 'epochs_per_round': self.training.epochs_per_round,
-                'train_physical_batch_size': self.training.train_physical_batch_size,
-                'train_logical_batch_size': self.training.train_logical_batch_size,
-                'validation_batch_size': self.training.validation_batch_size,
                 'num_samples_beta_vae': self.training.num_samples_beta_vae,
                 'num_samples_rf': self.training.num_samples_rf,
                 'train_val_split': self.training.train_val_split,
+                'per_replica_batch_size': self.training.per_replica_batch_size,
+                'global_batch_size': self.training.global_batch_size,
+                'per_replica_val_batch_size': self.training.per_replica_val_batch_size,
                 'signal_injection_chunk_size': self.training.signal_injection_chunk_size,
                 'prepare_latents_chunk_size': self.training.prepare_latents_chunk_size,
-                'base_learning_rate': self.training.base_learning_rate,
-                'min_learning_rate': self.training.min_learning_rate,
-                'min_pct_improvement': self.training.min_pct_improvement,
-                'patience_threshold': self.training.patience_threshold,
-                'reduction_factor': self.training.reduction_factor,
                 'snr_base': self.training.snr_base,
                 'initial_snr_range': self.training.initial_snr_range,
                 'final_snr_range': self.training.final_snr_range,
@@ -190,6 +186,11 @@ class Config:
                 'exponential_decay_rate': self.training.exponential_decay_rate,
                 'step_easy_rounds': self.training.step_easy_rounds,
                 'step_hard_rounds': self.training.step_hard_rounds,
+                'base_learning_rate': self.training.base_learning_rate,
+                'min_learning_rate': self.training.min_learning_rate,
+                'min_pct_improvement': self.training.min_pct_improvement,
+                'patience_threshold': self.training.patience_threshold,
+                'reduction_factor': self.training.reduction_factor,
                 'max_retries': self.training.max_retries,
                 'retry_delay': self.training.retry_delay
             },
