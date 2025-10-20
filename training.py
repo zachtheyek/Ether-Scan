@@ -68,7 +68,7 @@ def log_system_resources():
     
     return resource_str
 
-def archive_directory(base_dir: str, target_dirs: Optional[List[str]] = None, round_num: int = 1):
+def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, round_num: int = 1):
     """
     Archive and clean up a directory
     
@@ -424,10 +424,10 @@ class TrainingPipeline:
         logger.info("Setting up directories")
 
         model_checkpoints_dir = os.path.join(self.config.model_path, 'checkpoints')
-        archive_directory(model_checkpoints_dir , target_dirs=None, round_num=start_round)
+        handle_directory(model_checkpoints_dir , target_dirs=None, round_num=start_round)
         
         plot_checkpoints_dir = os.path.join(self.config.output_path, 'plots', 'checkpoints')
-        archive_directory(plot_checkpoints_dir, target_dirs=None, round_num=start_round)
+        handle_directory(plot_checkpoints_dir, target_dirs=None, round_num=start_round)
         
         logger.info(f"Setup directories complete")
 
@@ -436,7 +436,7 @@ class TrainingPipeline:
         logger.info("Setting up TensorBoard logging")
 
         logs_dir = os.path.join(self.config.output_path, 'logs')
-        archive_directory(logs_dir, target_dirs=['train', 'validation'], round_num=start_round)
+        handle_directory(logs_dir, target_dirs=['train', 'validation'], round_num=start_round)
 
         if start_round == 1:
             self.global_step = 0
@@ -496,6 +496,7 @@ class TrainingPipeline:
         
         return current_lr
 
+    # TODO: come back to this
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
         Train one round with distributed dataset handling & gradient accumulation
@@ -677,6 +678,7 @@ class TrainingPipeline:
         del val_concat, val_true, val_false
         gc.collect()
 
+    # TODO: come back to this
     # BUG: Gradient accumulation bug causes num_replicas small updates instead of 1 large update
     def _train_epoch_with_accumulation(self, train_dataset, steps_per_epoch, accumulation_steps):
         """Training epoch with gradient accumulation"""
@@ -741,6 +743,7 @@ class TrainingPipeline:
             
         return epoch_losses
 
+    # TODO: come back to this
     def _train_epoch_direct(self, train_dataset, steps_per_epoch):
         """Direct training epoch without gradient accumulation"""
         epoch_losses = {
@@ -784,6 +787,7 @@ class TrainingPipeline:
             
         return epoch_losses
 
+    # TODO: come back to this
     def _validate_epoch(self, val_dataset, val_steps):
         """Validation epoch"""
         val_losses = {
@@ -824,9 +828,9 @@ class TrainingPipeline:
             
         return val_losses
     
-    def iterative_training(self, start_round=1):
+    def train_beta_vae(self, start_round=1):
         """
-        Perform iterative training with curriculum learning
+        Train beta-VAE with curriculum learning
         """
         n_rounds = self.config.training.num_training_rounds
         epochs = self.config.training.epochs_per_round
@@ -1184,7 +1188,7 @@ def train_full_pipeline(config, background_data: np.ndarray, strategy=None,
         pipeline.load_models(tag=tag, dir=dir)
     
     # Run iterative training
-    pipeline.iterative_training(start_round=start_round)
+    pipeline.train_beta_vae(start_round=start_round)
     
     # Train Random Forest
     pipeline.train_random_forest()

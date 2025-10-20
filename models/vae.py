@@ -254,7 +254,7 @@ class BetaVAE(keras.Model):
             'false_loss': false_loss
         }
     
-    # NOTE: come back to this
+    # TODO: come back to this
     def train_step(self, data):
         """Model training step"""
         x, y = data
@@ -287,7 +287,7 @@ class BetaVAE(keras.Model):
             "false_loss": self.false_loss_tracker.result()
         }
 
-    # NOTE: come back to this
+    # TODO: come back to this
     def test_step(self, data):
         """Model validation step"""
         x, y = data
