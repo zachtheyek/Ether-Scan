@@ -20,18 +20,37 @@ from config import Config
 from training import train_full_pipeline, get_latest_tag
 # from inference import run_inference
 
-# BUG: not printing datetime or writing to train_pipeline.log
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,  # Only print INFO, WARNING, ERROR, CRITICAL (ignore DEBUG)
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log', mode='w'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+def setup_logging(log_filepath: str) -> logging.Logger:
+    """
+    Configure logging to write to both file & console
+    Must be called after importing TensorFlow to override its logging config
+    """
+    # Setup root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()  # Clear TensorFlow's handlers
 
-logger = logging.getLogger(__name__)
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Setup file handler
+    file_handler = logging.FileHandler(log_filepath, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+
+    # Setup stream handler
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(formatter)
+
+    # Add handlers to root logger
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
+
+    return logging.getLogger(__name__)
+
+# Setup logging immediately after imports to ensure logging is configured before any other code runs
+logger = setup_logging('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log')
 
 def setup_gpu_config():
     """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
@@ -489,7 +508,7 @@ def train_command(args):
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
 def main():
-    """Main entry point"""
+    """Main entry point to Ether-Scan pipeline"""
     parser = argparse.ArgumentParser(
         description='Ether-Scan Pipeline - Search for ETI signals using deep learning'
     )
