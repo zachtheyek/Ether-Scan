@@ -31,7 +31,7 @@ def setup_logging(log_filepath: str) -> logging.Logger:
     root_logger.handlers.clear()  # Clear TensorFlow's handlers
 
     # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s')
 
     # Setup file handler
     file_handler = logging.FileHandler(log_filepath, mode='w')

@@ -563,6 +563,7 @@ class TrainingPipeline:
         n_train = int(n_samples * train_val_split)
         n_val = n_samples - n_train
         
+        # NOTE: are my trimmings correct? 
         n_train_trimmed = (n_train // global_batch_size) * global_batch_size
         n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
 
