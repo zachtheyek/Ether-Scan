@@ -385,10 +385,11 @@ class TrainingPipeline:
         # Initialize components
         self.data_generator = DataGenerator(config, background_data)
         
-        # Create VAE model
+        # Create VAE model & build optimizer
         with self.strategy.scope():
             self.vae = create_vae_model(config)
-        
+            self._build_optimizer()
+
         self.rf_model = None
         
         # Training history
@@ -418,6 +419,30 @@ class TrainingPipeline:
             self.train_writer.close()
         if hasattr(self, 'val_writer'):
             self.val_writer.close()
+
+    def _build_optimizer(self):
+        """
+        Build optimizer state by performing a dummy forward/backward pass 
+        Must be called within strategy scope & before training to initialize optimizer variables
+        """
+        # Create a dummy batch to trigger optimizer build
+        dummy_batch_size = 1
+        num_observations = self.config.data.num_observations
+        time_bins = self.config.data.time_bins
+        width_bin = self.config.data.width_bin // self.config.data.downsample_factor
+
+        dummy_data = tf.zeros((dummy_batch_size, num_observations, time_bins, width_bin), dtype=tf.float32)
+        
+        # Perform one forward pass to build the model
+        _ = self.vae(dummy_data, training=False)
+        
+        # Create dummy gradients to build optimizer state
+        dummy_grads = [tf.zeros_like(var) for var in self.vae.trainable_variables]
+        
+        # Apply dummy gradients to build optimizer variables
+        self.vae.optimizer.apply_gradients(zip(dummy_grads, self.vae.trainable_variables))
+        
+        logger.info("Optimizer built successfully within strategy scope")
     
     def setup_directories(self, start_round=1):
         """Create necessary directories"""
@@ -563,7 +588,7 @@ class TrainingPipeline:
         n_train = int(n_samples * train_val_split)
         n_val = n_samples - n_train
         
-        # NOTE: are my trimmings correct? 
+        # NOTE: are my trimmings correct? why val_steps logged as 0?
         n_train_trimmed = (n_train // global_batch_size) * global_batch_size
         n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
 

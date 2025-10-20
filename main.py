@@ -290,7 +290,6 @@ def train_command(args):
     logger.info(f"  Output path: {config.output_path}")
     
     # Load and preprocess background data
-    logger.info("\nLoading background data...")
     try:
         background_data = load_background_data(config)
     except Exception as e:
