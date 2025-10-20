@@ -2,6 +2,7 @@
 Training pipeline for Ether-Scan models
 """
 
+from _typeshed import TraceFunction
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.initializers import HeNormal, GlorotNormal
@@ -27,7 +28,7 @@ from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
-# NOTE: move assertions to main.py
+# TODO: move assertions to main.py
 # class MaxRoundsExceededError(Exception):
 #     """
 #     Raised when current_round > self.config.training.num_training_rounds during iterative training.
@@ -300,7 +301,7 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
     elif config.curriculum_schedule == "step":
         # Step function - easy for first part, hard for second part
         # TODO: add mechanism for more step changes
-        if round_idx < config.easy_rounds:
+        if round_idx < config.step_easy_rounds:
             current_range = config.initial_snr_range
         else:
             current_range = config.final_snr_range
@@ -496,10 +497,55 @@ class TrainingPipeline:
         
         return current_lr
 
-    # TODO: come back to this
+    def train_beta_vae(self, start_round=1):
+        """
+        Train beta-VAE with curriculum learning
+        """
+        n_rounds = self.config.training.num_training_rounds
+        epochs = self.config.training.epochs_per_round
+
+        # TODO: move assertions to main.py
+        # if start_round > n_rounds: 
+        #     raise MaxRoundsExceededError(
+        #         f"Current round ({current_round}) is more than total rounds ({n_rounds})."
+        #         "Check model checkpoints, config.py, or CLI args."
+        #     )
+        
+        if start_round > 1:
+            logger.info(f"Resuming training from round {start_round}/{n_rounds}")
+        else:
+            logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
+        
+        for round_idx in range(start_round-1, n_rounds):
+            snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
+
+            logger.info(f"\n{'='*50}")
+            logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
+            logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
+            logger.info(f"{'='*50}")
+
+            # Reset learning rate & adaptive state before new curriculum stage
+            original_lr = self.config.training.base_learning_rate
+            current_lr = self.vae.optimizer.learning_rate.numpy()
+            self.vae.optimizer.learning_rate.assign(original_lr)
+            
+            if hasattr(self, 'best_val_loss'):
+                delattr(self, 'best_val_loss')
+            if hasattr(self, 'patience_counter'):
+                delattr(self, 'patience_counter')
+
+            logger.info(f"Curriculum LR reset: {current_lr:.2e} → {original_lr:.2e}")
+            
+            self.train_round(
+                round_idx=round_idx,
+                epochs=epochs,
+                snr_base=snr_base,
+                snr_range=snr_range
+            )
+            
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        Train one round with distributed dataset handling & gradient accumulation
+        Perform a single training round with distributed dataset handling
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
 
@@ -589,6 +635,14 @@ class TrainingPipeline:
         steps_per_epoch = n_train_trimmed // global_batch_size
         val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
 
+        # TODO: move assertions to main.py
+        # if accumulation_steps < 1:
+        #     raise ...
+        # if steps_per_epoch < 1:
+        #     raise ...
+        # if val_steps < 1:
+        #     raise ...
+
         logger.info(f"Initializing training loop with {steps_per_epoch} train steps, {val_steps} val steps")
         logger.info(f"Gradients accumulated every {accumulation_steps} sub-steps")
         
@@ -598,19 +652,10 @@ class TrainingPipeline:
             logger.info(f"Epoch {epoch + 1}/{epochs} Start")
             logger.info(f"{log_system_resources()}")
 
-            # Use gradient accumulation with Keras fit method
-            if accumulation_steps > 1:
-                # For gradient accumulation, we need custom training loop
-                epoch_losses = self._train_epoch_with_accumulation(
-                    train_dataset, steps_per_epoch, accumulation_steps
-                )
-            else:
-                # Direct training without accumulation
-                epoch_losses = self._train_epoch_direct(
-                    train_dataset, steps_per_epoch
-                )
-            
-            # Validation
+            # Training
+            epoch_losses = self._train_epoch(train_dataset, steps_per_epoch, accumulation_steps)
+
+            # Validation 
             val_losses = self._validate_epoch(val_dataset, val_steps)
 
             # Log results
@@ -686,10 +731,10 @@ class TrainingPipeline:
         del val_concat, val_true, val_false
         gc.collect()
 
-    # TODO: come back to this
-    # BUG: Gradient accumulation bug causes num_replicas small updates instead of 1 large update
-    def _train_epoch_with_accumulation(self, train_dataset, steps_per_epoch, accumulation_steps):
-        """Training epoch with gradient accumulation"""
+    def _train_epoch(self, dataset, steps_per_epoch, accumulation_steps=1):
+        """
+        Perform a single training epoch with gradient accumulation (if accumulation_steps > 1)
+        """
         epoch_losses = {
             'total': 0.0,
             'reconstruction': 0.0,
@@ -697,10 +742,9 @@ class TrainingPipeline:
             'true': 0.0,
             'false': 0.0
         }
-        train_iterator = iter(train_dataset)
+        iterator = iter(dataset)
         
         for step in range(steps_per_epoch):
-            accumulated_gradients = None  # NOTE: not used? 
             step_losses = {
                 'total': 0.0,
                 'reconstruction': 0.0,
@@ -708,96 +752,97 @@ class TrainingPipeline:
                 'true': 0.0,
                 'false': 0.0
             }
-            
-            # Accumulate gradients over micro-batches
-            for micro_step in range(accumulation_steps):
-                micro_batch_data = next(train_iterator)
-                
-                # Use strategy.run to execute train step on all replicas
-                per_replica_results = self.strategy.run(self.vae.train_step, args=(micro_batch_data,))
-                
-                # The train_step already handles gradient computation and application, so we just need to collect the losses
-                step_losses['total'] += self.strategy.reduce(
-                    tf.distribute.ReduceOp.MEAN, per_replica_results['loss'], axis=None
-                )
-                step_losses['reconstruction'] += self.strategy.reduce(
-                    tf.distribute.ReduceOp.MEAN, per_replica_results['reconstruction_loss'], axis=None
-                )
-                step_losses['kl'] += self.strategy.reduce(
-                    tf.distribute.ReduceOp.MEAN, per_replica_results['kl_loss'], axis=None
-                )
-                step_losses['true'] += self.strategy.reduce(
-                    tf.distribute.ReduceOp.MEAN, per_replica_results['true_loss'], axis=None
-                )
-                step_losses['false'] += self.strategy.reduce(
-                    tf.distribute.ReduceOp.MEAN, per_replica_results['false_loss'], axis=None
-                )
-            
-            # Average losses
+
+            # Initialize accumulated gradients
+            accumulated_gradients = None
+            successful_accumulations = 0
+
+            # Process sub-steps for gradient accumulation
+            for sub_step in range(accumulation_steps):
+                try:
+                    micro_batch = next(iterator)
+
+                    # Compute gradients & losses
+                    micro_grads, micro_losses = self._distributed_train_step(micro_batch)
+
+                    # Sanity check: verify gradients are valid before accumulating
+                    if micro_grads is None or all(g is None for g in micro_grads):
+                        logger.warning(f"Step {step+1}, sub-step {sub_step+1}: "
+                                       f"All gradients are None, skipping this micro-batch")
+                        continue
+
+                    # Accumulate gradients over sub-steps
+                    if accumulated_gradients is None:
+                        accumulated_gradients = micro_grads
+                    else:
+                        accumulated_gradients = [
+                            ag + g if ag is not None and g is not None else ag or g 
+                            for ag, g in zip(accumulated_gradients, micro_grads)
+                        ]
+
+                    successful_accumulations += 1
+
+                    # Accumulate losses over sub-steps
+                    for key in step_losses: 
+                        step_losses[key] += micro_losses[key]
+
+                except StopIteration:  # Empty dataset 
+                    logger.error(f"Dataset exhausted at step {step+1}, sub-step {sub_step+1}")
+                    raise 
+
+                except Exception as e:
+                    logger.error(f"Error during gradient computation at step {step+1}, sub-step {sub_step+1}: {e}")
+                    raise 
+
+            # Sanity check: verify that gradient accumulation was successful 
+            if accumulated_gradients is None or successful_accumulations == 0: 
+                logger.error(f"Step {step+1}: No valid gradients accumulated!")
+                raise RuntimeError(f"Failed to accumulate gradients at step {step+1}")
+
+            # Average accumulated gradients over sub-steps 
+            accumulated_gradients = [
+                g / successful_accumulations if g is not None else None 
+                for g in accumulated_gradients
+            ]
+
+            # Sanity check: verify no NaN/Inf in gradients 
+            has_nan_or_inf = False 
+            for g in accumulated_gradients:
+                if g is not None and (tf.reduce_any(tf.math.is_nan(g)) or tf.reduce_any(tf.math.is_inf(g))):
+                    has_nan_or_inf = True 
+                    break
+
+            if has_nan_or_inf:
+                logger.error(f"Step {step+1}: NaN or Inf detected in gradients!")
+                raise RuntimeError(f"NaN/Inf gradients at step {step+1}")
+
+            # Apply accumulated gradients 
+            self._apply_gradients(accumulated_gradients)
+
             for key in step_losses:
-                step_losses[key] /= accumulation_steps
+                # Average step losses over sub-steps
+                step_losses[key] /= successful_accumulations
                 epoch_losses[key] += step_losses[key]
 
-            logger.info(f"Step {step+1}/{steps_per_epoch}, "
-                       f"Total: {step_losses['total']:.4f}, "
-                       f"Recon: {step_losses['reconstruction']:.4f}, "
-                       f"KL: {step_losses['kl']:.4f}, "
-                       f"True: {step_losses['true']:.4f}, "
-                       f"False: {step_losses['false']:.4f}")
+            # Log progress every 10 steps
+            if (step + 1) % 10 == 0 or (step + 1) == steps_per_epoch:
+                logger.info(f"Step {step+1}/{steps_per_epoch}, "
+                           f"Total: {step_losses['total']:.4f}, "
+                           f"Recon: {step_losses['reconstruction']:.4f}, "
+                           f"KL: {step_losses['kl']:.4f}, "
+                           f"True: {step_losses['true']:.4f}, "
+                           f"False: {step_losses['false']:.4f}")
 
-        # Average epoch losses
+        # Average epoch losses over training steps
         for key in epoch_losses:
             epoch_losses[key] /= steps_per_epoch
             
         return epoch_losses
-
-    # TODO: come back to this
-    def _train_epoch_direct(self, train_dataset, steps_per_epoch):
-        """Direct training epoch without gradient accumulation"""
-        epoch_losses = {
-            'total': 0.0,
-            'reconstruction': 0.0,
-            'kl': 0.0,
-            'true': 0.0,
-            'false': 0.0
-        }
-        train_iterator = iter(train_dataset)
-        
-        for step in range(steps_per_epoch):
-            batch_data = next(train_iterator)
-            
-            # Use strategy.run for distributed execution
-            per_replica_results = self.strategy.run(self.vae.train_step, args=(batch_data,))
-            
-            # Reduce results across replicas
-            step_losses = {
-                'total': self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_results['loss'], axis=None),
-                'reconstruction': self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_results['reconstruction_loss'], axis=None),
-                'kl': self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_results['kl_loss'], axis=None),
-                'true': self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_results['true_loss'], axis=None),
-                'false': self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_results['false_loss'], axis=None)
-            }
-            
-            # Accumulate losses
-            for key in step_losses:
-                epoch_losses[key] += step_losses[key]
-            
-            logger.info(f"Step {step+1}/{steps_per_epoch}, "
-                       f"Total: {step_losses['total']:.4f}, "
-                       f"Recon: {step_losses['reconstruction']:.4f}, "
-                       f"KL: {step_losses['kl']:.4f}, "
-                       f"True: {step_losses['true']:.4f}, "
-                       f"False: {step_losses['false']:.4f}")
-        
-        # Average epoch losses
-        for key in epoch_losses:
-            epoch_losses[key] /= steps_per_epoch
-            
-        return epoch_losses
-
-    # TODO: come back to this
-    def _validate_epoch(self, val_dataset, val_steps):
-        """Validation epoch"""
+    
+    def _validate_epoch(self, dataset, steps):
+        """
+        Perform a single validation epoch
+        """
         val_losses = {
             'total': 0.0,
             'reconstruction': 0.0,
@@ -805,83 +850,134 @@ class TrainingPipeline:
             'true': 0.0,
             'false': 0.0
         }
-        val_iterator = iter(val_dataset)
+        iterator = iter(dataset)
         
-        for val_step in range(val_steps):
-            val_batch_data = next(val_iterator)
-            
-            # Use strategy.run for distributed validation
-            val_results = self.strategy.run(self.vae.test_step, args=(val_batch_data,))
-            
-            # Reduce validation results
-            val_losses['total'] += self.strategy.reduce(
-                tf.distribute.ReduceOp.MEAN, val_results['loss'], axis=None
-            )
-            val_losses['reconstruction'] += self.strategy.reduce(
-                tf.distribute.ReduceOp.MEAN, val_results['reconstruction_loss'], axis=None
-            )
-            val_losses['kl'] += self.strategy.reduce(
-                tf.distribute.ReduceOp.MEAN, val_results['kl_loss'], axis=None
-            )
-            val_losses['true'] += self.strategy.reduce(
-                tf.distribute.ReduceOp.MEAN, val_results['true_loss'], axis=None
-            )
-            val_losses['false'] += self.strategy.reduce(
-                tf.distribute.ReduceOp.MEAN, val_results['false_loss'], axis=None
-            )
-        
-        # Average validation losses
+        for step in range(steps):
+            batch = next(iterator)
+            step_losses = self._distributed_val_step(batch)
+
+            for key in val_losses:
+                val_losses[key] += step_losses[key]
+
+        # Average validation losses over validation steps
         for key in val_losses:
-            val_losses[key] /= val_steps
-            
+            val_losses[key] /= steps
+
         return val_losses
-    
-    def train_beta_vae(self, start_round=1):
+
+    @tf.function
+    def _distributed_train_step(self, batch_data):
         """
-        Train beta-VAE with curriculum learning
+        Perform a single distributed training step
+        Returns reduced gradients & losses
         """
-        n_rounds = self.config.training.num_training_rounds
-        epochs = self.config.training.epochs_per_round
+        def step_fn(data):
+            """Per-replica training step"""
+            x, y = data
+            main_data = x[0]
+            true_data = x[1]
+            false_data = x[2]
 
-        # NOTE: move assertions to main.py
-        # if start_round > n_rounds: 
-        #     raise MaxRoundsExceededError(
-        #         f"Current round ({current_round}) is more than total rounds ({n_rounds})."
-        #         "Check model checkpoints, config.py, or CLI args."
-        #     )
-        
-        if start_round > 1:
-            logger.info(f"Resuming training from round {start_round}/{n_rounds}")
-        else:
-            logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
-        
-        for round_idx in range(start_round-1, n_rounds):
-            snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
+            with tf.GradientTape() as tape:
+                # Compute losses 
+                losses = self.vae.compute_total_loss(main_data, true_data, false_data, y, training=True)
 
-            logger.info(f"\n{'='*50}")
-            logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
-            logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
-            logger.info(f"{'='*50}")
+                # Scale loss by num_replicas for gradient averaging 
+                scaled_loss = losses['total_loss'] / tf.cast(tf.distribute.get_strategy().num_replicas_in_sync, tf.float32)
 
-            # Reset learning rate & adaptive state before new curriculum stage
-            original_lr = self.config.training.base_learning_rate
-            current_lr = self.vae.optimizer.learning_rate.numpy()
-            self.vae.optimizer.learning_rate.assign(original_lr)
-            
-            if hasattr(self, 'best_val_loss'):
-                delattr(self, 'best_val_loss')
-            if hasattr(self, 'patience_counter'):
-                delattr(self, 'patience_counter')
+            # Compute gradients
+            gradients = tape.gradient(scaled_loss, self.vae.trainable_variables)
 
-            logger.info(f"Curriculum LR reset: {current_lr:.2e} → {original_lr:.2e}")
-            
-            self.train_round(
-                round_idx=round_idx,
-                epochs=epochs,
-                snr_base=snr_base,
-                snr_range=snr_range
+            return gradients, losses
+
+        # Run training step on all replicas 
+        per_replica_grads, per_replica_losses = self.strategy.run(step_fn, args=(batch_data,))
+
+        # Reduce gradients across replicas 
+        reduced_grads = []
+        for grad in per_replica_grads:
+            if grad is not None:
+                reduced_grad = self.strategy.reduce(
+                    tf.distribute.ReduceOp.MEAN, grad, axis=None
+                )
+                reduced_grads.append(reduced_grad)
+            else:
+                reduced_grads.append(None)
+
+        # Reduce losses across replicas
+        reduced_losses = {
+            'total': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['total_loss'], axis=None
+            ),
+            'reconstruction': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['reconstruction_loss'], axis=None
+            ),
+            'kl': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['kl_loss'], axis=None
+            ),
+            'true': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['true_loss'], axis=None
+            ),
+            'false': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['false_loss'], axis=None
             )
-            
+        }
+
+        return reduced_grads, reduced_losses
+
+    @tf.function 
+    def _apply_gradients(self, gradients):
+        """
+        Clips & applies gradients
+        """
+        # Clip gradients for additional stability
+        clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+
+        # Apply gradients 
+        self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
+
+    @tf.function
+    def _distributed_val_step(self, batch_data):
+        """
+        Perform a single distributed validation step
+        Returns reduced losses
+        """
+        def step_fn(data):
+            """Per-replica validation step"""
+            x, y = data
+            main_data = x[0]
+            true_data = x[1]
+            false_data = x[2]
+
+            # Compute losses 
+            losses = self.vae.compute_total_loss(main_data, true_data, false_data, y, training=False)
+
+            return losses
+
+        # Run validation step on all replicas 
+        per_replica_losses = self.strategy.run(step_fn, args=(batch_data,))
+
+        # Reduce losses across replicas
+        reduced_losses = {
+            'total': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['total_loss'], axis=None
+            ),
+            'reconstruction': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['reconstruction_loss'], axis=None
+            ),
+            'kl': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['kl_loss'], axis=None
+            ),
+            'true': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['true_loss'], axis=None
+            ),
+            'false': self.strategy.reduce(
+                tf.distribute.ReduceOp.MEAN, per_replica_losses['false_loss'], axis=None
+            )
+        }
+
+        return reduced_losses
+
     def train_random_forest(self):
         """Train Random Forest"""
         logger.info("Training Random Forest classifier...")

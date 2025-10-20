@@ -52,19 +52,6 @@ class BetaVAE(keras.Model):
         self.alpha = alpha  
         self.beta = beta    
         
-        # Loss trackers
-        self.total_loss_tracker = keras.metrics.Mean(name="total_loss")
-        self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
-        self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
-        self.true_loss_tracker = keras.metrics.Mean(name="true_loss")
-        self.false_loss_tracker = keras.metrics.Mean(name="false_loss")
-
-        self.val_total_loss_tracker = keras.metrics.Mean(name="val_total_loss")
-        self.val_reconstruction_loss_tracker = keras.metrics.Mean(name="val_reconstruction_loss")
-        self.val_kl_loss_tracker = keras.metrics.Mean(name="val_kl_loss")
-        self.val_true_loss_tracker = keras.metrics.Mean(name="val_true_loss")
-        self.val_false_loss_tracker = keras.metrics.Mean(name="val_false_loss")
-    
     def call(self, inputs, training=None):
         """
         Forward pass through the VAE
@@ -254,74 +241,6 @@ class BetaVAE(keras.Model):
             'false_loss': false_loss
         }
     
-    # TODO: come back to this
-    def train_step(self, data):
-        """Model training step"""
-        x, y = data
-        true_data = x[1]
-        false_data = x[2]
-        main_data = x[0]
-
-        with tf.GradientTape() as tape:
-            losses = self.distributed_forward_pass(main_data, true_data, false_data, y, training=True)
-            # Scale loss for distributed training
-            scaled_loss = losses['total_loss'] / tf.cast(tf.distribute.get_strategy().num_replicas_in_sync, tf.float32)
-
-        # Compute and apply gradients
-        gradients = tape.gradient(scaled_loss, self.trainable_variables)
-        gradients, _ = tf.clip_by_global_norm(gradients, 1.0)  # NOTE: Use gradient clipping as a safety layer for training stability
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-
-        # Update metrics
-        self.total_loss_tracker.update_state(losses['total_loss'])
-        self.reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
-        self.kl_loss_tracker.update_state(losses['kl_loss'])
-        self.true_loss_tracker.update_state(losses['true_loss'])
-        self.false_loss_tracker.update_state(losses['false_loss'])
-        
-        return {
-            "loss": self.total_loss_tracker.result(),
-            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
-            "kl_loss": self.kl_loss_tracker.result(),
-            "true_loss": self.true_loss_tracker.result(),
-            "false_loss": self.false_loss_tracker.result()
-        }
-
-    # TODO: come back to this
-    def test_step(self, data):
-        """Model validation step"""
-        x, y = data
-        true_data = x[1]
-        false_data = x[2]
-        main_data = x[0]
-
-        losses = self.distributed_forward_pass(main_data, true_data, false_data, y, training=False)
-
-        # Update metrics
-        self.val_total_loss_tracker.update_state(losses['total_loss'])
-        self.val_reconstruction_loss_tracker.update_state(losses['reconstruction_loss'])
-        self.val_kl_loss_tracker.update_state(losses['kl_loss'])
-        self.val_true_loss_tracker.update_state(losses['true_loss'])
-        self.val_false_loss_tracker.update_state(losses['false_loss'])
-        
-        return {
-            "loss": self.val_total_loss_tracker.result(),
-            "reconstruction_loss": self.val_reconstruction_loss_tracker.result(),
-            "kl_loss": self.val_kl_loss_tracker.result(),
-            "true_loss": self.val_true_loss_tracker.result(),
-            "false_loss": self.val_false_loss_tracker.result()
-        }
-        
-    @property
-    def metrics(self):
-        return [
-            self.total_loss_tracker,
-            self.reconstruction_loss_tracker,
-            self.kl_loss_tracker,
-            self.true_loss_tracker,
-            self.false_loss_tracker
-        ]
-
 def build_encoder(latent_dim: int = 8, 
                  dense_size: int = 512,
                  kernel_size: Tuple[int, int] = (3, 3)) -> keras.Model:
