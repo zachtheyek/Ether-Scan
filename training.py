@@ -388,6 +388,8 @@ class TrainingPipeline:
         # Create VAE model inside distributed context
         with self.strategy.scope():
             self.vae = create_vae_model(config)
+            # NOTE: does this solve distributed context?
+            self._build_optimizer()
 
         self.rf_model = None
         
@@ -418,6 +420,34 @@ class TrainingPipeline:
             self.train_writer.close()
         if hasattr(self, 'val_writer'):
             self.val_writer.close()
+
+    def _build_optimizer(self):
+        """
+        Build optimizer state by performing a dummy forward/backward pass 
+        Must be called within strategy scope & before training to initialize optimizer variables
+        """
+        # Create a dummy batch to trigger optimizer build
+        dummy_batch_size = 1
+        num_observations = self.config.data.num_observations
+        time_bins = self.config.data.time_bins
+        width_bin = self.config.data.width_bin // self.config.data.downsample_factor
+
+        dummy_data = tf.zeros((dummy_batch_size, num_observations, time_bins, width_bin), dtype=tf.float32)
+        
+        # Perform one forward pass to build the model
+        _ = self.vae(dummy_data, training=False)
+        
+        # Create dummy gradients to build optimizer state
+        dummy_grads = [tf.zeros_like(var) for var in self.vae.trainable_variables]
+        
+        # NOTE: does this solve distributed context?
+        # Apply dummy gradients to build optimizer variables
+        @tf.function
+        def apply_dummy_grads():
+            self.vae.optimizer.apply_gradients(zip(dummy_grads, self.vae.trainable_variables))
+        self.strategy.run(apply_dummy_grads)
+        
+        logger.info("Optimizer built successfully within strategy scope")
 
     def setup_directories(self, start_round=1):
         """Create necessary directories"""
@@ -513,12 +543,12 @@ class TrainingPipeline:
         if start_round > 1:
             logger.info(f"Resuming training from round {start_round}/{n_rounds}")
         else:
-            logger.info(f"Starting iterative curriculum training for {n_rounds} rounds")
+            logger.info(f"Starting training for {n_rounds} rounds")
         
         for round_idx in range(start_round-1, n_rounds):
             snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config.training)
 
-            logger.info(f"\n{'='*50}")
+            logger.info(f"{'='*50}")
             logger.info(f"ROUND {round_idx + 1}/{n_rounds}")
             logger.info(f"SNR range: {snr_base}-{snr_base+snr_range}")
             logger.info(f"{'='*50}")
@@ -635,13 +665,13 @@ class TrainingPipeline:
         steps_per_epoch = n_train_trimmed // global_batch_size
         val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
 
-        # TODO: move assertions to main.py
-        # if accumulation_steps < 1:
-        #     raise ...
-        # if steps_per_epoch < 1:
-        #     raise ...
-        # if val_steps < 1:
-        #     raise ...
+        # Sanity check: validate step sizes
+        if accumulation_steps < 1:
+            raise ValueError(f"Accumulation steps < 1: global_batch_size ({global_batch_size}) must be >= per_replica_batch_size * num_replicas ({per_replica_batch_size * num_replicas})")
+        if steps_per_epoch < 1:
+            raise ValueError(f"Steps per epoch < 1: n_train_trimmed ({n_train_trimmed}) must be >= global_batch_size ({global_batch_size})")
+        if val_steps < 1:
+            raise ValueError(f"Validation steps < 1: n_val_trimmed ({n_val_trimmed}) must be >= per_replica_val_batch_size * num_replicas ({per_replica_val_batch_size * num_replicas})")
 
         logger.info(f"Initializing training loop with {steps_per_epoch} train steps, {val_steps} val steps")
         logger.info(f"Gradients accumulated every {accumulation_steps} sub-steps")
