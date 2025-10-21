@@ -563,7 +563,7 @@ class TrainingPipeline:
         n_train = int(n_samples * train_val_split)
         n_val = n_samples - n_train
         
-        # NOTE: are my trimmings correct? why val_steps logged as 0?
+        # NOTE: are my trimmings correct? why val_steps logged as 0? and n_val_trimmed also logged as 0?
         n_train_trimmed = (n_train // global_batch_size) * global_batch_size
         n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
 
@@ -933,14 +933,19 @@ class TrainingPipeline:
         """
         Clips & applies gradients with distributed context
         """
-        def apply_fn():
-            # Clip gradients for additional stability
-            clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
-            # Apply gradients 
-            self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
+        # def apply_fn():
+        #     # Clip gradients for additional stability
+        #     clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+        #     # Apply gradients 
+        #     self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
+        #
+        # # Apply gradients on all replicas 
+        # self.strategy.run(apply_fn)
 
-        # Apply gradients on all replicas 
-        self.strategy.run(apply_fn)
+        # Clip gradients for additional stability
+        clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+        # Apply gradients 
+        self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
 
     @tf.function
     def _distributed_val_step(self, batch_data):
