@@ -70,7 +70,6 @@ class TrainingConfig:
     per_replica_val_batch_size: int = 4096 
 
     signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
-    prepare_latents_chunk_size: int = 1000  # Maximum cadences to process through encoder at once during RF training
 
     # Curriculum learning params
     snr_base: int = 10 
@@ -178,7 +177,6 @@ class Config:
                 'global_batch_size': self.training.global_batch_size,
                 'per_replica_val_batch_size': self.training.per_replica_val_batch_size,
                 'signal_injection_chunk_size': self.training.signal_injection_chunk_size,
-                'prepare_latents_chunk_size': self.training.prepare_latents_chunk_size,
                 'snr_base': self.training.snr_base,
                 'initial_snr_range': self.training.initial_snr_range,
                 'final_snr_range': self.training.final_snr_range,

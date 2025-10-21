@@ -91,10 +91,6 @@ class BetaVAE(keras.Model):
         """
         Clustering loss for true signals
         """
-        # Add polarization dimension if missing
-        if len(true_data.shape) == 4:
-            true_data = tf.expand_dims(true_data, -1)  # (batch, 6, 16, 512, 1)
-        
         batch_size = tf.shape(true_data)[0]
         
         # Process all observations at once for efficiency
@@ -148,10 +144,6 @@ class BetaVAE(keras.Model):
         """
         Clustering loss for false signals
         """
-        # Add polarization dimension if missing
-        if len(false_data.shape) == 4:
-            false_data = tf.expand_dims(false_data, -1)
-
         batch_size = tf.shape(false_data)[0]
         
         # Process all observations at once for efficiency

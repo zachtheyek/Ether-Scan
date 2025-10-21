@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.initializers import HeNormal, GlorotNormal
 from tensorflow.keras.layers import Conv2D, Dense
-from typing import List, Optional, Tuple
+from typing import List, Dict, Tuple, Optional
 import logging
 import os
 import shutil
@@ -26,14 +26,6 @@ from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
-
-# TODO: move assertions to main.py
-# class MaxRoundsExceededError(Exception):
-#     """
-#     Raised when current_round > self.config.training.num_training_rounds during iterative training.
-#     Immediately terminates iterative training
-#     """
-#     pass
 
 def log_system_resources():
     """Log system resource usage"""
@@ -309,6 +301,175 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
     
     return config.snr_base, int(current_range)
 
+def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Optional[float], 
+                                per_replica_batch_size: int, global_batch_size: Optional[int], 
+                                per_replica_val_batch_size: Optional[int], num_replicas: int,
+                                strategy: tf.distribute.Strategy, shuffle: bool = True) -> Dict:
+    """
+    Prepare distributed datasets for training or inference
+
+    Args:
+        data: Dictionary with keys 'concatenated', 'true', 'false' (numpy arrays)
+        n_samples: Number of samples in data 
+        train_val_split: If provided, split data into train/val sets. If None, return single dataset for inference
+        per_replica_batch_size: Batch size per replica for training (or inference if no split)
+        global_batch_size: Required if train_val_split is provided. Effective batch size across all replicas for training
+        per_replica_val_batch_size: Required if train_val_split is provided. Batch size per replica for validation
+        num_replicas: Number of replicas in strategy
+        strategy: TensorFlow distribution strategy
+        shuffle: Whether to shuffle training data (default True, set False for inference)
+
+    Returns:
+        If train_val_split is None:
+            {dataset, n_trimmed, steps}
+            Single distributed dataset, number of samples in dataset, and number of steps 
+        If train_val_split is provided:
+            {train_dataset, val_dataset, n_train_trimmed, n_val_trimmed, train_steps, accumulation_steps, val_steps}
+            Train/val distributed datasets, number of samples in each, number of steps for each (including accumulation sub-steps)
+    """
+    if train_val_split is not None:
+        # Training case: split into train and val
+        if global_batch_size is None or per_replica_val_batch_size is None:
+            raise ValueError("global_batch_size and per_replica_val_batch_size are required when train_val_split is provided")
+
+        # Split & trim to fit train/val batch size
+        n_train = int(n_samples * train_val_split)
+        n_val = n_samples - n_train
+
+        n_train_trimmed = (n_train // global_batch_size) * global_batch_size
+        n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
+
+        logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
+
+        # Prepare data
+        train_concat = data['concatenated'][:n_train_trimmed]
+        train_true = data['true'][:n_train_trimmed]
+        train_false = data['false'][:n_train_trimmed]
+
+        val_start = n_train
+        val_end = val_start + n_val_trimmed
+        val_concat = data['concatenated'][val_start:val_end]
+        val_true = data['true'][val_start:val_end]
+        val_false = data['false'][val_start:val_end]
+
+        # Create generator functions for memory-efficient data loading
+        def train_generator():
+            while True:  # Make generators infinite to reset state between epochs
+                indices = np.arange(len(train_concat))
+                if shuffle:
+                    # Perform global shuffle on each epoch so each pass through the data is unique
+                    np.random.shuffle(indices)
+                for idx in indices:
+                    yield (train_concat[idx], train_true[idx], train_false[idx]), train_concat[idx]
+
+        def val_generator():
+            while True:  # Make generators infinite to reset state between epochs
+                # Maintain order on each epoch since no gradients are calculated during validation
+                for idx in range(len(val_concat)):
+                    yield (val_concat[idx], val_true[idx], val_false[idx]), val_concat[idx]
+
+        # Determine dataset output signature
+        sample_shape = train_concat.shape[1:]
+        output_signature = (
+            (
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+            ),
+            tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+        )
+
+        # Create datasets using generators to reduce GPU memory pressure
+        # Data is kept on CPU & transferred to GPU in batches on-demand
+        logger.info(f"Creating infinite datasets from generators with per replica batch size - "
+                    f"Train: {per_replica_batch_size}, Val: {per_replica_val_batch_size}")
+
+        train_dataset = tf.data.Dataset.from_generator(
+            train_generator,
+            output_signature=output_signature
+        ).batch(per_replica_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
+
+        val_dataset = tf.data.Dataset.from_generator(
+            val_generator,
+            output_signature=output_signature
+        ).batch(per_replica_val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
+
+        # Distribute datasets across GPUs
+        logger.info(f"Distributing datasets across {num_replicas} GPUs")
+
+        train_dataset = strategy.experimental_distribute_dataset(train_dataset)
+        val_dataset = strategy.experimental_distribute_dataset(val_dataset)
+
+        # Calculate steps
+        train_steps = n_train_trimmed // global_batch_size
+        accumulation_steps = global_batch_size // (per_replica_batch_size * num_replicas)
+        val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
+
+        return {
+            'train_dataset': train_dataset,
+            'val_dataset': val_dataset,
+            'n_train_trimmed': n_train_trimmed,
+            'n_val_trimmed': n_val_trimmed,
+            'train_steps': train_steps,
+            'accumulation_steps': accumulation_steps,
+            'val_steps': val_steps
+        }
+
+    else:
+        # Inference case: no train/val split
+        batch_size = per_replica_batch_size * num_replicas
+        n_trimmed = (n_samples // batch_size) * batch_size
+
+        logger.info(f"Data alignment: {n_samples}→{n_trimmed}")
+
+        # Prepare data
+        concat = data['concatenated'][:n_trimmed]
+        true = data['true'][:n_trimmed]
+        false = data['false'][:n_trimmed]
+
+        # Create generator function for memory-efficient data loading
+        def data_generator():
+            while True:  # Make generator infinite to reset state between passes
+                indices = np.arange(len(concat))
+                if shuffle:
+                    np.random.shuffle(indices)
+                for idx in indices:
+                    yield (concat[idx], true[idx], false[idx]), concat[idx]
+
+        # Determine dataset output signature
+        sample_shape = concat.shape[1:]
+        output_signature = (
+            (
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+                tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+            ),
+            tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
+        )
+
+        # Create dataset using generator to reduce GPU memory pressure
+        # Data is kept on CPU & transferred to GPU in batches on-demand
+        logger.info(f"Creating infinite dataset from generator with per replica batch size: {per_replica_batch_size}")
+
+        dataset = tf.data.Dataset.from_generator(
+            data_generator,
+            output_signature=output_signature
+        ).batch(per_replica_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
+
+        # Distribute dataset across GPUs
+        logger.info(f"Distributing dataset across {num_replicas} GPUs")
+
+        dataset = strategy.experimental_distribute_dataset(dataset)
+
+        # Calculate steps
+        steps = n_trimmed // batch_size
+
+        return {
+            'dataset': dataset,
+            'n_trimmed': n_trimmed,
+            'steps': steps,
+        }
+
 def compute_expected_std(layer):
     """Compute expected std based on initializer."""
     weights = layer.get_weights()
@@ -432,7 +593,7 @@ class TrainingPipeline:
         width_bin = self.config.data.width_bin // self.config.data.downsample_factor
 
         dummy_data = tf.zeros((dummy_batch_size, num_observations, time_bins, width_bin), dtype=tf.float32)
-        
+
         # Perform one forward pass to build the model
         _ = self.vae(dummy_data, training=False)
         
@@ -532,13 +693,6 @@ class TrainingPipeline:
         n_rounds = self.config.training.num_training_rounds
         epochs = self.config.training.epochs_per_round
 
-        # TODO: move assertions to main.py
-        # if start_round > n_rounds: 
-        #     raise MaxRoundsExceededError(
-        #         f"Current round ({current_round}) is more than total rounds ({n_rounds})."
-        #         "Check model checkpoints, config.py, or CLI args."
-        #     )
-        
         if start_round > 1:
             logger.info(f"Resuming training from round {start_round}/{n_rounds}")
         else:
@@ -573,103 +727,48 @@ class TrainingPipeline:
             
     def train_round(self, round_idx: int, epochs: int, snr_base: int, snr_range: int):
         """
-        Perform a single training round with distributed dataset handling
+        Perform a single training round
         """
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
 
-        n_samples = self.config.training.num_samples_beta_vae
-        train_val_split = self.config.training.train_val_split
-        
-        per_replica_batch_size = self.config.training.per_replica_batch_size
-        global_batch_size = self.config.training.global_batch_size
-        per_replica_val_batch_size = self.config.training.per_replica_val_batch_size
-        num_replicas = self.strategy.num_replicas_in_sync
-
         # Generate training data 
-        train_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
-        
-        # Split & trim to fit train/val batch size
-        n_train = int(n_samples * train_val_split)
-        n_val = n_samples - n_train
-        
-        n_train_trimmed = (n_train // global_batch_size) * global_batch_size
-        n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
+        train_data = self.data_generator.generate_training_batch(
+            self.config.training.num_samples_beta_vae, 
+            snr_base, 
+            snr_range
+        )
 
-        logger.info(f"Data alignment: Train {n_train}→{n_train_trimmed}, Val {n_val}→{n_val_trimmed}")
-        
-        # Prepare data 
-        train_concat = train_data['concatenated'][:n_train_trimmed]
-        train_true = train_data['true'][:n_train_trimmed]
-        train_false = train_data['false'][:n_train_trimmed]
-        
-        val_start = n_train
-        val_end = val_start + n_val_trimmed
-        val_concat = train_data['concatenated'][val_start:val_end]
-        val_true = train_data['true'][val_start:val_end]
-        val_false = train_data['false'][val_start:val_end]
+        # Distribute training data 
+        data = prepare_distributed_dataset(
+                data=train_data,
+                n_samples=self.config.training.num_samples_beta_vae,
+                train_val_split=self.config.training.train_val_split,
+                per_replica_batch_size=self.config.training.per_replica_batch_size,
+                global_batch_size=self.config.training.global_batch_size,
+                per_replica_val_batch_size=self.config.training.per_replica_val_batch_size,
+                num_replicas=self.strategy.num_replicas_in_sync,
+                strategy=self.strategy,
+                shuffle=True
+        )
+
+        train_dataset = data['train_dataset']
+        val_dataset = data['val_dataset']
+        n_train_trimmed = data['n_train_trimmed']
+        n_val_trimmed = data['n_val_trimmed']
+        steps_per_epoch = data['train_steps']
+        accumulation_steps = data['accumulation_steps']
+        val_steps = data['val_steps'] 
         
         del train_data
         gc.collect()
 
-        # Create generator functions for memory-efficient data loading
-        def train_generator():
-            while True:  # Make generators infinite to reset state between epochs
-                indices = np.arange(len(train_concat))
-                # Perform global shuffle on each epoch so each pass through the data is unique 
-                np.random.shuffle(indices)
-                for idx in indices:
-                    yield (train_concat[idx], train_true[idx], train_false[idx]), train_concat[idx]
-
-        def val_generator():
-            while True:  # Make generators infinite to reset state between epochs 
-                # Maintain order on each epoch since no gradients are calculated during validation
-                for idx in range(len(val_concat)):
-                    yield (val_concat[idx], val_true[idx], val_false[idx]), val_concat[idx]
-
-        # Determine dataset output signature
-        sample_shape = train_concat.shape[1:]
-        output_signature = (
-            (
-                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
-                tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
-                tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
-            ),
-            tf.TensorSpec(shape=sample_shape, dtype=tf.float32)
-        )
-
-        # Create datasets using generators to reduce GPU memory pressure
-        # Data is kept on CPU & transferred to GPU in batches on-demand
-        logger.info(f"Creating infinite datasets from generators with per replica batch size - "
-                    f"Train: {per_replica_batch_size}, Val: {per_replica_val_batch_size}")
-
-        train_dataset = tf.data.Dataset.from_generator(
-            train_generator,
-            output_signature=output_signature
-        ).batch(per_replica_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
-
-        val_dataset = tf.data.Dataset.from_generator(
-            val_generator,
-            output_signature=output_signature
-        ).batch(per_replica_val_batch_size).repeat().prefetch(tf.data.AUTOTUNE)
-        
-        # Distribute datasets across GPUs
-        logger.info(f"Distributing datasets across {num_replicas} GPUs")
-
-        train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
-        val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
-        
-        # Initialize training loop with manual forward pass for gradient accumulation
-        accumulation_steps = global_batch_size // (per_replica_batch_size * num_replicas)
-        steps_per_epoch = n_train_trimmed // global_batch_size
-        val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
-
         # Sanity check: verify step sizes are valid
         if accumulation_steps < 1:
-            raise ValueError(f"Accumulation steps < 1: global_batch_size ({global_batch_size}) must be >= per_replica_batch_size * num_replicas ({per_replica_batch_size * num_replicas})")
+            raise ValueError(f"Accumulation steps < 1: global_batch_size ({self.config.training.global_batch_size}) must be >= per_replica_batch_size * num_replicas ({self.config.training.per_replica_batch_size * self.strategy.num_replicas})")
         if steps_per_epoch < 1:
-            raise ValueError(f"Steps per epoch < 1: n_train_trimmed ({n_train_trimmed}) must be >= global_batch_size ({global_batch_size})")
+            raise ValueError(f"Steps per epoch < 1: n_train_trimmed ({n_train_trimmed}) must be >= global_batch_size ({self.config.training.global_batch_size})")
         if val_steps < 1:
-            raise ValueError(f"Validation steps < 1: n_val_trimmed ({n_val_trimmed}) must be >= per_replica_val_batch_size * num_replicas ({per_replica_val_batch_size * num_replicas})")
+            raise ValueError(f"Validation steps < 1: n_val_trimmed ({n_val_trimmed}) must be >= per_replica_val_batch_size * num_replicas ({self.config.training.per_replica_val_batch_size * self.strategy.num_replicas})")
 
         logger.info(f"Initializing training loop with {steps_per_epoch} train steps, {val_steps} val steps")
         logger.info(f"Gradients accumulated every {accumulation_steps} sub-steps")
@@ -754,11 +853,6 @@ class TrainingPipeline:
             dir="checkpoints"
         )
         
-        # Clean up memory
-        del train_concat, train_true, train_false
-        del val_concat, val_true, val_false
-        gc.collect()
-
     def _train_epoch(self, dataset, steps_per_epoch, accumulation_steps=1):
         """
         Perform a single training epoch with gradient accumulation (if accumulation_steps > 1)
@@ -958,7 +1052,7 @@ class TrainingPipeline:
     @tf.function 
     def _apply_gradients(self, gradients):
         """
-        Clips & applies gradients with distributed context
+        Clip & apply gradients
         """
         # Clip gradients for additional stability
         clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
@@ -1048,11 +1142,7 @@ class TrainingPipeline:
             snr_base = self.config.training.snr_base
             snr_range = self.config.training.initial_snr_range
 
-            max_chunk_size = self.config.training.prepare_latents_chunk_size
-            n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
-            batch_size = self.config.training.per_replica_val_batch_size * self.strategy.num_replicas_in_sync
-
-            latent_dim = self.config.beta_vae.latent_dim 
+            latent_dim = self.config.beta_vae.latent_dim
             num_observations = self.config.data.num_observations
             time_bins = self.config.data.time_bins
             width_bin = self.config.data.width_bin // self.config.data.downsample_factor
@@ -1061,49 +1151,86 @@ class TrainingPipeline:
             logger.info(f"Preparing training set with SNR: {snr_base}-{snr_base+snr_range}")
 
             rf_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
-            
-            true_data = rf_data['true']
-            false_data = rf_data['false']
 
-            # Prepare latent vectors
-            logger.info(f"Generating {n_samples} latents in {n_chunks} chunks of max {max_chunk_size}")
+            # Prepare distributed dataset for inference
+            results = prepare_distributed_dataset(
+                data=rf_data,
+                n_samples=n_samples,
+                train_val_split=None,
+                per_replica_batch_size=self.config.training.per_replica_val_batch_size,
+                global_batch_size=None,
+                per_replica_val_batch_size=None,
+                num_replicas=self.strategy.num_replicas_in_sync,
+                strategy=self.strategy,
+                shuffle=False  # Deterministic latent generation
+            )
+
+            dataset = results['dataset']
+            n_trimmed = results['n_trimmed']
+            steps = results['steps']
+
+            logger.info(f"Generating latents for {n_trimmed} samples using distributed inference")
 
             # Pre-allocate latent arrays
-            true_latents = np.empty((n_samples * num_observations, latent_dim), dtype=np.float32)
-            false_latents = np.empty((n_samples * num_observations, latent_dim), dtype=np.float32)
+            true_latents = np.empty((n_trimmed * num_observations, latent_dim), dtype=np.float32)
+            false_latents = np.empty((n_trimmed * num_observations, latent_dim), dtype=np.float32)
 
-            for chunk_idx in range(n_chunks):
-                chunk_size = min(max_chunk_size, n_samples - chunk_idx * max_chunk_size)
-                if chunk_size <= 0:
-                    break
+            # Create distributed inference function
+            @tf.function
+            def distributed_encode(batch_data):
+                """Encode batch data using distributed strategy"""
+                def encode_fn(data):
+                    """Per-replica encoding step"""
+                    x, _ = data
+                    true_data = x[1]  # Extract true component
+                    false_data = x[2]  # Extract false component
 
-                start_idx = chunk_idx * max_chunk_size
-                end_idx = start_idx + chunk_size
+                    # Reshape for encoder: (batch, 6, 16, 512) -> (batch * 6, 16, 512, 1)
+                    batch_size = tf.shape(true_data)[0]
+                    true_reshaped = tf.reshape(true_data, [-1, time_bins, width_bin, 1])
+                    false_reshaped = tf.reshape(false_data, [-1, time_bins, width_bin, 1])
 
-                true_chunk = true_data[start_idx:end_idx]
-                false_chunk = false_data[start_idx:end_idx]
+                    # Encode (returns mean, log_var, z)
+                    _, _, true_z = self.vae.encoder(true_reshaped, training=False)
+                    _, _, false_z = self.vae.encoder(false_reshaped, training=False)
 
-                # Reshape inputs for encoder -- expects (batch_size * 6, 16, 512, 1)
-                true_chunk_reshaped = true_chunk.reshape(-1, time_bins, width_bin, 1)
-                false_chunk_reshaped = false_chunk.reshape(-1, time_bins, width_bin, 1)
+                    return true_z, false_z
 
-                # Pass through encoder to get latents
-                logger.info(f"Generating chunk {chunk_idx + 1}/{n_chunks} with {chunk_size} latents")
+                # Run encoding on all replicas
+                per_replica_true, per_replica_false = self.strategy.run(encode_fn, args=(batch_data,))
 
-                _, _, true_latent_chunk = self.vae.encoder.predict(true_chunk_reshaped, batch_size=batch_size)
-                _, _, false_latent_chunk = self.vae.encoder.predict(false_chunk_reshaped, batch_size=batch_size)
+                # Gather results from all replicas
+                true_gathered = self.strategy.gather(per_replica_true, axis=0)
+                false_gathered = self.strategy.gather(per_replica_false, axis=0)
 
-                # Store directly into pre-allocated arrays
-                true_latents[start_idx*num_observations:end_idx*num_observations] = true_latent_chunk
-                false_latents[start_idx*num_observations:end_idx*num_observations] = false_latent_chunk
+                return true_gathered, false_gathered
 
-                # Clean up
-                del true_chunk, false_chunk, true_chunk_reshaped, false_chunk_reshaped
-                del true_latent_chunk, false_latent_chunk
-                gc.collect()
+            # Process all batches
+            iterator = iter(dataset)
+            current_idx = 0
+
+            for step in range(steps):
+                batch = next(iterator)
+
+                # Get latents for this batch
+                true_batch_latents, false_batch_latents = distributed_encode(batch)
+
+                # Convert to numpy and store
+                true_batch_np = true_batch_latents.numpy()
+                false_batch_np = false_batch_latents.numpy()
+
+                batch_latent_size = true_batch_np.shape[0]
+                true_latents[current_idx:current_idx + batch_latent_size] = true_batch_np
+                false_latents[current_idx:current_idx + batch_latent_size] = false_batch_np
+
+                current_idx += batch_latent_size
+
+                # Log progress
+                if (step + 1) % 10 == 0 or (step + 1) == steps:
+                    logger.info(f"Generated latents for step {step + 1}/{steps}")
 
             # Clear intermediate data
-            del rf_data, true_data, false_data
+            del rf_data, dataset
             gc.collect()
 
             # Train Random Forest classifier

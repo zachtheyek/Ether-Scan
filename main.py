@@ -234,8 +234,6 @@ def train_command(args):
         config.training.per_replica_val_batch_size = args.val_batch_size
     if args.signal_injection_chunk_size:
         config.training.signal_injection_chunk_size = args.signal_injection_chunk_size
-    if args.prepare_latents_chunk_size:
-        config.training.prepare_latents_chunk_size = args.prepare_latents_chunk_size
     if args.snr_base:
         config.training.snr_base = args.snr_base
     if args.initial_snr_range:
@@ -515,7 +513,6 @@ def main():
     # Add subcommands
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     
-    # TODO: finish adding training args
     # Training command
     train_parser = subparsers.add_parser('train', help='Training pipeline (defaults in config.py)')
     train_parser.add_argument('--rounds', type=int, default=None,
@@ -536,8 +533,6 @@ def main():
                               help='Per replica batch size for validation')
     train_parser.add_argument('--signal-injection-chunk-size', type=int, default=None,
                               help='Maximum cadences to process at once during data generation')
-    train_parser.add_argument('--prepare-latents-chunk-size', type=int, default=None,
-                              help='Maximum cadences to process through encoder at once during RF training')
     train_parser.add_argument('--snr-base', type=int, default=None,
                               help='Base SNR for curriculum learning')
     train_parser.add_argument('--initial-snr-range', type=int, default=None,
@@ -572,6 +567,7 @@ def main():
                               help='Directory to load model tag from. Argument appended to outputs directory')
     train_parser.add_argument('--save-tag', type=str, default=None,
                               help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
+    # TODO: finish adding train_command args 
     # train_parser.add_argument('--start-round', type=int, default=None,
                             # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
 
