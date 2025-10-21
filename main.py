@@ -214,8 +214,14 @@ def train_command(args):
     
     # Load configuration
     config = Config()
-    
+
     # Override config values with CLI args
+    if args.num_target_backgrounds:
+        config.data.num_target_backgrounds = args.num_target_backgrounds
+    if args.background_load_chunk_size:
+        config.data.background_load_chunk_size = args.background_load_chunk_size
+    if args.max_chunks_per_file:
+        config.data.max_chunks_per_file = args.max_chunks_per_file
     if args.rounds:
         config.training.num_training_rounds = args.rounds
     if args.epochs:
@@ -515,6 +521,12 @@ def main():
     
     # Training command
     train_parser = subparsers.add_parser('train', help='Training pipeline (defaults in config.py)')
+    train_parser.add_argument('--num-target-backgrounds', type=int, default=None,
+                              help='Number of background cadences to load')
+    train_parser.add_argument('--background-load-chunk-size', type=int, default=None,
+                              help='Maximum cadences to process at once during background loading')
+    train_parser.add_argument('--max-chunks-per-file', type=int, default=None,
+                              help='Maximum chunks to load from a single file')
     train_parser.add_argument('--rounds', type=int, default=None,
                               help='Number of training rounds')
     train_parser.add_argument('--epochs', type=int, default=None,
@@ -567,7 +579,7 @@ def main():
                               help='Directory to load model tag from. Argument appended to outputs directory')
     train_parser.add_argument('--save-tag', type=str, default=None,
                               help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
-    # TODO: finish adding train_command args 
+    # TODO: finish adding train_command args
     # train_parser.add_argument('--start-round', type=int, default=None,
                             # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
 

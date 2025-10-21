@@ -1,3 +1,5 @@
+# TODO: remove unaccessed config params 
+# TODO: update to_dict to match config params
 """
 Configuration module for Ether-Scan Pipeline
 """
@@ -134,9 +136,6 @@ class Config:
         }
         return subset_map.get(filename, (None, None))
     
-    # TODO: make sure config params are properly used throughout code base 
-    # TODO: remove unaccessed config params 
-    # TODO: update to_dict to match config params
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {
