@@ -385,10 +385,9 @@ class TrainingPipeline:
         # Initialize components
         self.data_generator = DataGenerator(config, background_data)
         
-        # Create VAE model inside distributed context
+        # Create VAE model & optimizer inside distributed context
         with self.strategy.scope():
             self.vae = create_vae_model(config)
-            # NOTE: does this solve distributed context?
             self._build_optimizer()
 
         self.rf_model = None
@@ -440,11 +439,11 @@ class TrainingPipeline:
         # Create dummy gradients to build optimizer state
         dummy_grads = [tf.zeros_like(var) for var in self.vae.trainable_variables]
         
-        # NOTE: does this solve distributed context?
         # Apply dummy gradients to build optimizer variables
         @tf.function
         def apply_dummy_grads():
             self.vae.optimizer.apply_gradients(zip(dummy_grads, self.vae.trainable_variables))
+
         self.strategy.run(apply_dummy_grads)
         
         logger.info("Optimizer built successfully within strategy scope")
@@ -593,7 +592,6 @@ class TrainingPipeline:
         n_train = int(n_samples * train_val_split)
         n_val = n_samples - n_train
         
-        # NOTE: are my trimmings correct? why val_steps logged as 0? and n_val_trimmed also logged as 0?
         n_train_trimmed = (n_train // global_batch_size) * global_batch_size
         n_val_trimmed = (n_val // per_replica_val_batch_size) * per_replica_val_batch_size
 
@@ -665,7 +663,7 @@ class TrainingPipeline:
         steps_per_epoch = n_train_trimmed // global_batch_size
         val_steps = n_val_trimmed // (per_replica_val_batch_size * num_replicas)
 
-        # Sanity check: validate step sizes
+        # Sanity check: verify step sizes are valid
         if accumulation_steps < 1:
             raise ValueError(f"Accumulation steps < 1: global_batch_size ({global_batch_size}) must be >= per_replica_batch_size * num_replicas ({per_replica_batch_size * num_replicas})")
         if steps_per_epoch < 1:
@@ -847,7 +845,7 @@ class TrainingPipeline:
                 raise RuntimeError(f"NaN/Inf gradients at step {step+1}")
 
             # Apply accumulated gradients 
-            self._distributed_apply_gradients(accumulated_gradients)
+            self._apply_gradients(accumulated_gradients)
 
             for key in step_losses:
                 # Average step losses over sub-steps
@@ -957,21 +955,11 @@ class TrainingPipeline:
 
         return reduced_grads, reduced_losses
 
-    # NOTE: remove @tf.function?
     @tf.function 
-    def _distributed_apply_gradients(self, gradients):
+    def _apply_gradients(self, gradients):
         """
         Clips & applies gradients with distributed context
         """
-        # def apply_fn():
-        #     # Clip gradients for additional stability
-        #     clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
-        #     # Apply gradients 
-        #     self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
-        #
-        # # Apply gradients on all replicas 
-        # self.strategy.run(apply_fn)
-
         # Clip gradients for additional stability
         clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
         # Apply gradients 
@@ -1064,7 +1052,7 @@ class TrainingPipeline:
             n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
             batch_size = self.config.training.per_replica_val_batch_size * self.strategy.num_replicas_in_sync
 
-            latent_dim = self.config.model.latent_dim 
+            latent_dim = self.config.beta_vae.latent_dim 
             num_observations = self.config.data.num_observations
             time_bins = self.config.data.time_bins
             width_bin = self.config.data.width_bin // self.config.data.downsample_factor
