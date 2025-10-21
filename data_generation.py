@@ -14,6 +14,15 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
+# Global variable to store background plates for multiprocessing workers
+# This avoids repeatedly serializing/deserializing large arrays
+_GLOBAL_BACKGROUNDS = None
+
+def _init_worker(backgrounds):
+    """Initialize worker process with shared background data"""
+    global _GLOBAL_BACKGROUNDS
+    _GLOBAL_BACKGROUNDS = backgrounds
+
 
 def log_norm(data: np.ndarray) -> np.ndarray:
     """
@@ -252,15 +261,17 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
 def _single_cadence_wrapper(args):
     """
     Wrapper function for multiprocessing that unpacks arguments and generates a single cadence
+    Uses global background plates to avoid serialization overhead
 
     Args:
-        args: Tuple of (function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
+        args: Tuple of (function, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
 
     Returns:
         Single cadence array of shape (6, 16, width_bin)
     """
-    function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range = args
-    return function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
+    global _GLOBAL_BACKGROUNDS
+    function, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range = args
+    return function(_GLOBAL_BACKGROUNDS, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
                    freq_resolution=freq_resolution, time_resolution=time_resolution,
                    inject=inject, dynamic_range=dynamic_range)
 
@@ -269,14 +280,14 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
                         snr_base: int = 10, snr_range: float = 40, width_bin: int = 512,
                         freq_resolution: float = 2.7939677238464355, time_resolution: float = 18.25361108,
                         inject: Optional[bool] = None, dynamic_range: Optional[float] = None,
-                        n_processes: Optional[int] = None) -> np.ndarray:
+                        pool: Optional[Pool] = None) -> np.ndarray:
     """
     Batch wrapper for creating multiple cadences using multiprocessing
 
     Args:
         function: Cadence generation function (create_false, create_true_single, create_true_double)
         samples: Number of cadences to generate
-        plate: Background plate array
+        plate: Background plate array (only used if pool is None)
         snr_base: Base SNR value
         snr_range: SNR range for randomization
         width_bin: Number of frequency bins
@@ -284,30 +295,39 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
         time_resolution: Time resolution in seconds
         inject: Whether to inject signals (for create_false)
         dynamic_range: Dynamic range for signal injection (for create_true_double)
-        n_processes: Number of parallel processes (defaults to cpu_count())
+        pool: Pre-initialized multiprocessing Pool (if None, runs sequentially)
 
     Returns:
         Array of shape (samples, 6, 16, width_bin) containing generated cadences
     """
-    if n_processes is None:
-        n_processes = cpu_count()
-
     # Pre-allocate output array
     cadence = np.zeros((samples, 6, 16, width_bin))
 
-    # Prepare arguments for each parallel task
-    args_list = [
-        (function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
-        for _ in range(samples)
-    ]
+    if pool is None:
+        # Sequential execution (backwards compatibility)
+        for i in range(samples):
+            cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
+                                          freq_resolution=freq_resolution, time_resolution=time_resolution,
+                                          inject=inject, dynamic_range=dynamic_range)
+    else:
+        # Parallel execution using provided pool
+        # Prepare arguments for each parallel task (no plate - uses global)
+        args_list = [
+            (function, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
+            for _ in range(samples)
+        ]
 
-    # Use multiprocessing Pool to generate cadences in parallel
-    with Pool(processes=n_processes) as pool:
-        results = pool.map(_single_cadence_wrapper, args_list)
+        # Calculate optimal chunksize for better load balancing
+        # Aim for ~4 chunks per worker to balance overhead vs parallelism
+        n_workers = pool._processes
+        chunksize = max(1, samples // (n_workers * 4))
 
-    # Collect results into pre-allocated array
-    for i, result in enumerate(results):
-        cadence[i, :, :, :] = result
+        # Use pool to generate cadences in parallel
+        results = pool.map(_single_cadence_wrapper, args_list, chunksize=chunksize)
+
+        # Collect results into pre-allocated array
+        for i, result in enumerate(results):
+            cadence[i, :, :, :] = result
 
     return cadence
 
@@ -349,9 +369,27 @@ class DataGenerator:
         # Set number of processes for multiprocessing
         self.n_processes = n_processes if n_processes is not None else cpu_count()
 
+        # Create persistent process pool for efficient parallel execution
+        # Pool is initialized once with background data to avoid repeated serialization
+        if self.n_processes > 1:
+            self.pool = Pool(
+                processes=self.n_processes,
+                initializer=_init_worker,
+                initargs=(background_plates,)
+            )
+            logger.info(f"Created multiprocessing pool with {self.n_processes} workers")
+        else:
+            self.pool = None
+            logger.info("Running in sequential mode (n_processes=1)")
+
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
-        logger.info(f"Using {self.n_processes} CPU cores for parallel signal injection")
+
+    def __del__(self):
+        """Clean up multiprocessing pool on deletion"""
+        if hasattr(self, 'pool') and self.pool is not None:
+            self.pool.close()
+            self.pool.join()
 
     def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
@@ -400,7 +438,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 inject=False,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             # RFI only
@@ -412,7 +450,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 inject=True,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             # ETI only
@@ -423,7 +461,7 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             # ETI + RFI
@@ -435,7 +473,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 dynamic_range=1,
-                n_processes=self.n_processes
+                pool=self.pool
             )
             
             # Concatenate for main training data (collapsed cadences)
@@ -453,7 +491,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 inject=False,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             half_false_with_rfi = batch_create_cadence(
@@ -464,7 +502,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 inject=True,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             half_true_single = batch_create_cadence(
@@ -474,7 +512,7 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             half_true_double = batch_create_cadence(
@@ -485,7 +523,7 @@ class DataGenerator:
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
                 dynamic_range=1,
-                n_processes=self.n_processes
+                pool=self.pool
             )
 
             chunk_false = np.concatenate([
