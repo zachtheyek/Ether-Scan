@@ -27,22 +27,23 @@ from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
 
+
 def log_system_resources():
     """Log system resource usage"""
     # CPU usage
     cpu_percent = psutil.cpu_percent(interval=1)
-    
+
     # Memory usage
     memory = psutil.virtual_memory()
     memory_used_gb = memory.used / 1e9
     memory_total_gb = memory.total / 1e9
-    
+
     # GPU usage (if available)
     gpu_info = []
     try:
         # Try nvidia-smi for GPU info
-        result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total', 
-                               '--format=csv,noheader,nounits'], 
+        result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total',
+                               '--format=csv,noheader,nounits'],
                               capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
@@ -53,17 +54,18 @@ def log_system_resources():
                     gpu_info.append(f"GPU{i}: {gpu_util}% util ({mem_used}MB/{mem_total}MB)")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         gpu_info = ["GPU info unavailable"]
-    
+
     resource_str = (f"Resources -- CPU: {cpu_percent:.1f}%, "
                    f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%), "
                    f"{', '.join(gpu_info)}")
-    
+
     return resource_str
+
 
 def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, round_num: int = 1):
     """
     Archive and clean up a directory
-    
+
     Args:
         base_dir: Base directory to archive/clean
         target_dirs: List of subdirectory names to include in archiving (e.g., ['train', 'validation'])
@@ -72,10 +74,10 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
     """
     # Create base directory if it doesn't exist
     os.makedirs(base_dir, exist_ok=True)
-    
+
     # Check if base_dir is empty
     is_empty = True
-    
+
     if target_dirs is None:
         # Check for files only (ignore all directories)
         for item in os.listdir(base_dir):
@@ -87,37 +89,37 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
         # Check for files AND target directories
         has_files = False
         has_target_dirs = False
-        
+
         for item in os.listdir(base_dir):
             item_path = os.path.join(base_dir, item)
             if os.path.isfile(item_path):
                 has_files = True
             elif os.path.isdir(item_path) and item in target_dirs:
                 has_target_dirs = True
-        
+
         is_empty = not (has_files or has_target_dirs)
-    
+
     # If empty, do nothing & return
     if is_empty:
         logger.info(f"Directory {base_dir} is empty, nothing to archive")
         return
-    
+
     # Otherwise, archive and clean up
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     archive_dir = os.path.join(base_dir, 'archive', timestamp)
     os.makedirs(archive_dir, exist_ok=True)
-    
+
     if round_num == 1:
         # Fresh run: move everything to archive
         logger.info(f"Archiving the following items from {base_dir}:")
-        
+
         items_moved = 0
         for item in os.listdir(base_dir):
             if item == 'archive':  # Don't move the archive directory itself
                 continue
-            
+
             item_path = os.path.join(base_dir, item)
-            
+
             # Move all files
             if os.path.isfile(item_path):
                 shutil.move(item_path, os.path.join(archive_dir, item))
@@ -130,21 +132,21 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
                 items_moved += 1
 
                 # Replace directory with empty one after moving
-                os.makedirs(item_path)  
-        
+                os.makedirs(item_path)
+
         logger.info(f"Moved {items_moved} items to archive: {archive_dir}")
-    
+
     else:
         # Resume: copy to archive, then delete files with round >= round_num
         logger.info(f"Backing up the following items from {base_dir}:")
-        
+
         items_copied = 0
         for item in os.listdir(base_dir):
             if item == 'archive':  # Don't copy the archive directory itself
                 continue
-            
+
             item_path = os.path.join(base_dir, item)
-            
+
             # Copy all files
             if os.path.isfile(item_path):
                 shutil.copy2(item_path, os.path.join(archive_dir, item))
@@ -160,20 +162,20 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
                 # Replace directory with empty one after copying
                 shutil.rmtree(item_path)
                 os.makedirs(item_path, exist_ok=True)
-        
+
         logger.info(f"Backed up {items_copied} items to archive: {archive_dir}")
-        
+
         # Delete files matching "round_X" where X >= round_num
         logger.info(f"Deleting the following items from {base_dir}:")
         pattern = re.compile(r'round_(\d+)')
         deleted_files = []
-        
+
         for item in os.listdir(base_dir):
             if item == 'archive':  # Don't touch the archive directory
                 continue
-            
+
             item_path = os.path.join(base_dir, item)
-            
+
             # Only process files, not directories
             if os.path.isfile(item_path):
                 match = pattern.search(item)
@@ -183,7 +185,7 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
                         os.remove(item_path)
                         deleted_files.append(item)
                         logger.info(f"  {item_path}")
-        
+
         if deleted_files:
             logger.info(f"Deleted {len(deleted_files)} files with round >= {round_num}")
         else:
@@ -267,12 +269,12 @@ def get_latest_tag(checkpoints_dir: str) -> str:
 def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
     """
     Calculate SNR parameters for curriculum learning
-    
+
     Args:
         round_idx: Current training round (0-indexed)
         total_rounds: Total number of training rounds
         config: Training configuration
-        
+
     Returns:
         (snr_base, snr_range) tuple
     """
@@ -282,7 +284,7 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
 
     # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
     progress = round_idx / (total_rounds - 1)
-    
+
     if config.curriculum_schedule == "linear":
         # Linear progression from wide to narrow SNR range
         current_range = config.initial_snr_range - progress * (config.initial_snr_range - config.final_snr_range)
@@ -298,11 +300,11 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
             current_range = config.final_snr_range
     else:
         raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
-    
+
     return config.snr_base, int(current_range)
 
-def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Optional[float], 
-                                per_replica_batch_size: int, global_batch_size: Optional[int], 
+def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Optional[float],
+                                per_replica_batch_size: int, global_batch_size: Optional[int],
                                 per_replica_val_batch_size: Optional[int], num_replicas: int,
                                 strategy: tf.distribute.Strategy, shuffle: bool = True) -> Dict:
     """
@@ -310,7 +312,7 @@ def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Opt
 
     Args:
         data: Dictionary with keys 'concatenated', 'true', 'false' (numpy arrays)
-        n_samples: Number of samples in data 
+        n_samples: Number of samples in data
         train_val_split: If provided, split data into train/val sets. If None, return single dataset for inference
         per_replica_batch_size: Batch size per replica for training (or inference if no split)
         global_batch_size: Required if train_val_split is provided. Effective batch size across all replicas for training
@@ -322,7 +324,7 @@ def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Opt
     Returns:
         If train_val_split is None:
             {dataset, n_trimmed, steps}
-            Single distributed dataset, number of samples in dataset, and number of steps 
+            Single distributed dataset, number of samples in dataset, and number of steps
         If train_val_split is provided:
             {train_dataset, val_dataset, n_train_trimmed, n_val_trimmed, train_steps, accumulation_steps, val_steps}
             Train/val distributed datasets, number of samples in each, number of steps for each (including accumulation sub-steps)
@@ -475,9 +477,9 @@ def compute_expected_std(layer):
     weights = layer.get_weights()
     if not weights:
         return None
-    
+
     kernel = weights[0]
-    
+
     if isinstance(layer.kernel_initializer, HeNormal):
         # HeNormal: std = sqrt(2 / fan_in)
         fan_in = np.prod(kernel.shape[:-1])
@@ -489,7 +491,7 @@ def compute_expected_std(layer):
         expected_std = np.sqrt(2.0 / (fan_in + fan_out))
     else:
         return None
-    
+
     return expected_std
 
 def check_encoder_trained(encoder, threshold=0.2):
@@ -503,20 +505,20 @@ def check_encoder_trained(encoder, threshold=0.2):
             weights = layer.get_weights()
             if not weights:
                 continue  # skip layers without weights
-            
+
             kernel = weights[0]
             actual_std = np.std(kernel)
             expected_std = compute_expected_std(layer)
             if expected_std is None:
                 continue  # skip layers with no expected std
-            
+
             relative_dev = abs(actual_std - expected_std) / expected_std
-            
+
             logger.info(f"{layer.name}: actual std={actual_std:.5f}, expected std={expected_std:.5f}, deviation={relative_dev:.2%}")
-            
+
             if relative_dev > threshold:
                 trained_layers.append(layer.name)
-    
+
     if trained_layers:
         logger.info("Encoder appears trained (substantial deviation detected in layers):")
         logger.info(f"{trained_layers}")
@@ -527,32 +529,32 @@ def check_encoder_trained(encoder, threshold=0.2):
 
 class TrainingPipeline:
     """Training pipeline"""
-    
+
     def __init__(self, config, background_data: np.ndarray, strategy=None, start_round=1):
         """
         Initialize training pipeline
-        
+
         Args:
             config: Configuration object
             background_data: Preprocessed background observations
         """
         self.config = config
         self.strategy = strategy or tf.distribute.get_strategy()
-        
+
         # Store background data
         self.background_data = background_data.astype(np.float32)
         logger.info(f"Background data shape: {background_data.shape}")
-        
+
         # Initialize components
         self.data_generator = DataGenerator(config, background_data)
-        
+
         # Create VAE model & optimizer inside distributed context
         with self.strategy.scope():
             self.vae = create_vae_model(config)
             self._build_optimizer()
 
         self.rf_model = None
-        
+
         # Training history
         self.history = {
             'loss': [],
@@ -567,13 +569,13 @@ class TrainingPipeline:
             'val_false_loss': [],
             'learning_rate': []
         }
-        
+
         # Setup directories
         self.setup_directories(start_round)
 
         # Setup TensorBoard logging
         self.setup_tensorboard_logging(start_round)
-        
+
     def __del__(self):
         """Cleanup TensorBoard writers"""
         if hasattr(self, 'train_writer'):
@@ -583,7 +585,7 @@ class TrainingPipeline:
 
     def _build_optimizer(self):
         """
-        Build optimizer state by performing a dummy forward/backward pass 
+        Build optimizer state by performing a dummy forward/backward pass
         Must be called within strategy scope & before training to initialize optimizer variables
         """
         # Create a dummy batch to trigger optimizer build
@@ -596,17 +598,17 @@ class TrainingPipeline:
 
         # Perform one forward pass to build the model
         _ = self.vae(dummy_data, training=False)
-        
+
         # Create dummy gradients to build optimizer state
         dummy_grads = [tf.zeros_like(var) for var in self.vae.trainable_variables]
-        
+
         # Apply dummy gradients to build optimizer variables
         @tf.function
         def apply_dummy_grads():
             self.vae.optimizer.apply_gradients(zip(dummy_grads, self.vae.trainable_variables))
 
         self.strategy.run(apply_dummy_grads)
-        
+
         logger.info("Optimizer built successfully within strategy scope")
 
     def setup_directories(self, start_round=1):
@@ -614,11 +616,11 @@ class TrainingPipeline:
         logger.info("Setting up directories")
 
         model_checkpoints_dir = os.path.join(self.config.model_path, 'checkpoints')
-        handle_directory(model_checkpoints_dir , target_dirs=None, round_num=start_round)
-        
+        handle_directory(model_checkpoints_dir, target_dirs=None, round_num=start_round)
+
         plot_checkpoints_dir = os.path.join(self.config.output_path, 'plots', 'checkpoints')
         handle_directory(plot_checkpoints_dir, target_dirs=None, round_num=start_round)
-        
+
         logger.info(f"Setup directories complete")
 
     def setup_tensorboard_logging(self, start_round=1):

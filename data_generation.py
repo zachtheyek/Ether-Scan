@@ -13,13 +13,14 @@ import gc
 
 logger = logging.getLogger(__name__)
 
+
 def log_norm(data: np.ndarray) -> np.ndarray:
     """
     Apply log normalization to data
     """
     # Add small epsilon to avoid log(0)
     data = data + 1e-10
-    
+
     # Transform data into log-space
     data = np.log(data)
     # Shift data to be >= 0
@@ -30,9 +31,10 @@ def log_norm(data: np.ndarray) -> np.ndarray:
 
     return data
 
-# NOTE: not 100% sure how this function works. ported from Peter's code. comments added by Claude. assuming it works as intended? 
+
+# NOTE: not 100% sure how this function works. ported from Peter's code. comments added by Claude. assuming it works as intended?
 # NOTE: verify that we're randomly drawing a combo of snr, drift_rate, and signal_width for each injection?
-def new_cadence(data: np.ndarray, snr: float, width_bin: int, 
+def new_cadence(data: np.ndarray, snr: float, width_bin: int,
                 freq_resolution: float, time_resolution: float) -> Tuple[np.ndarray, float, float]:
     """
     Inject a single drifting narrowband signal into a stacked cadence array
@@ -40,13 +42,13 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
     # Set noise parameter (for simulating randomness in drift rate calculation)
     noise = 3
 
-    # Randomly select a starting frequency bin (channel) to start the signal injection 
+    # Randomly select a starting frequency bin (channel) to start the signal injection
     # Avoids edges (bin 0)
     starting_bin = int(random() * (width_bin - 1)) + 1
 
     # Get the total number of time samples in stacked array (typically 96 for 6 obs x 16 time bins)
     total_time = data.shape[0]
-   
+
     # Randomly select a positive or negative drift direction
     if np.random.choice([-1, 1]) > 0:
         # Positive drift
@@ -60,19 +62,19 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
         # Convert from pixel space to physical units by multiplying by time_resolution / freq_resolution ratio
         # Then add random noise to make drift rates more realistic
         slope_physical = (slope_pixel) * (time_resolution / freq_resolution) - random() * noise
-    
+
     # Convert slope to drift rate
     drift_rate = -1 * (1 / slope_physical)
 
     # Calculate signal width (in Hz)
     # Base random component: 0-50 Hz
-    # Add component proportional to drift rate magnitude to keep signal coherent 
+    # Add component proportional to drift rate magnitude to keep signal coherent
     signal_width = random() * 50 + abs(drift_rate) * 18. / 1
 
     # Calculate y-intercept for linear signal trajectory
     y_intercept = total_time - slope_pixel * (starting_bin)
-    
-    # Create setigen Frame 
+
+    # Create setigen Frame
     frame = stg.Frame.from_data(
         df=freq_resolution*u.Hz,
         dt=time_resolution*u.s,
@@ -80,7 +82,7 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
         data=data,
         ascending=True  # Frequency increases with channel index
     )
-    
+
     # Inject signal
     signal = frame.add_signal(
         # Use linear drift trajectory starting at starting_bin & with the calculated drift rate
@@ -95,12 +97,13 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
         # Constant bandpass profile (no frequency-dependent scaling)
         stg.constant_bp_profile(level=1)
     )
-    
+
     # Extract the modified data (with signal injection) from the setigen Frame
     modified_data = frame.data.copy()
-    
+
     # Return the modified data array, slope (in pixel coordinates), and y-intercept
     return modified_data, slope_pixel, y_intercept
+
 
 def check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
     """
@@ -114,9 +117,10 @@ def check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
         if y_lower <= y_intersect <= y_upper:
             return False
     return True
-    
+
+
 def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
-                 width_bin: int, freq_resolution: float, time_resolution: float, 
+                 width_bin: int, freq_resolution: float, time_resolution: float,
                  inject: bool = True, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
     Create false signal class
@@ -139,25 +143,26 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
         data = np.zeros((n_obs * n_time, width_bin))
         for i in range(n_obs):
             data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
-        
+
         # Select a random SNR from the given range & inject RFI into all 6 observations
         snr = random() * snr_range + snr_base
         cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
-        
+
         # Reshape stacked data back into original shape & log-normalize after signal injection
         for i in range(n_obs):
             final[i, :, :] = log_norm(cadence[i*n_time:(i+1)*n_time, :])
 
-    # Just return background. No signal injection 
+    # Just return background. No signal injection
     else:
         # Log-normalize base background
         for i in range(n_obs):
             final[i, :, :] = log_norm(base[i, :, :])
-    
+
     return final
 
+
 def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
-                       width_bin: int, freq_resolution: float, time_resolution: float, 
+                       width_bin: int, freq_resolution: float, time_resolution: float,
                        inject: Optional[bool] = None, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
     Create true-single signal class
@@ -178,8 +183,8 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
     data = np.zeros((n_obs * n_time, width_bin))
     for i in range(n_obs):
         data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
-    
-    # Select a random SNR from the given range & inject RFI 
+
+    # Select a random SNR from the given range & inject RFI
     snr = random() * snr_range + snr_base
     cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
 
@@ -191,11 +196,12 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
         else:
             # OFFs: original background
             final[i, :, :] = log_norm(data[i*n_time:(i+1)*n_time, :])
-    
+
     return final
 
+
 def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
-                       width_bin: int, freq_resolution: float, time_resolution: float, 
+                       width_bin: int, freq_resolution: float, time_resolution: float,
                        inject: Optional[bool] = None, dynamic_range: float = 1) -> np.ndarray:
     """
     Create true-double signal class 
@@ -216,7 +222,7 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
     data = np.zeros((n_obs * n_time, width_bin))
     for i in range(n_obs):
         data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
-    
+
     # Select a random SNR from the given range
     snr = random() * snr_range + snr_base
 
@@ -238,11 +244,12 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
         else:
             # OFFs: 1 injected signal (RFI only)
             final[i, :, :] = log_norm(cadence_1[i*n_time:(i+1)*n_time, :])
-    
+
     return final
 
-def batch_create_cadence(function, samples: int, plate: np.ndarray, 
-                        snr_base: int = 10, snr_range: float = 40, width_bin: int = 512, 
+
+def batch_create_cadence(function, samples: int, plate: np.ndarray,
+                        snr_base: int = 10, snr_range: float = 40, width_bin: int = 512,
                         freq_resolution: float = 2.7939677238464355, time_resolution: float = 18.25361108,
                         inject: Optional[bool] = None, dynamic_range: Optional[float] = None) -> np.ndarray:
     """
@@ -250,18 +257,19 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
     """
     # Pre-allocate output array
     cadence = np.zeros((samples, 6, 16, width_bin))
-    
+
     for i in range(samples):
         # Each function call generates 1 complete cadence (6 observations)
-        cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin, 
-                                       freq_resolution=freq_resolution, time_resolution=time_resolution, 
+        cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
+                                       freq_resolution=freq_resolution, time_resolution=time_resolution,
                                        inject=inject, dynamic_range=dynamic_range)
-    
+
     return cadence
+
 
 class DataGenerator:
     """Synthetic data generator"""
-    
+
     def __init__(self, config, background_plates: np.ndarray):
         """
         Initialize generator
@@ -294,7 +302,7 @@ class DataGenerator:
 
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
-        
+
     def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
         Generate training batch using chunking

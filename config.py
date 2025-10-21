@@ -1,4 +1,4 @@
-# TODO: remove unaccessed config params 
+# TODO: remove unaccessed config params
 # TODO: update to_dict to match config params
 """
 Configuration module for Ether-Scan Pipeline
@@ -8,15 +8,17 @@ import os
 from dataclasses import dataclass
 from typing import Tuple, Optional, List, Dict
 
+
 @dataclass
 class BetaVAEConfig:
     """VAE model configuration"""
     latent_dim: int = 8  # Bottleneck size
     dense_layer_size: int = 512  # Should match num frequency bins after downsampling
     kernel_size: Tuple[int, int] = (3, 3)  # For Conv2D & Conv2DTranspose layers
-    beta: float = 1.5    # KL divergence weight
-    alpha: float = 10.0  # Clustering loss weight 
-    
+    beta: float = 1.5  # KL divergence weight
+    alpha: float = 10.0  # Clustering loss weight
+
+
 @dataclass
 class RandomForestConfig:
     """Random Forest configuration"""
@@ -26,13 +28,14 @@ class RandomForestConfig:
     n_jobs: int = -1  # Number of parallel jobs to run (-1 = use all available CPU cores)
     seed: int = 11
 
+
 @dataclass
 class DataConfig:
     """Data processing configuration"""
     num_observations: int = 6  # Per cadence snippet (3 ON, 3 OFF)
     width_bin: int = 4096  # Frequency bins per observation
     downsample_factor: int = 8  # Frequency bins downsampling factor
-    time_bins: int = 16    # Time bins per observation
+    time_bins: int = 16  # Time bins per observation
     freq_resolution: float = 2.7939677238464355  # Hz
     time_resolution: float = 18.25361108  # seconds
 
@@ -40,17 +43,17 @@ class DataConfig:
     # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
     background_load_chunk_size: int = 200  # Maximum cadences to process at once during background loading
     max_chunks_per_file: int = 25  # Maximum chunks to load from a single file
-    
+
     # Data files
     training_files: Optional[List[str]] = None
     test_files: Optional[List[str]] = None
-    
+
     def __post_init__(self):
         """Set default file lists"""
         if self.training_files is None:
             self.training_files = [
                 'real_filtered_LARGE_HIP110750.npy',
-                'real_filtered_LARGE_HIP13402.npy', 
+                'real_filtered_LARGE_HIP13402.npy',
                 'real_filtered_LARGE_HIP8497.npy'
             ]
         if self.test_files is None:
@@ -58,7 +61,8 @@ class DataConfig:
                 'real_filtered_LARGE_testHIP83043.npy'
             ]
 
-@dataclass  
+
+@dataclass
 class TrainingConfig:
     num_training_rounds: int = 20
     epochs_per_round: int = 100
@@ -68,13 +72,13 @@ class TrainingConfig:
     train_val_split: float = 0.8
 
     per_replica_batch_size: int = 128
-    global_batch_size: int = 2048  # Effective batch size for gradient accumulation 
-    per_replica_val_batch_size: int = 4096 
+    global_batch_size: int = 2048  # Effective batch size for gradient accumulation
+    per_replica_val_batch_size: int = 4096
 
     signal_injection_chunk_size: int = 1000  # Maximum cadences to process at once during data generation
 
     # Curriculum learning params
-    snr_base: int = 10 
+    snr_base: int = 10
     initial_snr_range: int = 40
     final_snr_range: int = 20
     curriculum_schedule: str = "exponential"  # "linear", "exponential", "step"
@@ -91,7 +95,7 @@ class TrainingConfig:
 
     # Fault tolerance params
     max_retries: int = 5
-    retry_delay: int = 60 # seconds 
+    retry_delay: int = 60  # seconds
 
 # NOTE: come back to this later
 @dataclass
@@ -103,6 +107,7 @@ class InferenceConfig:
     max_drift_rate: float = 10.0  # Hz/s
     # overlap search
 
+
 class Config:
     """Main configuration class"""
     def __init__(self):
@@ -111,31 +116,31 @@ class Config:
         self.data = DataConfig()
         self.training = TrainingConfig()
         self.inference = InferenceConfig()
-        
+
         # Paths
         self.data_path = os.environ.get('SETI_DATA_PATH', '/datax/scratch/zachy/data/etherscan')
         self.model_path = os.environ.get('SETI_MODEL_PATH', '/datax/scratch/zachy/models/etherscan')
         self.output_path = os.environ.get('SETI_OUTPUT_PATH', '/datax/scratch/zachy/outputs/etherscan')
-    
+
     def get_training_file_path(self, filename: str) -> str:
         """Get full path for training data file"""
         return os.path.join(self.data_path, 'training', filename)
-    
+
     def get_test_file_path(self, filename: str) -> str:
         """Get full path for test data file"""
         return os.path.join(self.data_path, 'testing', filename)
-    
+
     def get_file_subset(self, filename: str) -> Tuple[Optional[int], Optional[int]]:
         """Get subset parameters for a file (start, end indices)"""
         # Option to define subsets for specific files to manage memory usage
         subset_map = {
             'real_filtered_LARGE_HIP110750.npy': (None, 5000),
-            'real_filtered_LARGE_HIP13402.npy': (3000, 10000), 
+            'real_filtered_LARGE_HIP13402.npy': (3000, 10000),
             'real_filtered_LARGE_HIP8497.npy': (8000, None),
             'real_filtered_LARGE_testHIP83043.npy': (None, None)
         }
         return subset_map.get(filename, (None, None))
-    
+
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
         return {

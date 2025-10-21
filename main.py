@@ -20,6 +20,7 @@ from config import Config
 from training import train_full_pipeline, get_latest_tag
 # from inference import run_inference
 
+
 def setup_logging(log_filepath: str) -> logging.Logger:
     """
     Configure logging to write to both file & console
@@ -52,9 +53,10 @@ def setup_logging(log_filepath: str) -> logging.Logger:
 # Setup logging immediately after imports to ensure logging is configured before any other code runs
 logger = setup_logging('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log')
 
+
 def setup_gpu_config():
     """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
-    
+
     os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Prevent memory fragmentation within each GPU
     os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'  # Aggressive cleanup of intermediate tensors
 
@@ -75,14 +77,14 @@ def setup_gpu_config():
                     cross_device_ops=tf.distribute.NcclAllReduce()
                 )
                 logger.info("Using NcclAllReduce for optimal NVIDIA GPU performance")
-                
+
             except Exception as e:
                 # Fallback: HierarchicalCopyAllReduce
                 logger.warning(f"NCCL failed ({e}), using HierarchicalCopyAllReduce")
                 strategy = tf.distribute.MirroredStrategy(
                     cross_device_ops=tf.distribute.HierarchicalCopyAllReduce()
                 )
-            
+
             logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
             return strategy
 
@@ -94,101 +96,102 @@ def setup_gpu_config():
         logger.warning("No GPUs detected, running on CPU")
         return None
 
+
 def load_background_data(config: Config) -> np.ndarray:
     """
     Load & downsample background plates for pipeline
     """
     logger.info(f"Loading background data from {config.data_path}")
-    
+
     # Use config values for memory management
     num_target_backgrounds = config.data.num_target_backgrounds
     chunk_size = config.data.background_load_chunk_size
     max_chunks = config.data.max_chunks_per_file
     downsample_factor = config.data.downsample_factor
     final_width = config.data.width_bin // downsample_factor
-    
+
     logger.info(f"Target backgrounds: {num_target_backgrounds}")
     logger.info(f"Processing chunks of: {chunk_size}")
     logger.info(f"Final resolution: {final_width}")
-    
+
     all_backgrounds = []
-    
+
     for filename in config.data.training_files:
         filepath = config.get_training_file_path(filename)
-        
+
         if not os.path.exists(filepath):
             logger.warning(f"File not found: {filepath}")
             continue
-            
+
         logger.info(f"Processing {filename}...")
-        
+
         # Get subset parameters from config
         start, end = config.get_file_subset(filename)
-        
+
         try:
             # Use memory mapping to avoid loading full file
             raw_data = np.load(filepath, mmap_mode='r')
-            
+
             # Apply subset if specified in config
             if start is not None or end is not None:
                 raw_data = raw_data[start:end]
-            
+
             logger.info(f"  Raw data shape: {raw_data.shape}")
-            
+
             # Divide background into equal chunks, then cutoff if exceeds max_chunks
             n_chunks = min(max_chunks, (raw_data.shape[0] + chunk_size - 1) // chunk_size)
-            
+
             for chunk_idx in range(n_chunks):
                 chunk_start = chunk_idx * chunk_size
                 chunk_end = min((chunk_idx + 1) * chunk_size, raw_data.shape[0])
-                
+
                 # Load chunk into memory
                 chunk_data = np.array(raw_data[chunk_start:chunk_end])
-                
+
                 # Process each cadence in chunk
                 for cadence_idx in range(chunk_data.shape[0]):
                     if len(all_backgrounds) >= num_target_backgrounds:
                         break
-                        
+
                     cadence = chunk_data[cadence_idx]  # Shape: (6, 16, 4096)
-                    
+
                     # Skip invalid cadences
                     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
                         continue
-                    
+
                     # Downsample each observation separately
                     downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
-                    
+
                     for obs_idx in range(6):
                         downsampled_cadence[obs_idx] = downscale_local_mean(
                             cadence[obs_idx], (1, downsample_factor)
                         ).astype(np.float32)
-                    
+
                     all_backgrounds.append(downsampled_cadence)
-                
+
                 # Clear chunk from memory
                 del chunk_data
                 gc.collect()
-                
+
                 if len(all_backgrounds) >= num_target_backgrounds:
                     break
-            
+
             logger.info(f"  Processed {len(all_backgrounds)} cadences so far")
-            
+
             # Clear raw data reference
             del raw_data
             gc.collect()
-            
+
         except Exception as e:
             logger.error(f"Error loading {filename}: {e}")
             continue
-    
+
     if len(all_backgrounds) == 0:
         raise ValueError("No background data loaded successfully")
-    
+
     # Stack all backgrounds
     background_array = np.array(all_backgrounds, dtype=np.float32)
-    
+
     # Sanity check: print descriptive stats
     min_val = np.min(background_array)
     max_val = np.max(background_array)
@@ -200,18 +203,19 @@ def load_background_data(config: Config) -> np.ndarray:
     logger.info(f"Background mean: {mean_val:.6f}")
     logger.info(f"Memory usage: {background_array.nbytes / 1e9:.2f} GB")
     logger.info(f"Background data ready at {background_array.shape[3]} resolution")
-    
+
     return background_array
+
 
 def train_command(args):
     """Execute training pipeline with distributed strategy & fault tolerance"""
     logger.info("="*60)
     logger.info("Starting Ether-Scan Training Pipeline")
     logger.info("="*60)
-    
+
     # Setup GPU and get strategy
     strategy = setup_gpu_config()
-    
+
     # Load configuration
     config = Config()
 
@@ -274,32 +278,32 @@ def train_command(args):
             start_round = int(tag.split('_')[1]) + 1  # Start training from the round proceeding model checkpoint
         else:
             start_round = 1
-    else: 
+    else:
         tag = None
         start_round = 1
     if args.load_dir:
         dir = args.load_dir
-    else: 
+    else:
         dir = None
     if args.save_tag:
         final_tag = args.save_tag
     else:
         final_tag = None
-    
+
     logger.info(f"Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
     logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
     logger.info(f"  Data path: {config.data_path}")
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
-    
+
     # Load and preprocess background data
     try:
         background_data = load_background_data(config)
     except Exception as e:
         logger.error(f"Failed to load background data: {e}")
         sys.exit(1)
-    
+
     logger.info(f"Background data loaded: {background_data.shape}")
 
     # Train models with fault tolerance
@@ -322,7 +326,7 @@ def train_command(args):
                 strategy=strategy,
                 tag=tag,
                 dir=dir,
-                start_round=start_round, 
+                start_round=start_round,
                 final_tag=final_tag
             )
 
@@ -330,9 +334,9 @@ def train_command(args):
             break
 
         except KeyboardInterrupt:
-            # Don't retry on user interruption 
+            # Don't retry on user interruption
             logger.info("Training interupted by user")
-            raise 
+            raise
 
         except Exception as e:
             logger.error(f"Training attempt {attempt+1} failed with error: {e}")
@@ -344,7 +348,7 @@ def train_command(args):
                 try:
                     # Clean up failed pipeline
                     if 'pipeline' in locals():
-                        del pipeline 
+                        del pipeline
                     gc.collect()
                     logger.info("Cleaned up failed pipeline")
 
@@ -357,10 +361,10 @@ def train_command(args):
                     else:
                         logger.info("No valid checkpoints loaded")
                         raise
-                    
+
                     logger.info(f"Waiting {retry_delay} seconds before retry...")
                     time.sleep(retry_delay)
-                
+
                 except Exception as recovery_error:
                     # If no checkpoints loaded, restart from last valid start_round
                     logger.error(f"Recovery failed: {recovery_error}")
@@ -372,13 +376,13 @@ def train_command(args):
                 logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
                 logger.error(f"Final error: {e}")
                 raise Exception(f"Training attempts exceeded maximum retries ({max_retries}). Final error: {e}")
-    
+
     # Save configuration
     config_path = os.path.join(config.model_path, f'config_{final_tag}.json')
     with open(config_path, 'w') as f:
         json.dump(config.to_dict(), f, indent=2)
     logger.info(f"Configuration saved to {config_path}")
-    
+
     logger.info("="*60)
     logger.info("Training completed successfully!")
     logger.info("="*60)
@@ -515,10 +519,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Ether-Scan Pipeline - Search for ETI signals using deep learning'
     )
-    
+
     # Add subcommands
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
-    
+
     # Training command
     train_parser = subparsers.add_parser('train', help='Training pipeline (defaults in config.py)')
     train_parser.add_argument('--num-target-backgrounds', type=int, default=None,
@@ -581,7 +585,7 @@ def main():
                               help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
     # TODO: finish adding train_command args
     # train_parser.add_argument('--start-round', type=int, default=None,
-                            # help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
+    #                           help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
 
     # NOTE: come back to this later
     # # Inference command
@@ -599,10 +603,10 @@ def main():
     # eval_parser.add_argument('vae_model', type=str, help='Path to VAE encoder model')
     # eval_parser.add_argument('rf_model', type=str, help='Path to Random Forest model')
     # eval_parser.add_argument('--test-data', type=str, help='Path to test data')
-    
+
     # Parse arguments
     args = parser.parse_args()
-    
+
     # Execute command
     if args.command == 'train':
         train_command(args)
@@ -613,6 +617,7 @@ def main():
     else:
         parser.print_help()
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

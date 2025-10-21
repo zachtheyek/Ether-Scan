@@ -11,6 +11,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def prepare_latent_features(latent_vectors: np.ndarray, num_observations: int = 6) -> np.ndarray:
     """
     Prepare latent vectors for Random Forest input
@@ -24,21 +25,22 @@ def prepare_latent_features(latent_vectors: np.ndarray, num_observations: int = 
 
     num_cadences = num_latents // num_observations
     latent_dim = latent_vectors.shape[1]
-    
+
     # Target shape: (num_cadences, num_observations * latent_dim)
     # Where each element in the latent vector is treated as a feature by the Random Forest
-    # We flatten the observations so all 6 latents in a cadence are grouped together 
+    # We flatten the observations so all 6 latents in a cadence are grouped together
     features = np.zeros((num_cadences, num_observations * latent_dim))
-    
+
     for i in range(num_cadences):
-        # Flatten & concatenate the latent vectors according to the number of observations 
+        # Flatten & concatenate the latent vectors according to the number of observations
         features[i, :] = latent_vectors[i*num_observations:(i+1)*num_observations, :].ravel()
-    
+
     return features
+
 
 class RandomForestModel:
     """Random Forest classifier for SETI signal detection"""
-    
+
     def __init__(self, config):
         self.config = config
         self.model = RandomForestClassifier(
@@ -49,8 +51,8 @@ class RandomForestModel:
             random_state=config.rf.seed
         )
         self.is_trained = False
-        
-    def prepare_training_data(self, true_latents: np.ndarray, 
+
+    def prepare_training_data(self, true_latents: np.ndarray,
                               false_latents: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Prepare training data for Random Forest
@@ -59,33 +61,33 @@ class RandomForestModel:
         # Prepare features
         true_features = prepare_latent_features(true_latents, self.config.data.num_observations)
         false_features = prepare_latent_features(false_latents, self.config.data.num_observations)
-        
+
         # Combine features
         features = np.concatenate([true_features, false_features], axis=0)
-        
+
         # Create labels
         labels = np.concatenate([
             np.ones(true_features.shape[0]),
             np.zeros(false_features.shape[0])
         ])
-        
+
         # Shuffle data
         features, labels = shuffle(features, labels, random_state=self.config.rf.seed)
-        
+
         logger.info(f"Prepared {features.shape[0]} training samples")
-        
+
         return features, labels
-    
+
     def train(self, true_latents: np.ndarray, false_latents: np.ndarray):
         """
         Train the Random Forest model
         """
         features, labels = self.prepare_training_data(true_latents, false_latents)
-        
+
         logger.info("Training Random Forest classifier...")
         self.model.fit(features, labels)
         self.is_trained = True
-        
+
         # TODO: rethink RF visualizations *return feature importance & create plots in training.py? or create directly from here? in evaluation.py)?
         # Log feature importances
         importances = self.model.feature_importances_
@@ -110,7 +112,7 @@ class RandomForestModel:
         probas = self.predict_proba(latent_vectors)
         return (probas[:, 1] > threshold).astype(int)
 
-    def predict_verbose(self, latent_vectors: np.ndarray, 
+    def predict_verbose(self, latent_vectors: np.ndarray,
                         threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
         """
         Predict binary classes given some input latent cadences
@@ -124,15 +126,15 @@ class RandomForestModel:
         confidences = np.where(predictions, probas[:, 1], probas[:, 0])
 
         return predictions, confidences
-    
+
     def save(self, filepath: str):
         """Save RF model weights"""
         if not self.is_trained:
             logger.warning("Saving untrained model")
-        
+
         joblib.dump(self.model, filepath)
         logger.info(f"Saved Random Forest model to {filepath}")
-    
+
     def load(self, filepath: str):
         """Load RF model weights"""
         if self.is_trained:
