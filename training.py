@@ -385,10 +385,9 @@ class TrainingPipeline:
         # Initialize components
         self.data_generator = DataGenerator(config, background_data)
         
-        # Create VAE model & build optimizer
+        # Create VAE model inside distributed context
         with self.strategy.scope():
             self.vae = create_vae_model(config)
-            self._build_optimizer()
 
         self.rf_model = None
         
@@ -420,30 +419,6 @@ class TrainingPipeline:
         if hasattr(self, 'val_writer'):
             self.val_writer.close()
 
-    def _build_optimizer(self):
-        """
-        Build optimizer state by performing a dummy forward/backward pass 
-        Must be called within strategy scope & before training to initialize optimizer variables
-        """
-        # Create a dummy batch to trigger optimizer build
-        dummy_batch_size = 1
-        num_observations = self.config.data.num_observations
-        time_bins = self.config.data.time_bins
-        width_bin = self.config.data.width_bin // self.config.data.downsample_factor
-
-        dummy_data = tf.zeros((dummy_batch_size, num_observations, time_bins, width_bin), dtype=tf.float32)
-        
-        # Perform one forward pass to build the model
-        _ = self.vae(dummy_data, training=False)
-        
-        # Create dummy gradients to build optimizer state
-        dummy_grads = [tf.zeros_like(var) for var in self.vae.trainable_variables]
-        
-        # Apply dummy gradients to build optimizer variables
-        self.vae.optimizer.apply_gradients(zip(dummy_grads, self.vae.trainable_variables))
-        
-        logger.info("Optimizer built successfully within strategy scope")
-    
     def setup_directories(self, start_round=1):
         """Create necessary directories"""
         logger.info("Setting up directories")
@@ -842,7 +817,7 @@ class TrainingPipeline:
                 raise RuntimeError(f"NaN/Inf gradients at step {step+1}")
 
             # Apply accumulated gradients 
-            self._apply_gradients(accumulated_gradients)
+            self._distributed_apply_gradients(accumulated_gradients)
 
             for key in step_losses:
                 # Average step losses over sub-steps
@@ -952,16 +927,20 @@ class TrainingPipeline:
 
         return reduced_grads, reduced_losses
 
+    # NOTE: remove @tf.function?
     @tf.function 
-    def _apply_gradients(self, gradients):
+    def _distributed_apply_gradients(self, gradients):
         """
-        Clips & applies gradients
+        Clips & applies gradients with distributed context
         """
-        # Clip gradients for additional stability
-        clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+        def apply_fn():
+            # Clip gradients for additional stability
+            clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+            # Apply gradients 
+            self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
 
-        # Apply gradients 
-        self.vae.optimizer.apply_gradients(zip(clipped_gradients, self.vae.trainable_variables))
+        # Apply gradients on all replicas 
+        self.strategy.run(apply_fn)
 
     @tf.function
     def _distributed_val_step(self, batch_data):
