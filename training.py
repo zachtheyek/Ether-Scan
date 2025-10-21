@@ -1199,11 +1199,7 @@ class TrainingPipeline:
                 # Run encoding on all replicas
                 per_replica_true, per_replica_false = self.strategy.run(encode_fn, args=(batch_data,))
 
-                # Gather results from all replicas
-                true_gathered = self.strategy.gather(per_replica_true, axis=0)
-                false_gathered = self.strategy.gather(per_replica_false, axis=0)
-
-                return true_gathered, false_gathered
+                return per_replica_true, per_replica_false
 
             # Process all batches
             iterator = iter(dataset)
@@ -1212,12 +1208,17 @@ class TrainingPipeline:
             for step in range(steps):
                 batch = next(iterator)
 
-                # Get latents for this batch
-                true_batch_latents, false_batch_latents = distributed_encode(batch)
+                # Get per-replica latents for this batch
+                per_replica_true, per_replica_false = distributed_encode(batch)
 
-                # Convert to numpy and store
-                true_batch_np = true_batch_latents.numpy()
-                false_batch_np = false_batch_latents.numpy()
+                # Extract results from each replica and concatenate
+                # This avoids the inefficient gather operation with NCCL
+                true_results = self.strategy.experimental_local_results(per_replica_true)
+                false_results = self.strategy.experimental_local_results(per_replica_false)
+
+                # Concatenate results from all replicas
+                true_batch_np = np.concatenate([t.numpy() for t in true_results], axis=0)
+                false_batch_np = np.concatenate([f.numpy() for f in false_results], axis=0)
 
                 batch_latent_size = true_batch_np.shape[0]
                 true_latents[current_idx:current_idx + batch_latent_size] = true_batch_np
