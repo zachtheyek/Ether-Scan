@@ -1,4 +1,3 @@
-# TODO: make signal injection multi-threaded
 """
 Synthetic data generation for Ether-Scan Pipeline
 """
@@ -6,10 +5,12 @@ Synthetic data generation for Ether-Scan Pipeline
 import numpy as np
 import setigen as stg
 from astropy import units as u
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, Callable
 import logging
 from random import random
 import gc
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
@@ -248,21 +249,65 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
     return final
 
 
+def _single_cadence_wrapper(args):
+    """
+    Wrapper function for multiprocessing that unpacks arguments and generates a single cadence
+
+    Args:
+        args: Tuple of (function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
+
+    Returns:
+        Single cadence array of shape (6, 16, width_bin)
+    """
+    function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range = args
+    return function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
+                   freq_resolution=freq_resolution, time_resolution=time_resolution,
+                   inject=inject, dynamic_range=dynamic_range)
+
+
 def batch_create_cadence(function, samples: int, plate: np.ndarray,
                         snr_base: int = 10, snr_range: float = 40, width_bin: int = 512,
                         freq_resolution: float = 2.7939677238464355, time_resolution: float = 18.25361108,
-                        inject: Optional[bool] = None, dynamic_range: Optional[float] = None) -> np.ndarray:
+                        inject: Optional[bool] = None, dynamic_range: Optional[float] = None,
+                        n_processes: Optional[int] = None) -> np.ndarray:
     """
-    Batch wrapper for creating multiple cadences by calling generating function n times
+    Batch wrapper for creating multiple cadences using multiprocessing
+
+    Args:
+        function: Cadence generation function (create_false, create_true_single, create_true_double)
+        samples: Number of cadences to generate
+        plate: Background plate array
+        snr_base: Base SNR value
+        snr_range: SNR range for randomization
+        width_bin: Number of frequency bins
+        freq_resolution: Frequency resolution in Hz
+        time_resolution: Time resolution in seconds
+        inject: Whether to inject signals (for create_false)
+        dynamic_range: Dynamic range for signal injection (for create_true_double)
+        n_processes: Number of parallel processes (defaults to cpu_count())
+
+    Returns:
+        Array of shape (samples, 6, 16, width_bin) containing generated cadences
     """
+    if n_processes is None:
+        n_processes = cpu_count()
+
     # Pre-allocate output array
     cadence = np.zeros((samples, 6, 16, width_bin))
 
-    for i in range(samples):
-        # Each function call generates 1 complete cadence (6 observations)
-        cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
-                                       freq_resolution=freq_resolution, time_resolution=time_resolution,
-                                       inject=inject, dynamic_range=dynamic_range)
+    # Prepare arguments for each parallel task
+    args_list = [
+        (function, plate, snr_base, snr_range, width_bin, freq_resolution, time_resolution, inject, dynamic_range)
+        for _ in range(samples)
+    ]
+
+    # Use multiprocessing Pool to generate cadences in parallel
+    with Pool(processes=n_processes) as pool:
+        results = pool.map(_single_cadence_wrapper, args_list)
+
+    # Collect results into pre-allocated array
+    for i, result in enumerate(results):
+        cadence[i, :, :, :] = result
 
     return cadence
 
@@ -270,7 +315,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
 class DataGenerator:
     """Synthetic data generator"""
 
-    def __init__(self, config, background_plates: np.ndarray):
+    def __init__(self, config, background_plates: np.ndarray, n_processes: Optional[int] = None):
         """
         Initialize generator
 
@@ -278,6 +323,7 @@ class DataGenerator:
             config: Configuration object
             background_plates: Array of background observations
                               Shape: (n_backgrounds, 6, 16, 512) after preprocessing
+            n_processes: Number of parallel processes for signal injection (defaults to cpu_count())
         """
         self.config = config
 
@@ -300,8 +346,12 @@ class DataGenerator:
         self.freq_resolution = self.config.data.freq_resolution
         self.time_resolution = self.config.data.time_resolution
 
+        # Set number of processes for multiprocessing
+        self.n_processes = n_processes if n_processes is not None else cpu_count()
+
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
+        logger.info(f"Using {self.n_processes} CPU cores for parallel signal injection")
 
     def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
@@ -341,7 +391,7 @@ class DataGenerator:
             quarter = max(1, chunk_size // 4)
             half = max(1, chunk_size // 2)
             
-            # Pure background 
+            # Pure background
             quarter_false_no_signal = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
                 snr_base=snr_base,
@@ -349,9 +399,10 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                inject=False
+                inject=False,
+                n_processes=self.n_processes
             )
-            
+
             # RFI only
             quarter_false_with_rfi = batch_create_cadence(
                 create_false, quarter, self.backgrounds,
@@ -360,9 +411,10 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                inject=True
+                inject=True,
+                n_processes=self.n_processes
             )
-            
+
             # ETI only
             quarter_true_single = batch_create_cadence(
                 create_true_single, quarter, self.backgrounds,
@@ -370,9 +422,10 @@ class DataGenerator:
                 snr_range=snr_range,
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
-                time_resolution=self.time_resolution
+                time_resolution=self.time_resolution,
+                n_processes=self.n_processes
             )
-            
+
             # ETI + RFI
             quarter_true_double = batch_create_cadence(
                 create_true_double, quarter, self.backgrounds,
@@ -381,7 +434,8 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                dynamic_range=1
+                dynamic_range=1,
+                n_processes=self.n_processes
             )
             
             # Concatenate for main training data (collapsed cadences)
@@ -389,7 +443,7 @@ class DataGenerator:
                 quarter_false_no_signal, quarter_false_with_rfi, quarter_true_single, quarter_true_double
             ], axis=0)
             
-            # Generate separate true/false non-collapsed cadences for training set diversity 
+            # Generate separate true/false non-collapsed cadences for training set diversity
             # Used to calculate clustering loss & train RF
             half_false_no_signal = batch_create_cadence(
                 create_false, half, self.backgrounds,
@@ -398,9 +452,10 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                inject=False
+                inject=False,
+                n_processes=self.n_processes
             )
-            
+
             half_false_with_rfi = batch_create_cadence(
                 create_false, half, self.backgrounds,
                 snr_base=snr_base,
@@ -408,7 +463,8 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                inject=True
+                inject=True,
+                n_processes=self.n_processes
             )
 
             half_true_single = batch_create_cadence(
@@ -417,9 +473,10 @@ class DataGenerator:
                 snr_range=snr_range,
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
-                time_resolution=self.time_resolution
+                time_resolution=self.time_resolution,
+                n_processes=self.n_processes
             )
-            
+
             half_true_double = batch_create_cadence(
                 create_true_double, half, self.backgrounds,
                 snr_base=snr_base,
@@ -427,7 +484,8 @@ class DataGenerator:
                 width_bin=self.width_bin,
                 freq_resolution=self.freq_resolution,
                 time_resolution=self.time_resolution,
-                dynamic_range=1
+                dynamic_range=1,
+                n_processes=self.n_processes
             )
 
             chunk_false = np.concatenate([
