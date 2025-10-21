@@ -385,11 +385,26 @@ class DataGenerator:
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
         logger.info(f"Background shape: {background_plates.shape}")
 
+    def close(self):
+        """Explicitly close the multiprocessing pool"""
+        if hasattr(self, 'pool') and self.pool is not None:
+            try:
+                self.pool.close()
+                self.pool.join()
+            except Exception:
+                # Ignore errors during cleanup (e.g., if called during interpreter shutdown)
+                pass
+            finally:
+                self.pool = None
+
     def __del__(self):
         """Clean up multiprocessing pool on deletion"""
-        if hasattr(self, 'pool') and self.pool is not None:
-            self.pool.close()
-            self.pool.join()
+        # Try to close pool, but don't raise errors during garbage collection
+        try:
+            self.close()
+        except Exception:
+            # Ignore all errors during __del__ to avoid issues during interpreter shutdown
+            pass
 
     def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """

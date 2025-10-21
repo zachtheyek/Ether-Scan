@@ -577,11 +577,13 @@ class TrainingPipeline:
         self.setup_tensorboard_logging(start_round)
 
     def __del__(self):
-        """Cleanup TensorBoard writers"""
+        """Cleanup TensorBoard writers and data generator"""
         if hasattr(self, 'train_writer'):
             self.train_writer.close()
         if hasattr(self, 'val_writer'):
             self.val_writer.close()
+        if hasattr(self, 'data_generator'):
+            self.data_generator.close()
 
     def _build_optimizer(self):
         """
