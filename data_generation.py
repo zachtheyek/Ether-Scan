@@ -5,12 +5,11 @@ Synthetic data generation for Ether-Scan Pipeline
 import numpy as np
 import setigen as stg
 from astropy import units as u
-from typing import Tuple, Dict, Optional, Callable
+from typing import Tuple, Dict, Optional
 import logging
 from random import random
 import gc
 from multiprocessing import Pool, cpu_count
-from functools import partial
 
 logger = logging.getLogger(__name__)
 
