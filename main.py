@@ -441,6 +441,7 @@ def train_command(args):
     logger.info("Training completed successfully!")
     logger.info("="*60)
 
+
 # NOTE: come back to this later
 # def inference_command(args):
 #     """Execute inference command"""
@@ -507,6 +508,7 @@ def train_command(args):
 #         logger.info(f"Total detections: {n_total}")
 #         logger.info(f"High confidence (>90%): {n_high_conf}")
 
+
 # NOTE: come back to this later
 # def evaluate_command(args):
 #     """Execute evaluation command"""
@@ -566,6 +568,7 @@ def train_command(args):
 #     logger.info(f"  False Positive Rate: {fpr:.3f}")
 #     logger.info(f"  Overall Accuracy: {accuracy:.3f}")
 #     logger.info("="*60)
+
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
 def main():
