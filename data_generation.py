@@ -9,18 +9,41 @@ from typing import Tuple, Dict, Optional
 import logging
 from random import random
 import gc
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, shared_memory
 
 logger = logging.getLogger(__name__)
 
-# Global variable to store background plates for multiprocessing workers
-# This avoids repeatedly serializing/deserializing large arrays
+# Global variables to store shared memory reference for multiprocessing workers
+# This avoids duplicating large arrays across worker processes
+_GLOBAL_SHM = None
 _GLOBAL_BACKGROUNDS = None
+_GLOBAL_SHAPE = None
+_GLOBAL_DTYPE = None
 
-def _init_worker(backgrounds):
-    """Initialize worker process with shared background data"""
-    global _GLOBAL_BACKGROUNDS
-    _GLOBAL_BACKGROUNDS = backgrounds
+def _init_worker(shm_name, shape, dtype):
+    """
+    Initialize worker process with shared memory reference
+    This avoids copying data to each worker, saving memory
+
+    Args:
+        shm_name: Name of the shared memory block
+        shape: Shape of the background array
+        dtype: Data type of the background array
+
+    Note:
+        Worker cleanup is automatic - when the pool terminates, the OS reclaims
+        all worker process resources including shared memory file descriptors.
+        Only the main process needs to unlink() the shared memory block.
+    """
+    global _GLOBAL_SHM, _GLOBAL_BACKGROUNDS, _GLOBAL_SHAPE, _GLOBAL_DTYPE
+
+    # Attach to existing shared memory block
+    _GLOBAL_SHM = shared_memory.SharedMemory(name=shm_name)
+
+    # Create numpy array view of shared memory (no copy!)
+    _GLOBAL_BACKGROUNDS = np.ndarray(shape, dtype=dtype, buffer=_GLOBAL_SHM.buf)
+    _GLOBAL_SHAPE = shape
+    _GLOBAL_DTYPE = dtype
 
 
 def log_norm(data: np.ndarray) -> np.ndarray:
@@ -355,14 +378,15 @@ class DataGenerator:
         if np.isinf(background_plates).any():
             raise ValueError("background_plates contains Inf values")
 
-        self.backgrounds = background_plates
         self.n_backgrounds = len(background_plates)
+        self._background_shape = background_plates.shape 
+        self._background_dtype = background_plates.dtype
 
         # Sanity check: verify downsampling working as expected
         width_bin_downsampled = config.data.width_bin // config.data.downsample_factor
 
-        if background_plates.shape[3] != width_bin_downsampled:
-            raise ValueError(f"Expected {width_bin_downsampled} channels. Got {background_plates.shape[3]} instead")
+        if self._background_shape[3] != width_bin_downsampled:
+            raise ValueError(f"Expected {width_bin_downsampled} channels. Got {self._background_shape[3]} instead")
 
         self.width_bin = width_bin_downsampled
         self.freq_resolution = self.config.data.freq_resolution
@@ -372,23 +396,42 @@ class DataGenerator:
         self.n_processes = n_processes if n_processes is not None else cpu_count()
 
         # Create persistent process pool for efficient parallel execution
-        # Pool is initialized once with background data to avoid repeated serialization
+        # Use shared memory to avoid duplicating background data across workers
         if self.n_processes > 1:
+            # Create shared memory block for background data
+            nbytes = background_plates.nbytes
+            self.shm = shared_memory.SharedMemory(create=True, size=nbytes)
+
+            # Copy background data into shared memory
+            shared_array = np.ndarray(
+                self._background_shape,
+                dtype=self._background_dtype,
+                buffer=self.shm.buf
+            )
+            shared_array[:] = background_plates[:]
+            self.backgrounds = shared_array
+
+            # Create pool with shared memory reference instead of data copy
             self.pool = Pool(
                 processes=self.n_processes,
                 initializer=_init_worker,
-                initargs=(background_plates,)
+                initargs=(self.shm.name, self._background_shape, self._background_dtype)
             )
-            logger.info(f"Created multiprocessing pool with {self.n_processes} workers")
+
+            logger.info(f"Created multiprocessing pool with {self.n_processes} workers using shared memory")
+            logger.info(f"Shared memory size: {nbytes / 1e9:.2f} GB (shared across all workers)")
         else:
+            self.shm = None
             self.pool = None
+            self.backgrounds = background_plates
             logger.info("Running in sequential mode (n_processes=1)")
 
         logger.info(f"DataGenerator initialized with {self.n_backgrounds} background plates")
-        logger.info(f"Background shape: {background_plates.shape}")
+        logger.info(f"Background shape: {self._background_shape}")
 
     def close(self):
-        """Explicitly close the multiprocessing pool"""
+        """Explicitly close the multiprocessing pool and shared memory"""
+        # Close pool first
         if hasattr(self, 'pool') and self.pool is not None:
             try:
                 self.pool.close()
@@ -399,9 +442,21 @@ class DataGenerator:
             finally:
                 self.pool = None
 
+        # Clean up shared memory
+        if hasattr(self, 'shm') and self.shm is not None:
+            try:
+                self.shm.close()
+                self.shm.unlink()  # Delete shared memory block
+                logger.info("Shared memory cleaned up successfully")
+            except Exception as e:
+                # Log but don't raise - might already be cleaned up
+                logger.warning(f"Error cleaning up shared memory: {e}")
+            finally:
+                self.shm = None
+
     def __del__(self):
-        """Clean up multiprocessing pool on deletion"""
-        # Try to close pool, but don't raise errors during garbage collection
+        """Clean up multiprocessing pool and shared memory on deletion"""
+        # Try to close pool and shared memory, but don't raise errors during garbage collection
         try:
             self.close()
         except Exception:
