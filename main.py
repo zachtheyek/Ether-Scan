@@ -414,7 +414,7 @@ def train_command(args):
                         logger.info(f"Loaded latest checkpoint from round {start_round-1}")
                     else:
                         logger.info("No valid checkpoints loaded")
-                        raise
+                        raise ValueError(f"No valid checkpoints loaded")
 
                     logger.info(f"Waiting {retry_delay} seconds before retry...")
                     time.sleep(retry_delay)

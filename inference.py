@@ -1,4 +1,3 @@
-# NOTE: come back to this later
 """
 Inference pipeline for SETI signal detection
 """

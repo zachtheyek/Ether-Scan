@@ -318,7 +318,10 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
 
         # Calculate optimal chunksize for load balancing
         # Aim for ~4 chunks per worker to balance overhead vs parallelism
-        n_workers = pool._processes
+        try:
+            n_workers = pool._processes
+        except AttributeError:
+            n_workers = cpu_count()
         chunksize = max(1, samples // (n_workers * 4))
 
         # Use pool to generate cadences in parallel
@@ -405,9 +408,9 @@ class DataGenerator:
             # Ignore all errors during __del__ to avoid issues during interpreter shutdown
             pass
 
-    def generate_training_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
+    def generate_train_batch(self, n_samples: int, snr_base: int, snr_range: int) -> Dict[str, np.ndarray]:
         """
-        Generate training batch using chunking
+        Generate training batch using chunking & multiprocessing
 
         main: collapsed cadences 
           - total: n_samples
@@ -590,35 +593,3 @@ class DataGenerator:
                 logger.info(f"Post-injection {key} data properly normalized")
         
         return result
-    
-    # NOTE: come back to this later
-    def generate_test_batch(self, n_samples: int) -> Dict[str, np.ndarray]:
-        """Generate test batch"""
-        n_each = n_samples // 3
-        
-        false_data = create_full_cadence(
-            create_false, n_each, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        true_single = create_full_cadence(
-            create_true_single_shot, n_each, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        true_double = create_full_cadence(
-            create_true, n_each, self.backgrounds,
-            snr_base=self.config.training.snr_base,
-            snr_range=self.config.training.snr_range,
-            width_bin=self.width_bin
-        )
-        
-        return {
-            'false': false_data.astype(np.float32),
-            'true_single': true_single.astype(np.float32),
-            'true_double': true_double.astype(np.float32)
-        }

@@ -736,7 +736,7 @@ class TrainingPipeline:
         logger.info(f"Training round {round_idx + 1} - Epochs: {epochs}, SNR: {snr_base}-{snr_base+snr_range}")
 
         # Generate training data 
-        train_data = self.data_generator.generate_training_batch(
+        train_data = self.data_generator.generate_train_batch(
             self.config.training.num_samples_beta_vae, 
             snr_base, 
             snr_range
@@ -1154,7 +1154,7 @@ class TrainingPipeline:
             # Generate training data
             logger.info(f"Preparing training set with SNR: {snr_base}-{snr_base+snr_range}")
 
-            rf_data = self.data_generator.generate_training_batch(n_samples, snr_base, snr_range)
+            rf_data = self.data_generator.generate_train_batch(n_samples, snr_base, snr_range)
 
             # Prepare distributed dataset for inference
             results = prepare_distributed_dataset(

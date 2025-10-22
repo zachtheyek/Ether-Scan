@@ -102,7 +102,7 @@ class RandomForestModel:
         if not self.is_trained:
             logger.warning("Making predictions with untrained model")
 
-        features = prepare_latent_features(latent_vectors)
+        features = prepare_latent_features(latent_vectors, self.config.data.num_observations)
         return self.model.predict_proba(features)
 
     def predict(self, latent_vectors: np.ndarray, threshold: float = 0.5) -> np.ndarray:
