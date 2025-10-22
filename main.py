@@ -85,7 +85,7 @@ def setup_gpu_config():
             try:
                 # Primary choice: NCCL for NVIDIA GPUs
                 strategy = tf.distribute.MirroredStrategy(
-                    cross_device_ops=tf.distribute.NcclAllReduce()
+                    cross_device_ops=tf.distribute.NcclAllReduce(num_packs=2)
                 )
                 logger.info("Using NcclAllReduce for optimal NVIDIA GPU performance")
 
@@ -93,7 +93,7 @@ def setup_gpu_config():
                 # Fallback: HierarchicalCopyAllReduce
                 logger.warning(f"NCCL failed ({e}), using HierarchicalCopyAllReduce")
                 strategy = tf.distribute.MirroredStrategy(
-                    cross_device_ops=tf.distribute.HierarchicalCopyAllReduce()
+                    cross_device_ops=tf.distribute.HierarchicalCopyAllReduce(num_packs=2)
                 )
 
             logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
