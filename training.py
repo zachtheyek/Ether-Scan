@@ -844,6 +844,10 @@ class TrainingPipeline:
             # Log resources at end of epoch  
             logger.info(f"Epoch {epoch + 1}/{epochs} End")
             logger.info(f"{log_system_resources()}")
+
+        # Clear intermediate data
+        del train_dataset, val_dataset, data
+        gc.collect()
         
         # Save checkpoint
         self.save_models(
@@ -962,6 +966,9 @@ class TrainingPipeline:
         # Average epoch losses over training steps
         for key in epoch_losses:
             epoch_losses[key] /= steps_per_epoch
+
+        del iterator
+        gc.collect()
             
         return epoch_losses
     
@@ -988,6 +995,9 @@ class TrainingPipeline:
         # Average validation losses over validation steps
         for key in val_losses:
             val_losses[key] /= steps
+
+        del iterator
+        gc.collect()
 
         return val_losses
 
@@ -1173,6 +1183,9 @@ class TrainingPipeline:
             n_trimmed = results['n_trimmed']
             steps = results['steps']
 
+            del rf_data
+            gc.collect()
+
             logger.info(f"Generating latents for {n_trimmed} samples using distributed inference")
 
             # Pre-allocate latent arrays
@@ -1235,18 +1248,18 @@ class TrainingPipeline:
                     logger.info(f"Generated latents for step {step + 1}/{steps}")
 
             # Clear intermediate data
-            del rf_data, dataset
+            del iterator, dataset, results
             gc.collect()
 
             # Train Random Forest classifier
             self.rf_model.train(true_latents, false_latents)
 
-            logger.info("Random Forest training complete")
-
             # Clean up
             del true_latents, false_latents
             gc.collect()
             
+            logger.info("Random Forest training complete")
+
         except Exception as e:
             logger.error(f"Random Forest training failed: {e}")
             raise

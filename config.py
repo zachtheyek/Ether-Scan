@@ -101,7 +101,6 @@ class TrainingConfig:
 @dataclass
 class InferenceConfig:
     """Inference configuration"""
-    # num_samples_test: int = 120000
     classification_threshold: float = 0.5
     batch_size: int = 4048
     max_drift_rate: float = 10.0  # Hz/s
