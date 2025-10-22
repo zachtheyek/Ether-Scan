@@ -442,71 +442,70 @@ def train_command(args):
     logger.info("="*60)
 
 
-# NOTE: come back to this later
-# def inference_command(args):
-#     """Execute inference command"""
-#     logger.info("Starting inference pipeline...")
-#
-#     # Setup GPU
-#     setup_gpu_config()
-#
-#     # Load configuration
-#     config = Config()
-#
-#     # Load saved config if provided
-#     if args.config:
-#         with open(args.config, 'r') as f:
-#             saved_config = json.load(f)
-#             # Update config with saved values
-#             for section_key, section_value in saved_config.items():
-#                 if hasattr(config, section_key) and isinstance(section_value, dict):
-#                     for key, value in section_value.items():
-#                         if hasattr(getattr(config, section_key), key):
-#                             setattr(getattr(config, section_key), key, value)
-#
-#     # Prepare observation files
-#     observation_files = []
-#
-#     # Check for prepared test cadences
-#     test_dir = os.path.join(config.data_path, 'testing', 'prepared_cadences')
-#     if os.path.exists(test_dir):
-#         # Load prepared cadences
-#         for cadence_idx in range(args.n_bands):
-#             cadence_files = []
-#             for obs_idx in range(6):
-#                 obs_file = os.path.join(test_dir, f'cadence_{cadence_idx:04d}_obs_{obs_idx}.npy')
-#                 if os.path.exists(obs_file):
-#                     cadence_files.append(obs_file)
-#
-#             if len(cadence_files) == 6:
-#                 observation_files.append(cadence_files)
-#
-#     if not observation_files:
-#         logger.error("No observation files found. Please prepare test data first.")
-#         sys.exit(1)
-#
-#     logger.info(f"Found {len(observation_files)} cadences for inference")
-#
-#     # Run inference
-#     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-#     output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
-#
-#     results = run_inference(
-#         config,
-#         observation_files,
-#         args.vae_model,
-#         args.rf_model,
-#         output_path
-#     )
-#
-#     logger.info(f"Inference completed. Results saved to {output_path}")
-#
-#     # Print summary
-#     if results is not None and not results.empty:
-#         n_total = len(results)
-#         n_high_conf = len(results[results['confidence'] > 0.9])
-#         logger.info(f"Total detections: {n_total}")
-#         logger.info(f"High confidence (>90%): {n_high_conf}")
+def inference_command(args):
+    """Execute inference command"""
+    logger.info("Starting inference pipeline...")
+
+    # Setup GPU
+    setup_gpu_config()
+
+    # Load configuration
+    config = Config()
+
+    # Load saved config if provided
+    if args.config:
+        with open(args.config, 'r') as f:
+            saved_config = json.load(f)
+            # Update config with saved values
+            for section_key, section_value in saved_config.items():
+                if hasattr(config, section_key) and isinstance(section_value, dict):
+                    for key, value in section_value.items():
+                        if hasattr(getattr(config, section_key), key):
+                            setattr(getattr(config, section_key), key, value)
+
+    # Prepare observation files
+    observation_files = []
+
+    # Check for prepared test cadences
+    test_dir = os.path.join(config.data_path, 'testing', 'prepared_cadences')
+    if os.path.exists(test_dir):
+        # Load prepared cadences
+        for cadence_idx in range(args.n_bands):
+            cadence_files = []
+            for obs_idx in range(6):
+                obs_file = os.path.join(test_dir, f'cadence_{cadence_idx:04d}_obs_{obs_idx}.npy')
+                if os.path.exists(obs_file):
+                    cadence_files.append(obs_file)
+
+            if len(cadence_files) == 6:
+                observation_files.append(cadence_files)
+
+    if not observation_files:
+        logger.error("No observation files found. Please prepare test data first.")
+        sys.exit(1)
+
+    logger.info(f"Found {len(observation_files)} cadences for inference")
+
+    # Run inference
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
+
+    results = run_inference(
+        config,
+        observation_files,
+        args.vae_model,
+        args.rf_model,
+        output_path
+    )
+
+    logger.info(f"Inference completed. Results saved to {output_path}")
+
+    # Print summary
+    if results is not None and not results.empty:
+        n_total = len(results)
+        n_high_conf = len(results[results['confidence'] > 0.9])
+        logger.info(f"Total detections: {n_total}")
+        logger.info(f"High confidence (>90%): {n_high_conf}")
 
 
 # NOTE: come back to this later
@@ -667,8 +666,8 @@ def main():
     # Execute command
     if args.command == 'train':
         train_command(args)
-    # elif args.command == 'inference':
-    #     inference_command(args)
+    elif args.command == 'inference':
+        inference_command(args)
     # elif args.command == 'evaluate':
     #     evaluate_command(args)
     else:
