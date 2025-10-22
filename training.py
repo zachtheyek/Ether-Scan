@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 def log_system_resources():
-    """Log system resource usage"""
+    """
+    Log system resource usage
+    Note: only used for debugging, func calls commented out in prod
+    """
     # CPU usage
     cpu_percent = psutil.cpu_percent(interval=1)
 
@@ -781,7 +784,7 @@ class TrainingPipeline:
             # Log resources at start of epoch
             logger.info(f"{'-'*30}")
             logger.info(f"Epoch {epoch + 1}/{epochs} Start")
-            logger.info(f"{log_system_resources()}")
+            # logger.info(f"{log_system_resources()}")
 
             # Training
             epoch_losses = self._train_epoch(train_dataset, steps_per_epoch, accumulation_steps)
@@ -843,7 +846,7 @@ class TrainingPipeline:
 
             # Log resources at end of epoch  
             logger.info(f"Epoch {epoch + 1}/{epochs} End")
-            logger.info(f"{log_system_resources()}")
+            # logger.info(f"{log_system_resources()}")
 
         # Clear intermediate data
         del train_dataset, val_dataset, data
