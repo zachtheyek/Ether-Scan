@@ -80,7 +80,7 @@ class TrainingConfig:
     # Curriculum learning params
     snr_base: int = 10
     initial_snr_range: int = 40
-    final_snr_range: int = 20
+    final_snr_range: int = 10
     curriculum_schedule: str = "exponential"  # "linear", "exponential", "step"
     exponential_decay_rate: int = -3  # How quickly schedule should progress from easy to hard (must be <0) (more negative = less easy rounds & more hard rounds)
     step_easy_rounds: int = 5  # Number of rounds with easy signals
