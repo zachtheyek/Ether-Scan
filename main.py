@@ -22,6 +22,15 @@ from config import Config
 from training import train_full_pipeline, get_latest_tag
 # from inference import run_inference
 
+# Global variable to store chunk data for multiprocessing workers
+# This avoids serialization overhead when passing data to workers
+_GLOBAL_CHUNK_DATA = None
+
+def _init_background_worker(chunk_data):
+    """Initialize worker process with chunk data"""
+    global _GLOBAL_CHUNK_DATA
+    _GLOBAL_CHUNK_DATA = chunk_data
+
 
 def setup_logging(log_filepath: str) -> logging.Logger:
     """
@@ -102,14 +111,19 @@ def setup_gpu_config():
 def _downsample_cadence_worker(args):
     """
     Worker function to downsample a single cadence in parallel
+    Uses global chunk data to avoid serialization overhead
 
     Args:
-        args: Tuple of (cadence, downsample_factor, final_width)
+        args: Tuple of (cadence_idx, downsample_factor, final_width)
 
     Returns:
         Downsampled cadence of shape (6, 16, final_width) or None if invalid
     """
-    cadence, downsample_factor, final_width = args
+    global _GLOBAL_CHUNK_DATA
+    cadence_idx, downsample_factor, final_width = args
+
+    # Get cadence from global chunk data
+    cadence = _GLOBAL_CHUNK_DATA[cadence_idx]
 
     # Skip invalid cadences
     if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
@@ -148,12 +162,10 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
     logger.info(f"Processing chunks of: {chunk_size}")
     logger.info(f"Final resolution: {final_width}")
 
-    # Create persistent multiprocessing pool for parallel downsampling
+    # Set number of processes for multiprocessing
     if n_processes is None:
         n_processes = cpu_count()
-
-    pool = Pool(processes=n_processes)
-    logger.info(f"Created multiprocessing pool with {n_processes} workers for background loading")
+    logger.info(f"Using {n_processes} workers for parallel background loading")
 
     all_backgrounds = []
 
@@ -190,25 +202,29 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
                 chunk_data = np.array(raw_data[chunk_start:chunk_end])
 
                 # Process cadences in parallel using multiprocessing
-                # Prepare arguments
-                n_cadences = min(chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds))
-                args_list = [
-                    (chunk_data[i], downsample_factor, final_width)
-                    for i in range(n_cadences)
-                ]
+                # Create pool with chunk data initialized in workers to avoid serialization
+                with Pool(processes=n_processes, initializer=_init_background_worker,
+                         initargs=(chunk_data,)) as pool:
 
-                # Process cadences using persistent pool
-                # Calculate optimal chunksize for load balancing
-                # Aim for ~4 chunks per worker to balance overhead vs parallelism
-                chunksize = max(1, n_cadences // (n_processes * 4))
-                results = pool.map(_downsample_cadence_worker, args_list, chunksize=chunksize)
+                    # Prepare arguments (just indices, not data - data is in global state)
+                    n_cadences = min(chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds))
+                    args_list = [
+                        (i, downsample_factor, final_width)  # Just index, not the cadence data!
+                        for i in range(n_cadences)
+                    ]
 
-                # Collect valid results (filter out None from invalid cadences)
-                for result in results:
-                    if result is not None:
-                        all_backgrounds.append(result)
-                        if len(all_backgrounds) >= num_target_backgrounds:
-                            break
+                    # Process cadences using pool
+                    # Calculate optimal chunksize for load balancing
+                    # Aim for ~4 chunks per worker to balance overhead vs parallelism
+                    chunksize = max(1, n_cadences // (n_processes * 4))
+                    results = pool.map(_downsample_cadence_worker, args_list, chunksize=chunksize)
+
+                    # Collect valid results (filter out None from invalid cadences)
+                    for result in results:
+                        if result is not None:
+                            all_backgrounds.append(result)
+                            if len(all_backgrounds) >= num_target_backgrounds:
+                                break
 
                 # Clear chunk from memory
                 del chunk_data
@@ -223,11 +239,6 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
         except Exception as e:
             logger.error(f"Error loading {filename}: {e}")
             continue
-
-    # Clean up multiprocessing pool
-    pool.close()
-    pool.join()
-    logger.info("Closed multiprocessing pool")
 
     if len(all_backgrounds) == 0:
         raise ValueError("No background data loaded successfully")
