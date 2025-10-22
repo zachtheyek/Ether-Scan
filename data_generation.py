@@ -316,7 +316,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
             for _ in range(samples)
         ]
 
-        # Calculate optimal chunksize for better load balancing
+        # Calculate optimal chunksize for load balancing
         # Aim for ~4 chunks per worker to balance overhead vs parallelism
         n_workers = pool._processes
         chunksize = max(1, samples // (n_workers * 4))

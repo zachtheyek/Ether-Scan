@@ -9,10 +9,12 @@ import sys
 import numpy as np
 import tensorflow as tf
 # from datetime import datetime
+from typing import Optional
 import json
 import gc
 import time
 from skimage.transform import downscale_local_mean
+from multiprocessing import Pool, cpu_count
 
 from config import Config
 # from preprocessing import DataPreprocessor
@@ -97,22 +99,61 @@ def setup_gpu_config():
         return None
 
 
-def load_background_data(config: Config) -> np.ndarray:
+def _downsample_cadence_worker(args):
     """
-    Load & downsample background plates for pipeline
+    Worker function to downsample a single cadence in parallel
+
+    Args:
+        args: Tuple of (cadence, downsample_factor, final_width)
+
+    Returns:
+        Downsampled cadence of shape (6, 16, final_width) or None if invalid
+    """
+    cadence, downsample_factor, final_width = args
+
+    # Skip invalid cadences
+    if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
+        return None
+
+    # Downsample each observation separately
+    downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
+
+    for obs_idx in range(6):
+        downsampled_cadence[obs_idx] = downscale_local_mean(
+            cadence[obs_idx], (1, downsample_factor)
+        ).astype(np.float32)
+
+    return downsampled_cadence
+
+
+def load_background_data(config: Config, n_processes: Optional[int] = None) -> np.ndarray:
+    """
+    Load & downsample background plates for pipeline using parallel processing
+
+    Args:
+        config: Configuration object
+        n_processes: Number of parallel processes (defaults to cpu_count())
     """
     logger.info(f"Loading background data from {config.data_path}")
 
     # Use config values for memory management
     num_target_backgrounds = config.data.num_target_backgrounds
-    chunk_size = config.data.background_load_chunk_size
-    max_chunks = config.data.max_chunks_per_file
     downsample_factor = config.data.downsample_factor
     final_width = config.data.width_bin // downsample_factor
+
+    chunk_size = config.data.background_load_chunk_size
+    max_chunks = config.data.max_chunks_per_file
 
     logger.info(f"Target backgrounds: {num_target_backgrounds}")
     logger.info(f"Processing chunks of: {chunk_size}")
     logger.info(f"Final resolution: {final_width}")
+
+    # Create persistent multiprocessing pool for parallel downsampling
+    if n_processes is None:
+        n_processes = cpu_count()
+
+    pool = Pool(processes=n_processes)
+    logger.info(f"Created multiprocessing pool with {n_processes} workers for background loading")
 
     all_backgrounds = []
 
@@ -148,33 +189,30 @@ def load_background_data(config: Config) -> np.ndarray:
                 # Load chunk into memory
                 chunk_data = np.array(raw_data[chunk_start:chunk_end])
 
-                # Process each cadence in chunk
-                for cadence_idx in range(chunk_data.shape[0]):
-                    if len(all_backgrounds) >= num_target_backgrounds:
-                        break
+                # Process cadences in parallel using multiprocessing
+                # Prepare arguments
+                n_cadences = min(chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds))
+                args_list = [
+                    (chunk_data[i], downsample_factor, final_width)
+                    for i in range(n_cadences)
+                ]
 
-                    cadence = chunk_data[cadence_idx]  # Shape: (6, 16, 4096)
+                # Process cadences using persistent pool
+                # Calculate optimal chunksize for load balancing
+                # Aim for ~4 chunks per worker to balance overhead vs parallelism
+                chunksize = max(1, n_cadences // (n_processes * 4))
+                results = pool.map(_downsample_cadence_worker, args_list, chunksize=chunksize)
 
-                    # Skip invalid cadences
-                    if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
-                        continue
-
-                    # Downsample each observation separately
-                    downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
-
-                    for obs_idx in range(6):
-                        downsampled_cadence[obs_idx] = downscale_local_mean(
-                            cadence[obs_idx], (1, downsample_factor)
-                        ).astype(np.float32)
-
-                    all_backgrounds.append(downsampled_cadence)
+                # Collect valid results (filter out None from invalid cadences)
+                for result in results:
+                    if result is not None:
+                        all_backgrounds.append(result)
+                        if len(all_backgrounds) >= num_target_backgrounds:
+                            break
 
                 # Clear chunk from memory
                 del chunk_data
                 gc.collect()
-
-                if len(all_backgrounds) >= num_target_backgrounds:
-                    break
 
             logger.info(f"  Processed {len(all_backgrounds)} cadences so far")
 
@@ -185,6 +223,11 @@ def load_background_data(config: Config) -> np.ndarray:
         except Exception as e:
             logger.error(f"Error loading {filename}: {e}")
             continue
+
+    # Clean up multiprocessing pool
+    pool.close()
+    pool.join()
+    logger.info("Closed multiprocessing pool")
 
     if len(all_backgrounds) == 0:
         raise ValueError("No background data loaded successfully")
