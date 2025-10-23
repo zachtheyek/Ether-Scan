@@ -8,12 +8,13 @@ import os
 import sys
 import numpy as np
 import tensorflow as tf
-from typing import Optional
+from typing import Optional, Tuple
 import json
 import gc
 import time
 from skimage.transform import downscale_local_mean
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, Queue
+from logging.handlers import QueueHandler, QueueListener
 import threading
 import psutil
 import matplotlib
@@ -30,10 +31,32 @@ from training import train_full_pipeline, get_latest_tag
 # This avoids serialization overhead when passing data to workers
 _GLOBAL_CHUNK_DATA = None
 
-def _init_background_worker(chunk_data):
-    """Initialize worker process with chunk data"""
+def _init_background_worker(chunk_data, log_queue=None):
+    """
+    Initialize worker process with chunk data and queue-based logging
+
+    Args:
+        chunk_data: Background data chunk to process
+        log_queue: Queue for sending log messages to main process (optional)
+    """
     global _GLOBAL_CHUNK_DATA
     _GLOBAL_CHUNK_DATA = chunk_data
+
+    # Configure process-local logging to use queue
+    if log_queue is not None:
+        import sys
+        import logging
+        from logging.handlers import QueueHandler
+
+        # Reset stdout/stderr to avoid inherited StreamToLogger
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+
+        # Clear inherited handlers and configure queue-based logging
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.addHandler(QueueHandler(log_queue))
+        root_logger.setLevel(logging.INFO)
 
 
 class StreamToLogger:
@@ -58,12 +81,25 @@ class StreamToLogger:
             handler.flush()
 
 
-def setup_logging(log_filepath: str) -> logging.Logger:
+def setup_logging(log_filepath: str) -> Tuple[logging.Logger, Queue, QueueListener]:
     """
-    Configure logging to write to both log file & console
+    Configure logging to write to both log file & console with multiprocessing support
     Captures all output sources: Python logging, TensorFlow, warnings, print statements, and stderr
     Must be called after importing TensorFlow to override its default logging config
+
+    Uses queue-based logging to avoid deadlocks and corrupted output from worker processes.
+    Workers send log messages to a queue, which a listener thread in the main process
+    reads from and writes to the actual log handlers.
+
+    Returns:
+        Tuple of (logger, log_queue, listener)
+        - logger: Main logger instance
+        - log_queue: Queue for worker processes to send log messages
+        - listener: QueueListener that must be stopped on exit
     """
+    # Create queue for worker processes (no size limit)
+    log_queue = Queue(-1)
+
     # Setup root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)  # Ignore DEBUG level logs
@@ -72,19 +108,23 @@ def setup_logging(log_filepath: str) -> logging.Logger:
     # Create formatter
     formatter = logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s')
 
-    # Setup file handler
+    # Setup file handler (only used by main process via listener)
     file_handler = logging.FileHandler(log_filepath, mode='w')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
 
-    # Setup stream handler
+    # Setup stream handler (only used by main process via listener)
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(formatter)
 
-    # Add handlers to root logger
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(stream_handler)
+    # Create queue listener - runs in background thread, writes logs from queue
+    listener = QueueListener(log_queue, file_handler, stream_handler, respect_handler_level=True)
+    listener.start()
+
+    # Add queue handler to root logger (both main and workers use this)
+    queue_handler = QueueHandler(log_queue)
+    root_logger.addHandler(queue_handler)
 
     # Redirect TensorFlow logs to Python logging
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # Show all TF logs
@@ -100,13 +140,23 @@ def setup_logging(log_filepath: str) -> logging.Logger:
 
     # Redirect stdout and stderr to logging
     # This captures print statements and C library output
+    # Note that workers will reset these to avoid inheritance issues
     sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
     sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
 
-    return logging.getLogger(__name__)
+    return logging.getLogger(__name__), log_queue, listener
 
 # Setup logging immediately after imports to ensure logging is configured before any other code runs
-logger = setup_logging('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log')
+logger, log_queue, log_listener = setup_logging('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log')
+
+
+def cleanup_logging():
+    """Stop the queue listener and flush remaining logs"""
+    log_listener.stop()
+    logger.info("Logging queue listener stopped and all logs flushed")
+
+# Register cleanup handler to stop listener on exit
+atexit.register(cleanup_logging)
 
 
 # class ResourceMonitor:
@@ -533,7 +583,7 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
                 # Process cadences in parallel using multiprocessing
                 # Create pool with chunk data initialized in workers to avoid serialization
                 with Pool(processes=n_processes, initializer=_init_background_worker,
-                         initargs=(chunk_data,)) as pool:
+                         initargs=(chunk_data, log_queue)) as pool:
 
                     # Prepare arguments (just indices, not data - data is in global state)
                     n_cadences = min(chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds))
@@ -715,7 +765,8 @@ def train_command(args):
                 tag=tag,
                 dir=dir,
                 start_round=start_round,
-                final_tag=final_tag
+                final_tag=final_tag,
+                log_queue=log_queue
             )
 
             # If we get here, training succeeded

@@ -9,7 +9,7 @@ from typing import Tuple, Dict, Optional
 import logging
 import random
 import gc
-from multiprocessing import Pool, cpu_count, shared_memory
+from multiprocessing import Pool, cpu_count, shared_memory, Queue
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +20,16 @@ _GLOBAL_BACKGROUNDS = None
 _GLOBAL_SHAPE = None
 _GLOBAL_DTYPE = None
 
-def _init_worker(shm_name, shape, dtype):
+def _init_worker(shm_name, shape, dtype, log_queue=None):
     """
-    Initialize worker process with shared memory reference
+    Initialize worker process with shared memory reference and queue-based logging
     This avoids copying data to each worker, saving memory
 
     Args:
         shm_name: Name of the shared memory block
         shape: Shape of the background array
         dtype: Data type of the background array
+        log_queue: Queue for sending log messages to main process (optional)
 
     Note:
         Worker cleanup is automatic - when the pool terminates, the OS reclaims
@@ -37,8 +38,27 @@ def _init_worker(shm_name, shape, dtype):
     """
     global _GLOBAL_SHM, _GLOBAL_BACKGROUNDS, _GLOBAL_SHAPE, _GLOBAL_DTYPE
 
-    # Seed processes with process IDs so each worker gets a different random state
     import os
+    import sys
+    import logging
+
+    # Reset stdout/stderr to avoid inherited StreamToLogger from parent
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+
+    # Configure process-local logging to use queue
+    if log_queue is not None:
+        from logging.handlers import QueueHandler
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.addHandler(QueueHandler(log_queue))
+        root_logger.setLevel(logging.INFO)
+    else:
+        # If no queue provided, disable logging to avoid conflicts
+        logging.getLogger().handlers.clear()
+        logging.getLogger().addHandler(logging.NullHandler())
+
+    # Seed processes with process IDs so each worker gets a different random state
     random.seed(os.getpid())
     np.random.seed(os.getpid())
 
@@ -366,7 +386,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
 class DataGenerator:
     """Synthetic data generator"""
 
-    def __init__(self, config, background_plates: np.ndarray, n_processes: Optional[int] = None):
+    def __init__(self, config, background_plates: np.ndarray, n_processes: Optional[int] = None, log_queue: Optional[Queue] = None):
         """
         Initialize generator
 
@@ -375,8 +395,10 @@ class DataGenerator:
             background_plates: Array of background observations
                               Shape: (n_backgrounds, 6, 16, 512) after preprocessing
             n_processes: Number of parallel processes for signal injection (defaults to cpu_count())
+            log_queue: Queue for worker process logging (optional, for multiprocessing safety)
         """
         self.config = config
+        self.log_queue = log_queue  # Store for worker initialization
 
         # Sanity check: verify no NaN or Inf values in background plates
         if np.isnan(background_plates).any():
@@ -417,11 +439,11 @@ class DataGenerator:
             shared_array[:] = background_plates[:]
             self.backgrounds = shared_array
 
-            # Create pool with shared memory reference instead of data copy
+            # Create pool with shared memory reference and log queue
             self.pool = Pool(
                 processes=self.n_processes,
                 initializer=_init_worker,
-                initargs=(self.shm.name, self._background_shape, self._background_dtype)
+                initargs=(self.shm.name, self._background_shape, self._background_dtype, self.log_queue)
             )
 
             logger.info(f"Created multiprocessing pool with {self.n_processes} workers using shared memory")

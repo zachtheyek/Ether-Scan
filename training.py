@@ -539,13 +539,16 @@ def check_encoder_trained(encoder, threshold=0.2):
 class TrainingPipeline:
     """Training pipeline"""
 
-    def __init__(self, config, background_data: np.ndarray, strategy=None, start_round=1):
+    def __init__(self, config, background_data: np.ndarray, strategy=None, start_round=1, log_queue=None):
         """
         Initialize training pipeline
 
         Args:
             config: Configuration object
             background_data: Preprocessed background observations
+            strategy: TensorFlow distribution strategy
+            start_round: Round number to start training from
+            log_queue: Queue for multiprocessing logging (optional)
         """
         self.config = config
         self.strategy = strategy or tf.distribute.get_strategy()
@@ -554,8 +557,8 @@ class TrainingPipeline:
         self.background_data = background_data.astype(np.float32)
         logger.info(f"Background data shape: {background_data.shape}")
 
-        # Initialize components
-        self.data_generator = DataGenerator(config, background_data)
+        # Initialize components with log queue for multiprocessing safety
+        self.data_generator = DataGenerator(config, background_data, log_queue=log_queue)
 
         # Create VAE model & optimizer inside distributed context
         with self.strategy.scope():
@@ -1460,21 +1463,22 @@ class TrainingPipeline:
             logger.error(f"Failed to load models: {e}")
             raise
 
-def train_full_pipeline(config, background_data: np.ndarray, strategy=None, 
-                        tag=None, dir=None, start_round=1, final_tag=None) -> TrainingPipeline:
+def train_full_pipeline(config, background_data: np.ndarray, strategy=None,
+                        tag=None, dir=None, start_round=1, final_tag=None, log_queue=None) -> TrainingPipeline:
     """
     Train complete Etherscan pipeline
-    
+
     Args:
         config: Configuration object
         background_data: Preprocessed background observations
         strategy: TensorFlow distribution strategy
-        
+        log_queue: Queue for multiprocessing logging (optional)
+
     Returns:
         Trained pipeline object
     """
     # Create pipeline
-    pipeline = TrainingPipeline(config, background_data, strategy, start_round)
+    pipeline = TrainingPipeline(config, background_data, strategy, start_round, log_queue)
 
     # Resume from checkpoint if provided
     if tag:
