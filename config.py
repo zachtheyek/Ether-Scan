@@ -1,5 +1,4 @@
 # TODO: remove unaccessed config params
-# TODO: update to_dict to match config params
 """
 Configuration module for Ether-Scan Pipeline
 """
@@ -45,13 +44,13 @@ class DataConfig:
     max_chunks_per_file: int = 25  # Maximum chunks to load from a single file
 
     # Data files
-    training_files: Optional[List[str]] = None
+    train_files: Optional[List[str]] = None
     test_files: Optional[List[str]] = None
 
     def __post_init__(self):
         """Set default file lists"""
-        if self.training_files is None:
-            self.training_files = [
+        if self.train_files is None:
+            self.train_files = [
                 'real_filtered_LARGE_HIP110750.npy',
                 'real_filtered_LARGE_HIP13402.npy',
                 'real_filtered_LARGE_HIP8497.npy'
@@ -167,7 +166,7 @@ class Config:
                 'num_target_backgrounds': self.data.num_target_backgrounds,
                 'background_load_chunk_size': self.data.background_load_chunk_size,
                 'max_chunks_per_file': self.data.max_chunks_per_file,
-                'training_files': self.data.training_files,
+                'train_files': self.data.train_files,
                 'test_files': self.data.test_files
             },
             'training': {

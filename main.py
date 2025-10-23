@@ -198,7 +198,7 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
 
     all_backgrounds = []
 
-    for filename in config.data.training_files:
+    for filename in config.data.train_files:
         filepath = config.get_training_file_path(filename)
 
         if not os.path.exists(filepath):
@@ -309,6 +309,8 @@ def train_command(args):
         config.data.background_load_chunk_size = args.background_load_chunk_size
     if args.max_chunks_per_file:
         config.data.max_chunks_per_file = args.max_chunks_per_file
+    if args.train_files:
+        config.data.train_files = args.train_files
     if args.rounds:
         config.training.num_training_rounds = args.rounds
     if args.epochs:
@@ -616,6 +618,8 @@ def main():
                               help='Maximum cadences to process at once during background loading')
     train_parser.add_argument('--max-chunks-per-file', type=int, default=None,
                               help='Maximum chunks to load from a single file')
+    train_parser.add_argument('--train-files', type=str, nargs='+', default=None,
+                              help='List of training data files to use')
     train_parser.add_argument('--rounds', type=int, default=None,
                               help='Number of training rounds')
     train_parser.add_argument('--epochs', type=int, default=None,
