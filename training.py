@@ -851,7 +851,12 @@ class TrainingPipeline:
         # Clear intermediate data
         del train_dataset, val_dataset, data
         gc.collect()
-        
+
+        # Force TensorFlow to release internal references to datasets/iterators
+        # This prevents generator closures from accumulating in memory between rounds
+        tf.keras.backend.clear_session()
+        logger.info("Cleared TensorFlow session state")
+
         # Save checkpoint
         self.save_models(
             tag=f"round_{round_idx+1:02d}",
@@ -1260,7 +1265,11 @@ class TrainingPipeline:
             # Clean up
             del true_latents, false_latents
             gc.collect()
-            
+
+            # Force TensorFlow to release internal references
+            tf.keras.backend.clear_session()
+            logger.info("Cleared TensorFlow session state")
+
             logger.info("Random Forest training complete")
 
         except Exception as e:
