@@ -334,13 +334,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
     # Pre-allocate output array
     cadence = np.zeros((samples, 6, 16, width_bin))
 
-    if pool is None:
-        # Sequential execution (backwards compatibility)
-        for i in range(samples):
-            cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
-                                          freq_resolution=freq_resolution, time_resolution=time_resolution,
-                                          inject=inject, dynamic_range=dynamic_range)
-    else:
+    if pool:
         # Parallel execution using provided pool
         # Prepare arguments for each parallel task (no plate - uses global)
         args_list = [
@@ -359,6 +353,12 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
         # Use pool to generate cadences in parallel
         for i, result in enumerate(pool.imap(_single_cadence_wrapper, args_list, chunksize=chunksize)):
             cadence[i, :, :, :] = result
+    else:
+        # Sequential execution (backwards compatibility)
+        for i in range(samples):
+            cadence[i, :, :, :] = function(plate, snr_base=snr_base, snr_range=snr_range, width_bin=width_bin,
+                                          freq_resolution=freq_resolution, time_resolution=time_resolution,
+                                          inject=inject, dynamic_range=dynamic_range)
 
     return cadence
 
