@@ -777,11 +777,11 @@ class TrainingPipeline:
 
         # Sanity check: verify step sizes are valid
         if accumulation_steps < 1:
-            raise ValueError(f"Accumulation steps < 1: global_batch_size ({self.config.training.global_batch_size}) must be >= per_replica_batch_size * num_replicas ({self.config.training.per_replica_batch_size * self.strategy.num_replicas})")
+            raise ValueError(f"Accumulation steps < 1: global_batch_size ({self.config.training.global_batch_size}) must be >= per_replica_batch_size * num_replicas ({self.config.training.per_replica_batch_size * self.strategy.num_replicas_in_sync})")
         if steps_per_epoch < 1:
             raise ValueError(f"Steps per epoch < 1: n_train_trimmed ({n_train_trimmed}) must be >= global_batch_size ({self.config.training.global_batch_size})")
         if val_steps < 1:
-            raise ValueError(f"Validation steps < 1: n_val_trimmed ({n_val_trimmed}) must be >= per_replica_val_batch_size * num_replicas ({self.config.training.per_replica_val_batch_size * self.strategy.num_replicas})")
+            raise ValueError(f"Validation steps < 1: n_val_trimmed ({n_val_trimmed}) must be >= per_replica_val_batch_size * num_replicas ({self.config.training.per_replica_val_batch_size * self.strategy.num_replicas_in_sync})")
 
         logger.info(f"Initializing training loop with {steps_per_epoch} train steps, {val_steps} val steps")
         logger.info(f"Gradients accumulated every {accumulation_steps} sub-steps")
