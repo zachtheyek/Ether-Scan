@@ -194,6 +194,7 @@ def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, rou
         else:
             logger.info(f"No files with round >= {round_num} found to delete")
 
+
 def get_latest_tag(checkpoints_dir: str) -> str:
     """
     Find the latest checkpoint tag from the checkpoints directory
@@ -269,6 +270,7 @@ def get_latest_tag(checkpoints_dir: str) -> str:
     tag = filtered_tags[-1]  # Get the latest
     return tag
 
+
 def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: TrainingConfig) -> Tuple[int, int]:
     """
     Calculate SNR parameters for curriculum learning
@@ -305,6 +307,7 @@ def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Training
         raise ValueError(f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'")
 
     return config.snr_base, int(current_range)
+
 
 def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Optional[float],
                                 per_replica_batch_size: int, global_batch_size: Optional[int],
@@ -475,6 +478,7 @@ def prepare_distributed_dataset(data: Dict, n_samples: int, train_val_split: Opt
             'steps': steps,
         }
 
+
 def compute_expected_std(layer):
     """Compute expected std based on initializer."""
     weights = layer.get_weights()
@@ -496,6 +500,7 @@ def compute_expected_std(layer):
         return None
 
     return expected_std
+
 
 def check_encoder_trained(encoder, threshold=0.2):
     """
@@ -529,6 +534,7 @@ def check_encoder_trained(encoder, threshold=0.2):
     else:
         logger.info("Encoder appears untrained (all layers close to initializer).")
         return False
+
 
 class TrainingPipeline:
     """Training pipeline"""

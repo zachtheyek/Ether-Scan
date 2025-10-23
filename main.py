@@ -8,7 +8,6 @@ import os
 import sys
 import numpy as np
 import tensorflow as tf
-# from datetime import datetime
 from typing import Optional
 import json
 import gc
@@ -17,10 +16,7 @@ from skimage.transform import downscale_local_mean
 from multiprocessing import Pool, cpu_count
 
 from config import Config
-# from preprocessing import DataPreprocessor
-# from data_generation import DataGenerator
 from training import train_full_pipeline, get_latest_tag
-# from inference import run_inference
 
 # Global variable to store chunk data for multiprocessing workers
 # This avoids serialization overhead when passing data to workers
@@ -32,9 +28,25 @@ def _init_background_worker(chunk_data):
     _GLOBAL_CHUNK_DATA = chunk_data
 
 
+class StreamToLogger:
+    """Redirect stream (stdout/stderr) to logging system"""
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level = level
+        self.linebuf = ''
+
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.level, line.rstrip())
+
+    def flush(self):
+        pass
+
+
 def setup_logging(log_filepath: str) -> logging.Logger:
     """
     Configure logging to write to both file & console
+    Captures all output sources: Python logging, TensorFlow, warnings, print statements, and stderr
     Must be called after importing TensorFlow to override its logging config
     """
     # Setup root logger
@@ -58,6 +70,23 @@ def setup_logging(log_filepath: str) -> logging.Logger:
     # Add handlers to root logger
     root_logger.addHandler(file_handler)
     root_logger.addHandler(stream_handler)
+
+    # Redirect TensorFlow logs to Python logging
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # Show all TF logs
+    tf.get_logger().setLevel(logging.INFO)
+    tf_logger = tf.get_logger()
+    tf_logger.handlers = []  # Remove TF's default handlers
+    tf_logger.propagate = True  # Use root logger handlers
+
+    # Capture Python warnings module output
+    logging.captureWarnings(True)
+    warnings_logger = logging.getLogger('py.warnings')
+    warnings_logger.setLevel(logging.WARNING)
+
+    # Redirect stdout and stderr to logging
+    # This captures print statements and C library output
+    sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
+    sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
 
     return logging.getLogger(__name__)
 

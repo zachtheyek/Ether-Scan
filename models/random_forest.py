@@ -93,7 +93,7 @@ class RandomForestModel:
         importances = self.model.feature_importances_
         logger.info(f"Feature importance stats - Mean: {np.mean(importances):.4f}, "
                    f"Std: {np.std(importances):.4f}")
-        logger.info(f"Feature importance: {importances}")
+        logger.info(f"Feature importance: \n{importances}")
 
     def predict_proba(self, latent_vectors: np.ndarray) -> np.ndarray:
         """

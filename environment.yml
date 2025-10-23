@@ -1,4 +1,5 @@
-name: ether-scan
+# TODO: update to match current pipeline imports
+name: etherscan
 channels:
   - conda-forge
   - defaults
