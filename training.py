@@ -17,8 +17,6 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 from matplotlib.gridspec import GridSpec
 import gc
-import psutil
-import subprocess
 
 from config import TrainingConfig
 from data_generation import DataGenerator
@@ -26,43 +24,6 @@ from models.vae import create_vae_model
 from models.random_forest import RandomForestModel
 
 logger = logging.getLogger(__name__)
-
-
-# def log_system_resources():
-#     """
-#     Log system resource usage
-#     Note: only used for debugging, func calls commented out in prod
-#     """
-#     # CPU usage
-#     cpu_percent = psutil.cpu_percent(interval=1)
-#
-#     # Memory usage
-#     memory = psutil.virtual_memory()
-#     memory_used_gb = memory.used / 1e9
-#     memory_total_gb = memory.total / 1e9
-#
-#     # GPU usage (if available)
-#     gpu_info = []
-#     try:
-#         # Try nvidia-smi for GPU info
-#         result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total',
-#                                '--format=csv,noheader,nounits'],
-#                               capture_output=True, text=True, timeout=5)
-#         if result.returncode == 0:
-#             lines = result.stdout.strip().split('\n')
-#             for i, line in enumerate(lines):
-#                 parts = line.split(', ')
-#                 if len(parts) == 3:
-#                     gpu_util, mem_used, mem_total = parts
-#                     gpu_info.append(f"GPU{i}: {gpu_util}% util ({mem_used}MB/{mem_total}MB)")
-#     except (subprocess.TimeoutExpired, FileNotFoundError):
-#         gpu_info = ["GPU info unavailable"]
-#
-#     resource_str = (f"Resources -- CPU: {cpu_percent:.1f}%, "
-#                    f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory.percent:.1f}%), "
-#                    f"{', '.join(gpu_info)}")
-#
-#     return resource_str
 
 
 def handle_directory(base_dir: str, target_dirs: Optional[List[str]] = None, round_num: int = 1):
@@ -793,7 +754,6 @@ class TrainingPipeline:
             # Log resources at start of epoch
             logger.info(f"{'-'*30}")
             logger.info(f"Epoch {epoch + 1}/{epochs} Start")
-            # logger.info(f"{log_system_resources()}")
 
             # Training
             epoch_losses = self._train_epoch(train_dataset, steps_per_epoch, accumulation_steps)
@@ -855,7 +815,6 @@ class TrainingPipeline:
 
             # Log resources at end of epoch  
             logger.info(f"Epoch {epoch + 1}/{epochs} End")
-            # logger.info(f"{log_system_resources()}")
 
         # Clear intermediate data
         del train_dataset, val_dataset, data

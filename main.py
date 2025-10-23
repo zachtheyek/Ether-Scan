@@ -27,37 +27,6 @@ import signal
 from config import Config
 from training import train_full_pipeline, get_latest_tag
 
-# Global variable to store chunk data for multiprocessing workers
-# This avoids serialization overhead when passing data to workers
-_GLOBAL_CHUNK_DATA = None
-
-def _init_background_worker(chunk_data, log_queue=None):
-    """
-    Initialize worker process with chunk data and queue-based logging
-
-    Args:
-        chunk_data: Background data chunk to process
-        log_queue: Queue for sending log messages to main process (optional)
-    """
-    global _GLOBAL_CHUNK_DATA
-    _GLOBAL_CHUNK_DATA = chunk_data
-
-    # Configure process-local logging to use queue
-    if log_queue is not None:
-        import sys
-        import logging
-        from logging.handlers import QueueHandler
-
-        # Reset stdout/stderr to avoid inherited StreamToLogger
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
-
-        # Clear inherited handlers and configure queue-based logging
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
-        root_logger.addHandler(QueueHandler(log_queue))
-        root_logger.setLevel(logging.INFO)
-
 
 class StreamToLogger:
     """Redirect stream (stdout/stderr) to logging system"""
@@ -155,293 +124,299 @@ def cleanup_logging():
     log_listener.stop()
     logger.info("Logging queue listener stopped and all logs flushed")
 
+# NOTE: atexit.register executes LIFO -- call cleanup_logging first so it's the last function to run on exit
 # Register cleanup handler to stop listener on exit
 atexit.register(cleanup_logging)
 
 
-# class ResourceMonitor:
-#     """Background thread to monitor system resources"""
-#
-#     def __init__(self, interval=1.0):
-#         self.interval = interval
-#         self.running = False
-#         self.thread = None
-#
-#         # Data storage
-#         self.timestamps = []
-#         self.cpu_percent_per_core = []  # List of lists, one per core
-#         self.ram_percent = []
-#         self.gpu_usage = []  # List of lists, one per GPU
-#         self.gpu_memory = []  # List of lists, one per GPU
-#         self.gpu_names = []
-#
-#         # Detect GPUs
-#         self._detect_gpus()
-#
-#     def _detect_gpus(self):
-#         """Detect available GPUs"""
-#         try:
-#             gpus = tf.config.list_physical_devices('GPU')
-#             self.num_gpus = len(gpus)
-#
-#             # Try to get GPU names using nvidia-smi if available
-#             if self.num_gpus > 0:
-#                 try:
-#                     import subprocess
-#                     result = subprocess.run(
-#                         ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
-#                         capture_output=True, text=True, timeout=5
-#                     )
-#                     if result.returncode == 0:
-#                         self.gpu_names = [name.strip() for name in result.stdout.strip().split('\n')]
-#                     else:
-#                         self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
-#                 except:
-#                     self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
-#             else:
-#                 self.gpu_names = []
-#
-#         except:
-#             self.num_gpus = 0
-#             self.gpu_names = []
-#
-#     def _get_gpu_stats(self):
-#         """Get GPU usage and memory statistics"""
-#         gpu_utils = []
-#         gpu_mems = []
-#
-#         if self.num_gpus > 0:
-#             try:
-#                 import subprocess
-#                 # Get GPU utilization
-#                 result = subprocess.run(
-#                     ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total',
-#                      '--format=csv,noheader,nounits'],
-#                     capture_output=True, text=True, timeout=5
-#                 )
-#
-#                 if result.returncode == 0:
-#                     for line in result.stdout.strip().split('\n'):
-#                         parts = line.split(',')
-#                         util = float(parts[0].strip())
-#                         mem_used = float(parts[1].strip())
-#                         mem_total = float(parts[2].strip())
-#                         mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
-#
-#                         gpu_utils.append(util)
-#                         gpu_mems.append(mem_percent)
-#                 else:
-#                     gpu_utils = [0.0] * self.num_gpus
-#                     gpu_mems = [0.0] * self.num_gpus
-#             except:
-#                 gpu_utils = [0.0] * self.num_gpus
-#                 gpu_mems = [0.0] * self.num_gpus
-#
-#         return gpu_utils, gpu_mems
-#
-#     def _monitor_loop(self):
-#         """Background monitoring loop"""
-#         start_time = time.time()
-#
-#         while self.running:
-#             try:
-#                 # Record timestamp
-#                 current_time = time.time() - start_time
-#                 self.timestamps.append(current_time)
-#
-#                 # CPU per core
-#                 cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
-#                 self.cpu_percent_per_core.append(cpu_per_core)
-#
-#                 # RAM
-#                 ram = psutil.virtual_memory().percent
-#                 self.ram_percent.append(ram)
-#
-#                 # GPU
-#                 gpu_utils, gpu_mems = self._get_gpu_stats()
-#                 self.gpu_usage.append(gpu_utils)
-#                 self.gpu_memory.append(gpu_mems)
-#
-#                 # Sleep until next interval
-#                 time.sleep(self.interval)
-#
-#             except Exception as e:
-#                 logger.error(f"Error in resource monitoring: {e}")
-#                 time.sleep(self.interval)
-#
-#     def start(self):
-#         """Start monitoring in background thread"""
-#         if not self.running:
-#             self.running = True
-#             self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
-#             self.thread.start()
-#
-#             # Log system information
-#             logger.info("="*60)
-#             logger.info("RESOURCE MONITORING STARTED")
-#             logger.info(f"  CPU Cores: {psutil.cpu_count()}")
-#             logger.info(f"  GPUs Detected: {self.num_gpus}")
-#             if self.num_gpus > 0:
-#                 for i, name in enumerate(self.gpu_names):
-#                     logger.info(f"    GPU {i}: {name}")
-#             logger.info(f"  Monitoring Interval: {self.interval}s")
-#             logger.info(f"  Output: <config.output_path>/plots/resource_utilization.png")
-#             logger.info("="*60)
-#
-#     def stop(self):
-#         """Stop monitoring"""
-#         if self.running:
-#             self.running = False
-#             if self.thread:
-#                 self.thread.join(timeout=5)
-#
-#             duration_mins = self.timestamps[-1] / 60 if self.timestamps else 0
-#             logger.info("="*60)
-#             logger.info("RESOURCE MONITORING STOPPED")
-#             logger.info(f"  Duration: {duration_mins:.2f} minutes")
-#             logger.info(f"  Samples Collected: {len(self.timestamps)}")
-#             logger.info("="*60)
-#
-#     def save_plot(self, output_path):
-#         """Generate and save resource utilization plot"""
-#         if len(self.timestamps) == 0:
-#             logger.warning("No monitoring data to plot")
-#             return
-#
-#         # Ensure output directory exists
-#         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-#
-#         # Create figure with 3 subplots
-#         fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-#         fig.suptitle('System Resource Utilization', fontsize=16, fontweight='bold')
-#
-#         timestamps = np.array(self.timestamps) / 60  # Convert to minutes
-#
-#         # ===== CPU Plot =====
-#         ax_cpu = axes[0]
-#         cpu_data = np.array(self.cpu_percent_per_core).T  # Shape: (num_cores, num_samples)
-#         num_cores = cpu_data.shape[0]
-#
-#         colors = plt.cm.tab20(np.linspace(0, 1, num_cores))
-#         for core_idx in range(num_cores):
-#             ax_cpu.plot(timestamps, cpu_data[core_idx], label=f'Core {core_idx}',
-#                        color=colors[core_idx], linewidth=0.8, alpha=0.7)
-#
-#         ax_cpu.set_ylabel('CPU Usage (%)', fontsize=12, fontweight='bold')
-#         ax_cpu.set_ylim(0, 100)
-#         ax_cpu.grid(True, alpha=0.3)
-#         ax_cpu.legend(ncol=min(8, num_cores), fontsize=6, loc='upper left')
-#         ax_cpu.set_title(f'CPU Usage (per core, n={num_cores})', fontsize=12)
-#
-#         # ===== RAM Plot =====
-#         ax_ram = axes[1]
-#         ax_ram.plot(timestamps, self.ram_percent, color='blue', linewidth=1.5)
-#         ax_ram.fill_between(timestamps, self.ram_percent, alpha=0.3, color='blue')
-#         ax_ram.set_ylabel('RAM Pressure (%)', fontsize=12, fontweight='bold')
-#         ax_ram.set_ylim(0, 100)
-#         ax_ram.grid(True, alpha=0.3)
-#         ax_ram.set_title('RAM Pressure', fontsize=12)
-#
-#         # ===== GPU Plot =====
-#         ax_gpu = axes[2]
-#         if self.num_gpus > 0:
-#             gpu_usage_data = np.array(self.gpu_usage).T  # Shape: (num_gpus, num_samples)
-#             gpu_memory_data = np.array(self.gpu_memory).T  # Shape: (num_gpus, num_samples)
-#
-#             # Create second y-axis for memory
-#             ax_gpu_mem = ax_gpu.twinx()
-#
-#             colors = plt.cm.tab10(np.linspace(0, 1, self.num_gpus))
-#
-#             for gpu_idx in range(self.num_gpus):
-#                 color = colors[gpu_idx]
-#                 gpu_name = self.gpu_names[gpu_idx] if gpu_idx < len(self.gpu_names) else f"GPU:{gpu_idx}"
-#
-#                 # Usage (solid line, y1)
-#                 ax_gpu.plot(timestamps, gpu_usage_data[gpu_idx],
-#                            label=f'{gpu_name} Usage',
-#                            color=color, linewidth=1.5, alpha=0.9)
-#
-#                 # Memory (dashed line, y2, dimmer)
-#                 ax_gpu_mem.plot(timestamps, gpu_memory_data[gpu_idx],
-#                                label=f'{gpu_name} Memory',
-#                                color=color, linewidth=1.5, alpha=0.6, linestyle='--')
-#
-#             ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
-#             ax_gpu_mem.set_ylabel('GPU Memory (%)', fontsize=12, fontweight='bold')
-#             ax_gpu.set_ylim(0, 100)
-#             ax_gpu_mem.set_ylim(0, 100)
-#
-#             # Combine legends
-#             lines1, labels1 = ax_gpu.get_legend_handles_labels()
-#             lines2, labels2 = ax_gpu_mem.get_legend_handles_labels()
-#             ax_gpu.legend(lines1 + lines2, labels1 + labels2,
-#                          ncol=min(4, self.num_gpus * 2), fontsize=8, loc='upper left')
-#         else:
-#             ax_gpu.text(0.5, 0.5, 'No GPUs detected',
-#                        ha='center', va='center', transform=ax_gpu.transAxes, fontsize=14)
-#             ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
-#
-#         ax_gpu.grid(True, alpha=0.3)
-#         ax_gpu.set_title(f'GPU Usage & Memory (n={self.num_gpus})', fontsize=12)
-#         ax_gpu.set_xlabel('Time (minutes)', fontsize=12, fontweight='bold')
-#
-#         # Adjust layout and save
-#         plt.tight_layout()
-#         plt.savefig(output_path, dpi=150, bbox_inches='tight')
-#         plt.close(fig)
-#
-#         logger.info(f"Resource utilization plot saved to: {output_path}")
-#
-#
-# # Global resource monitor instance
-# _RESOURCE_MONITOR = None
-#
-#
-# def log_system_resources(config: Config):
-#     """
-#     Start monitoring CPU, GPU, and RAM usage in background thread.
-#     Should be called at the start of main.py execution.
-#     Automatically saves plot on exit or keyboard interrupt.
-#
-#     Args:
-#         config: Configuration object containing output_path
-#
-#     Returns:
-#         ResourceMonitor: The monitoring instance
-#     """
-#     global _RESOURCE_MONITOR
-#
-#     if _RESOURCE_MONITOR is not None:
-#         logger.warning("Resource monitoring already started")
-#         return _RESOURCE_MONITOR
-#
-#     # Create monitor instance
-#     _RESOURCE_MONITOR = ResourceMonitor(interval=1.0)
-#
-#     # Define cleanup function
-#     def save_on_exit():
-#         if _RESOURCE_MONITOR is not None:
-#             _RESOURCE_MONITOR.stop()
-#             output_path = os.path.join(config.output_path, 'plots', 'resource_utilization.png')
-#             _RESOURCE_MONITOR.save_plot(output_path)
-#
-#     # Register cleanup handlers
-#     atexit.register(save_on_exit)
-#
-#     # Handle SIGINT (Ctrl+C) and SIGTERM
-#     def signal_handler(signum, frame):
-#         logger.info(f"Received signal {signum}, saving resource plot...")
-#         save_on_exit()
-#         sys.exit(0)
-#
-#     signal.signal(signal.SIGINT, signal_handler)
-#     signal.signal(signal.SIGTERM, signal_handler)
-#
-#     # Start monitoring
-#     _RESOURCE_MONITOR.start()
-#
-#     return _RESOURCE_MONITOR
+class ResourceMonitor:
+    """Background thread to monitor system resources"""
+
+    def __init__(self, interval=1.0, output_path):
+        self.interval = interval
+        self.running = False
+        self.thread = None
+        self.output_path = output_path
+
+        # Data storage
+        self.timestamps = []
+        self.cpu_percent_per_core = []  # List of lists, one per core
+        self.ram_percent = []
+        self.gpu_usage = []  # List of lists, one per GPU
+        self.gpu_memory = []  # List of lists, one per GPU
+        self.gpu_names = []
+
+        # Detect GPUs
+        self._detect_gpus()
+
+    def _detect_gpus(self):
+        """Detect available GPUs"""
+        try:
+            gpus = tf.config.list_physical_devices('GPU')
+            self.num_gpus = len(gpus)
+
+            # Try to get GPU names using nvidia-smi if available
+            if self.num_gpus > 0:
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        self.gpu_names = [name.strip() for name in result.stdout.strip().split('\n')]
+                    else:
+                        self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
+                except:
+                    self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
+            else:
+                self.gpu_names = []
+
+        except:
+            self.num_gpus = 0
+            self.gpu_names = []
+
+    def _get_gpu_stats(self):
+        """Get GPU usage and memory statistics"""
+        gpu_utils = []
+        gpu_mems = []
+
+        if self.num_gpus > 0:
+            try:
+                import subprocess
+                # Get GPU utilization
+                result = subprocess.run(
+                    ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total',
+                     '--format=csv,noheader,nounits'],
+                    capture_output=True, text=True, timeout=5
+                )
+
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split('\n'):
+                        parts = line.split(',')
+                        util = float(parts[0].strip())
+                        mem_used = float(parts[1].strip())
+                        mem_total = float(parts[2].strip())
+                        mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
+
+                        gpu_utils.append(util)
+                        gpu_mems.append(mem_percent)
+                else:
+                    gpu_utils = [0.0] * self.num_gpus
+                    gpu_mems = [0.0] * self.num_gpus
+            except:
+                gpu_utils = [0.0] * self.num_gpus
+                gpu_mems = [0.0] * self.num_gpus
+
+        return gpu_utils, gpu_mems
+
+    def _monitor_loop(self):
+        """Background monitoring loop"""
+        start_time = time.time()
+
+        while self.running:
+            try:
+                # Record timestamp
+                current_time = time.time() - start_time
+                self.timestamps.append(current_time)
+
+                # CPU per core
+                cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
+                self.cpu_percent_per_core.append(cpu_per_core)
+
+                # RAM
+                ram = psutil.virtual_memory().percent
+                self.ram_percent.append(ram)
+
+                # GPU
+                gpu_utils, gpu_mems = self._get_gpu_stats()
+                self.gpu_usage.append(gpu_utils)
+                self.gpu_memory.append(gpu_mems)
+
+                # Sleep until next interval
+                time.sleep(self.interval)
+
+            except Exception as e:
+                logger.error(f"Error in resource monitoring: {e}")
+                time.sleep(self.interval)
+
+    def start(self):
+        """Start monitoring in background thread"""
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+            self.thread.start()
+
+            # Log system information
+            logger.info("="*60)
+            logger.info("RESOURCE MONITORING STARTED")
+            logger.info(f"  CPU Cores: {psutil.cpu_count()}")
+            logger.info(f"  GPUs Detected: {self.num_gpus}")
+            if self.num_gpus > 0:
+                for i, name in enumerate(self.gpu_names):
+                    logger.info(f"    GPU {i}: {name}")
+            logger.info(f"  Monitoring Interval: {self.interval}s")
+            logger.info(f"  Output path: {self.output_path}")
+            logger.info("="*60)
+
+    def stop(self):
+        """Stop monitoring"""
+        if self.running:
+            self.running = False
+            if self.thread:
+                self.thread.join(timeout=5)  # Wait max 5 secs for thread to finish
+
+            duration_mins = self.timestamps[-1] / 60 if self.timestamps else 0
+            logger.info("="*60)
+            logger.info("RESOURCE MONITORING STOPPED")
+            logger.info(f"  Duration: {duration_mins:.2f} minutes")
+            logger.info(f"  Samples Collected: {len(self.timestamps)}")
+            logger.info("="*60)
+
+    def save_plot(self, output_path):
+        """Generate and save resource utilization plot"""
+        if len(self.timestamps) == 0:
+            logger.warning("No monitoring data to plot")
+            return
+
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # Create figure with 3 subplots
+        fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+        fig.suptitle('System Resource Utilization', fontsize=16, fontweight='bold')
+
+        timestamps = np.array(self.timestamps) / 60  # Convert to minutes
+
+        # ===== CPU Plot =====
+        ax_cpu = axes[0]
+        cpu_data = np.array(self.cpu_percent_per_core).T  # Shape: (num_cores, num_samples)
+        num_cores = cpu_data.shape[0]
+
+        colors = plt.cm.tab20(np.linspace(0, 1, num_cores))
+        for core_idx in range(num_cores):
+            ax_cpu.plot(timestamps, cpu_data[core_idx], label=f'Core {core_idx}',
+                       color=colors[core_idx], linewidth=0.8, alpha=0.7)
+
+        ax_cpu.set_ylabel('CPU Usage (%)', fontsize=12, fontweight='bold')
+        ax_cpu.set_ylim(0, 100)
+        ax_cpu.grid(True, alpha=0.3)
+        ax_cpu.legend(ncol=min(8, num_cores), fontsize=6, loc='upper left')
+        ax_cpu.set_title(f'CPU Usage (per core, n={num_cores})', fontsize=12)
+
+        # ===== RAM Plot =====
+        ax_ram = axes[1]
+        ax_ram.plot(timestamps, self.ram_percent, color='blue', linewidth=1.5)
+        ax_ram.fill_between(timestamps, self.ram_percent, alpha=0.3, color='blue')
+        ax_ram.set_ylabel('RAM Pressure (%)', fontsize=12, fontweight='bold')
+        ax_ram.set_ylim(0, 100)
+        ax_ram.grid(True, alpha=0.3)
+        ax_ram.set_title('RAM Pressure', fontsize=12)
+
+        # ===== GPU Plot =====
+        ax_gpu = axes[2]
+        if self.num_gpus > 0:
+            gpu_usage_data = np.array(self.gpu_usage).T  # Shape: (num_gpus, num_samples)
+            gpu_memory_data = np.array(self.gpu_memory).T  # Shape: (num_gpus, num_samples)
+
+            # Create second y-axis for memory
+            ax_gpu_mem = ax_gpu.twinx()
+
+            colors = plt.cm.tab10(np.linspace(0, 1, self.num_gpus))
+
+            for gpu_idx in range(self.num_gpus):
+                color = colors[gpu_idx]
+                gpu_name = self.gpu_names[gpu_idx] if gpu_idx < len(self.gpu_names) else f"GPU:{gpu_idx}"
+
+                # Usage (solid line, y1)
+                ax_gpu.plot(timestamps, gpu_usage_data[gpu_idx],
+                           label=f'{gpu_name} Usage',
+                           color=color, linewidth=1.5, alpha=0.9)
+
+                # Memory (dashed line, y2, dimmer)
+                ax_gpu_mem.plot(timestamps, gpu_memory_data[gpu_idx],
+                               label=f'{gpu_name} Memory',
+                               color=color, linewidth=1.5, alpha=0.6, linestyle='--')
+
+            ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
+            ax_gpu_mem.set_ylabel('GPU Memory (%)', fontsize=12, fontweight='bold')
+            ax_gpu.set_ylim(0, 100)
+            ax_gpu_mem.set_ylim(0, 100)
+
+            # Combine legends
+            lines1, labels1 = ax_gpu.get_legend_handles_labels()
+            lines2, labels2 = ax_gpu_mem.get_legend_handles_labels()
+            ax_gpu.legend(lines1 + lines2, labels1 + labels2,
+                         ncol=min(4, self.num_gpus * 2), fontsize=8, loc='upper left')
+        else:
+            ax_gpu.text(0.5, 0.5, 'No GPUs detected',
+                       ha='center', va='center', transform=ax_gpu.transAxes, fontsize=14)
+            ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
+
+        ax_gpu.grid(True, alpha=0.3)
+        ax_gpu.set_title(f'GPU Usage & Memory (n={self.num_gpus})', fontsize=12)
+        ax_gpu.set_xlabel('Time (minutes)', fontsize=12, fontweight='bold')
+
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+        logger.info(f"Resource utilization plot saved to: {output_path}")
+
+
+# Global resource monitor instance
+_RESOURCE_MONITOR = None
+
+def log_system_resources(output_path: str):
+    """
+    Start monitoring CPU, GPU, and RAM usage in background thread.
+    Should be called at the start of main.py execution.
+    Automatically saves plot on exit.
+
+    Args:
+        config: Configuration object containing output_path
+
+    Returns:
+        ResourceMonitor: The monitoring instance
+    """
+    global _RESOURCE_MONITOR
+
+    if _RESOURCE_MONITOR is not None:
+        logger.warning("Resource monitoring already started")
+        return _RESOURCE_MONITOR
+
+    # Create monitor instance
+    _RESOURCE_MONITOR = ResourceMonitor(interval=1.0, output_path=output_path)
+
+    # Define cleanup function
+    def save_on_exit():
+        if _RESOURCE_MONITOR is not None:
+            _RESOURCE_MONITOR.stop()
+            _RESOURCE_MONITOR.save_plot(output_path)
+
+    # Register cleanup handlers
+    atexit.register(save_on_exit)
+
+    # Handle SIGINT (Ctrl+C) and SIGTERM
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, saving resource plot...")
+        save_on_exit()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl-C
+    signal.signal(signal.SIGTERM, signal_handler)  # kill <pid> or docker stop
+
+    # Start monitoring
+    _RESOURCE_MONITOR.start()
+
+    # TEST: start
+    time.sleep(120)
+    save_on_exit()
+    sys.exit(0)
+    # TEST: end
+
+    return _RESOURCE_MONITOR
 
 
 def setup_gpu_config():
@@ -485,6 +460,38 @@ def setup_gpu_config():
     else:
         logger.warning("No GPUs detected, running on CPU")
         return None
+
+
+# Global variable to store chunk data for multiprocessing workers
+# This avoids serialization overhead when passing data to workers
+_GLOBAL_CHUNK_DATA = None
+
+def _init_background_worker(chunk_data, log_queue=None):
+    """
+    Initialize worker process with chunk data and queue-based logging
+
+    Args:
+        chunk_data: Background data chunk to process
+        log_queue: Queue for sending log messages to main process (optional)
+    """
+    global _GLOBAL_CHUNK_DATA
+    _GLOBAL_CHUNK_DATA = chunk_data
+
+    # Configure process-local logging to use queue
+    if log_queue is not None:
+        import sys
+        import logging
+        from logging.handlers import QueueHandler
+
+        # Reset stdout/stderr to avoid inherited StreamToLogger
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+
+        # Clear inherited handlers and configure queue-based logging
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.addHandler(QueueHandler(log_queue))
+        root_logger.setLevel(logging.INFO)
 
 
 def _downsample_cadence_worker(args):
@@ -649,12 +656,6 @@ def train_command(args):
     # Load configuration
     config = Config()
 
-    # Start resource monitoring
-    log_system_resources(config)
-
-    # Setup GPU and get strategy
-    strategy = setup_gpu_config()
-
     # Override config values with CLI args
     if args.num_target_backgrounds:
         config.data.num_target_backgrounds = args.num_target_backgrounds
@@ -727,6 +728,17 @@ def train_command(args):
         final_tag = args.save_tag
     else:
         final_tag = None
+
+    # Start resource monitoring
+    if final_tag is not None:
+        output_path = os.path.join(config.output_path, 'plots', f'resource_utilization_{final_tag}.png')
+    else:
+        output_path = os.path.join(config.output_path, 'plots', f'resource_utilization_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+
+    log_system_resources(output_path)
+
+    # Setup GPU and get strategy
+    strategy = setup_gpu_config()
 
     logger.info(f"Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
@@ -1026,7 +1038,7 @@ def main():
     train_parser.add_argument('--load-dir', type=str, default=None,
                               help='Directory to load model tag from. Argument appended to outputs directory')
     train_parser.add_argument('--save-tag', type=str, default=None,
-                              help='Model tag to save final model. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
+                              help='Tag for current pipeline run. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
     # TODO: finish adding train_command args
     # train_parser.add_argument('--start-round', type=int, default=None,
     #                           help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
