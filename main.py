@@ -132,11 +132,11 @@ atexit.register(cleanup_logging)
 class ResourceMonitor:
     """Background thread to monitor system resources"""
 
-    def __init__(self, interval=1.0, output_path):
+    def __init__(self, output_path, interval=1.0):
+        self.output_path = output_path
         self.interval = interval
         self.running = False
         self.thread = None
-        self.output_path = output_path
 
         # Data storage
         self.timestamps = []
@@ -387,7 +387,7 @@ def log_system_resources(output_path: str):
         return _RESOURCE_MONITOR
 
     # Create monitor instance
-    _RESOURCE_MONITOR = ResourceMonitor(interval=1.0, output_path=output_path)
+    _RESOURCE_MONITOR = ResourceMonitor(output_path=output_path, interval=1.0)
 
     # Define cleanup function
     def save_on_exit():
