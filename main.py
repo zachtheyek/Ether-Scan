@@ -904,6 +904,7 @@ def inference_command(args):
 
 
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
+    # signal-injection-chunk-size, num-samples-beta-vae, and num-samples-rf must be divisible by 4 to generate balanced classes
 def main():
     """Main entry point to Etherscan pipeline"""
     parser = argparse.ArgumentParser(

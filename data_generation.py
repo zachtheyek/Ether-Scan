@@ -7,7 +7,7 @@ import setigen as stg
 from astropy import units as u
 from typing import Tuple, Dict, Optional
 import logging
-from random import random
+import random
 import gc
 from multiprocessing import Pool, cpu_count, shared_memory
 
@@ -36,6 +36,11 @@ def _init_worker(shm_name, shape, dtype):
         Only the main process needs to unlink() the shared memory block.
     """
     global _GLOBAL_SHM, _GLOBAL_BACKGROUNDS, _GLOBAL_SHAPE, _GLOBAL_DTYPE
+
+    # Seed processes with process IDs so each worker gets a different random state
+    import os
+    random.seed(os.getpid())
+    np.random.seed(os.getpid())
 
     # Attach to existing shared memory block
     _GLOBAL_SHM = shared_memory.SharedMemory(name=shm_name)
@@ -76,7 +81,7 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
 
     # Randomly select a starting frequency bin (channel) to start the signal injection
     # Avoids edges (bin 0)
-    starting_bin = int(random() * (width_bin - 1)) + 1
+    starting_bin = int(random.random() * (width_bin - 1)) + 1
 
     # Get the total number of time samples in stacked array (typically 96 for 6 obs x 16 time bins)
     total_time = data.shape[0]
@@ -87,13 +92,13 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
         slope_pixel = (total_time / starting_bin)  # Signal drifts upward in frequency
         # Convert from pixel space to physical units by multiplying by time_resolution / freq_resolution ratio
         # Then add random noise to make drift rates more realistic
-        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) + random() * noise
+        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) + random.random() * noise
     else:
         # Negative drift
         slope_pixel = (total_time / (starting_bin - width_bin))  # Signal drifts downward in frequency
         # Convert from pixel space to physical units by multiplying by time_resolution / freq_resolution ratio
         # Then add random noise to make drift rates more realistic
-        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) - random() * noise
+        slope_physical = (slope_pixel) * (time_resolution / freq_resolution) - random.random() * noise
 
     # Convert slope to drift rate
     drift_rate = -1 * (1 / slope_physical)
@@ -101,7 +106,7 @@ def new_cadence(data: np.ndarray, snr: float, width_bin: int,
     # Calculate signal width (in Hz)
     # Base random component: 0-50 Hz
     # Add component proportional to drift rate magnitude to keep signal coherent
-    signal_width = random() * 50 + abs(drift_rate) * 18. / 1
+    signal_width = random.random() * 50 + abs(drift_rate) * 18. / 1
 
     # Calculate y-intercept for linear signal trajectory
     y_intercept = total_time - slope_pixel * (starting_bin)
@@ -141,6 +146,9 @@ def check_valid_intersection(slope_1, slope_2, intercept_1, intercept_2):
     """
     Check if 2 drifting signals intersect in the ON regions
     """
+    if slope_1 == slope_2:
+        return True  # Parallel lines never intersect. Avoids division by 0
+
     x_intersect = (intercept_2 - intercept_1) / (slope_1 - slope_2)
     y_intersect = slope_1 * x_intersect + intercept_1
 
@@ -159,7 +167,7 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
     If specified, RFI is injected into all 6 observations. Otherwise, no RFI is injected
     """
     # Select random background from plate
-    background_index = int(plate.shape[0] * random())
+    background_index = int(plate.shape[0] * random.random())
     base = plate[background_index, :, :, :]
 
     # Initialize empty output array
@@ -177,7 +185,7 @@ def create_false(plate: np.ndarray, snr_base: float, snr_range: float,
             data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
 
         # Select a random SNR from the given range & inject RFI into all 6 observations
-        snr = random() * snr_range + snr_base
+        snr = random.random() * snr_range + snr_base
         cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
 
         # Reshape stacked data back into original shape & log-normalize after signal injection
@@ -201,7 +209,7 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
     ETI signal is injected into the ON observations only
     """
     # Select random background from plate
-    background_index = int(plate.shape[0] * random())
+    background_index = int(plate.shape[0] * random.random())
     base = plate[background_index, :, :, :]
 
     # Initialize empty output array
@@ -217,7 +225,7 @@ def create_true_single(plate: np.ndarray, snr_base: float, snr_range: float,
         data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
 
     # Select a random SNR from the given range & inject RFI
-    snr = random() * snr_range + snr_base
+    snr = random.random() * snr_range + snr_base
     cadence, _, _ = new_cadence(data, snr, width_bin, freq_resolution, time_resolution)
 
     # Reshape stacked data back into original shape & log-normalize after signal injection
@@ -240,7 +248,7 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
     Non-intersecting ETI & RFI signals are injected into ON-only & ON-OFF, respectively
     """
     # Select random background from plate
-    background_index = int(plate.shape[0] * random())
+    background_index = int(plate.shape[0] * random.random())
     base = plate[background_index, :, :, :]
 
     # Initialize empty output array
@@ -256,8 +264,9 @@ def create_true_double(plate: np.ndarray, snr_base: float, snr_range: float,
         data[i*n_time:(i+1)*n_time, :] = base[i, :, :]
 
     # Select a random SNR from the given range
-    snr = random() * snr_range + snr_base
+    snr = random.random() * snr_range + snr_base
 
+    # NOTE: small but nonzero probability for infinite/long-running loops
     # Retry signal injection until we get valid non-intersecting signals
     while True:
         # Inject RFI
@@ -348,10 +357,7 @@ def batch_create_cadence(function, samples: int, plate: np.ndarray,
         chunksize = max(1, samples // (n_workers * 4))
 
         # Use pool to generate cadences in parallel
-        results = pool.map(_single_cadence_wrapper, args_list, chunksize=chunksize)
-
-        # Collect results into pre-allocated array
-        for i, result in enumerate(results):
+        for i, result in enumerate(pool.imap(_single_cadence_wrapper, args_list, chunksize=chunksize)):
             cadence[i, :, :, :] = result
 
     return cadence
@@ -479,6 +485,10 @@ class DataGenerator:
         """
         max_chunk_size = self.config.training.signal_injection_chunk_size
         n_chunks = max(1, (n_samples + max_chunk_size - 1) // max_chunk_size)
+
+        # # Sanity check
+        # if max_chunk_size % 4 != 0:
+        #     raise ValueError("Max signal injection chunk size must be a multiple of 4 for balanced class generation")
         
         logger.info(f"Generating {n_samples} samples in {n_chunks} chunks of max {max_chunk_size}")
 
