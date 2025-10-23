@@ -1,5 +1,5 @@
 """
-Synthetic data generation for Ether-Scan Pipeline
+Synthetic data generation for Etherscan Pipeline
 """
 
 import numpy as np

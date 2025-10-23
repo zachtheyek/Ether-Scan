@@ -1,5 +1,5 @@
 """
-Data preprocessing module for Ether-Scan Pipeline
+Data preprocessing module for Etherscan Pipeline
 """
 
 import numpy as np

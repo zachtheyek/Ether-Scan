@@ -1,5 +1,5 @@
 """
-Training pipeline for Ether-Scan models
+Training pipeline for Etherscan models
 """
 
 import numpy as np
@@ -1463,7 +1463,7 @@ class TrainingPipeline:
 def train_full_pipeline(config, background_data: np.ndarray, strategy=None, 
                         tag=None, dir=None, start_round=1, final_tag=None) -> TrainingPipeline:
     """
-    Train complete Ether-Scan pipeline
+    Train complete Etherscan pipeline
     
     Args:
         config: Configuration object

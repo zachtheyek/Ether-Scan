@@ -1,5 +1,5 @@
 """
-Random Forest classifier for Ether-Scan Pipeline
+Random Forest classifier for Etherscan Pipeline
 """
 
 import numpy as np

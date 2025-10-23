@@ -1,6 +1,6 @@
 # TODO: remove unaccessed config params
 """
-Configuration module for Ether-Scan Pipeline
+Configuration module for Etherscan Pipeline
 """
 
 import os

@@ -1,5 +1,5 @@
 """
-Beta-VAE model implementation for Ether-Scan Pipeline
+Beta-VAE model implementation for Etherscan Pipeline
 """
 
 import tensorflow as tf
