@@ -258,7 +258,7 @@ class ResourceMonitor:
 
             # Convert CPU to percentage of total system CPU
             num_cores = psutil.cpu_count()
-            cpu_percent = (total_cpu / num_cores) * 100 if num_cores > 0 else 0.0
+            cpu_percent = total_cpu / num_cores if num_cores > 0 else 0.0
 
             # Convert RAM to percentage of total system RAM
             total_system_ram = psutil.virtual_memory().total
