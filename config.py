@@ -39,7 +39,7 @@ class DataConfig:
     time_resolution: float = 18.25361108  # seconds
 
     num_target_backgrounds: int = 15000  # Number of background cadences to load
-    # NOTE: max backgrounds per file = max_chunks_per_file * background_load_chunk_size
+    # Note that max backgrounds per file = max_chunks_per_file * background_load_chunk_size
     background_load_chunk_size: int = 200  # Maximum cadences to process at once during background loading
     max_chunks_per_file: int = 25  # Maximum chunks to load from a single file
 

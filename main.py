@@ -30,6 +30,9 @@ from training import train_full_pipeline, get_latest_tag
 # Global resource monitor instance
 _RESOURCE_MONITOR = None
 
+# Global flag to prevent double-execution of cleanup
+_CLEANUP_EXECUTED = False
+
 # Global variable to store chunk data for multiprocessing workers
 # This avoids serialization overhead when passing data to workers
 _GLOBAL_CHUNK_DATA = None
@@ -126,23 +129,13 @@ def setup_logging(log_filepath: str) -> Tuple[logging.Logger, Queue, QueueListen
 logger, log_queue, log_listener = setup_logging('/datax/scratch/zachy/outputs/etherscan/etherscan.log')
 
 
-def cleanup_logging():
-    """Stop the queue listener and flush remaining logs"""
-    log_listener.stop()
-    logger.info("Logging queue listener stopped and all logs flushed")
-
-# NOTE: atexit.register executes LIFO -- call cleanup_logging first so it's the last function to run on exit
-# Register cleanup handler to stop listener on exit
-atexit.register(cleanup_logging)
-
-
 class ResourceMonitor:
     """Background thread to monitor system resources"""
 
     def __init__(self, output_path, interval=1.0):
         self.output_path = output_path
         self.interval = interval
-        self.running = False
+        self.stop_event = threading.Event()  # Thread-safe flag for stopping
         self.thread = None
 
         # Data storage
@@ -281,7 +274,7 @@ class ResourceMonitor:
         """Background monitoring loop"""
         start_time = time.time()
 
-        while self.running:
+        while not self.stop_event.is_set():
             try:
                 # Record timestamp
                 current_time = time.time() - start_time
@@ -305,17 +298,17 @@ class ResourceMonitor:
                 self.gpu_usage.append(gpu_utils)
                 self.gpu_memory.append(gpu_mems)
 
-                # Sleep until next interval
-                time.sleep(self.interval)
+                # Sleep until next interval (interruptible for faster shutdown)
+                self.stop_event.wait(self.interval)
 
             except Exception as e:
                 logger.error(f"Error in resource monitoring: {e}")
-                time.sleep(self.interval)
+                self.stop_event.wait(self.interval)
 
     def start(self):
         """Start monitoring in background thread"""
-        if not self.running:
-            self.running = True
+        if not self.stop_event.is_set():
+            self.stop_event.clear()  # Ensure event is not set
             self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.thread.start()
 
@@ -338,8 +331,8 @@ class ResourceMonitor:
 
     def stop(self):
         """Stop monitoring"""
-        if self.running:
-            self.running = False
+        if not self.stop_event.is_set():
+            self.stop_event.set()  # Signal the thread to stop
             if self.thread:
                 self.thread.join(timeout=5)  # Wait max 5 secs for thread to finish
 
@@ -357,7 +350,8 @@ class ResourceMonitor:
             return
 
         # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if os.path.dirname(output_path):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         # Create figure with 3 subplots
         fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
@@ -461,10 +455,10 @@ def log_system_resources(output_path: str):
     """
     Start monitoring CPU, GPU, and RAM usage in background thread.
     Should be called at the start of main.py execution.
-    Automatically saves plot on exit.
+    Automatically saves plot on exit via unified cleanup handler.
 
     Args:
-        config: Configuration object containing output_path
+        output_path: Path where resource utilization plot will be saved
 
     Returns:
         ResourceMonitor: The monitoring instance
@@ -475,37 +469,79 @@ def log_system_resources(output_path: str):
         logger.warning("Resource monitoring already started")
         return _RESOURCE_MONITOR
 
-    # Create monitor instance
+    # Create and start monitor instance
+    # Cleanup is handled automatically by the unified cleanup_all() function
     _RESOURCE_MONITOR = ResourceMonitor(output_path=output_path, interval=1.0)
-
-    # Define cleanup function
-    def save_on_exit():
-        if _RESOURCE_MONITOR is not None:
-            _RESOURCE_MONITOR.stop()
-            _RESOURCE_MONITOR.save_plot(output_path)
-
-    # Register cleanup handlers
-    atexit.register(save_on_exit)
-
-    # Handle SIGINT (Ctrl+C) and SIGTERM
-    def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, saving resource plot...")
-        save_on_exit()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl-C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill <pid> or docker stop
-
-    # Start monitoring
     _RESOURCE_MONITOR.start()
 
-    # TEST: start
-    time.sleep(120)
-    save_on_exit()
-    sys.exit(0)
-    # TEST: end
-
     return _RESOURCE_MONITOR
+
+
+def cleanup_all():
+    """
+    Unified cleanup handler for both resource monitoring and logging.
+
+    Execution order:
+    1. Stop resource monitoring thread
+    2. Save resource utilization plot (generates final log messages)
+    3. Stop logging queue listener (flushes all remaining logs including those from step 2)
+
+    Guards against double-execution from both atexit and signal handlers.
+    """
+    global _CLEANUP_EXECUTED
+
+    # Guard against double execution
+    if _CLEANUP_EXECUTED:
+        return
+    _CLEANUP_EXECUTED = True
+
+    # Step 1: Stop resource monitoring and save plot
+    # This must happen BEFORE logging cleanup so final messages can be logged
+    if _RESOURCE_MONITOR is not None:
+        try:
+            _RESOURCE_MONITOR.stop()
+            _RESOURCE_MONITOR.save_plot(_RESOURCE_MONITOR.output_path)
+        except Exception as e:
+            # Still try to log the error if possible
+            try:
+                logger.error(f"Error during resource monitor cleanup: {e}")
+            except:
+                pass
+
+    # Step 2: Stop logging system (flushes all queued messages)
+    # This must happen LAST to capture all final log messages
+    try:
+        log_listener.stop()
+        # Note that we can't log after stopping the listener, so no final message here
+    except Exception as e:
+        # Nothing we can do here since logging is down
+        pass
+
+
+def signal_handler(signum, frame):
+    """
+    Handle SIGINT (Ctrl+C) and SIGTERM (kill/docker stop) gracefully.
+
+    Ensures both resource monitoring and logging are properly cleaned up
+    before exiting.
+    """
+    # We can still log here since cleanup_all() hasn't been called yet
+    try:
+        logger.info(f"Received signal {signum}, initiating cleanup...")
+    except:
+        pass
+
+    cleanup_all()
+    sys.exit(0)
+
+# Register unified cleanup handler
+# This will fire on normal exit, but NOT on SIGINT/SIGTERM (handled separately)
+atexit.register(cleanup_all)
+
+# Register signal handlers for interrupt and termination
+# These ensure cleanup happens even when process is killed
+signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+signal.signal(signal.SIGTERM, signal_handler)  # kill <pid> or docker stop
 
 
 def setup_gpu_config():
@@ -871,14 +907,14 @@ def train_command(args):
 
         except KeyboardInterrupt:
             # Don't retry on user interruption
-            logger.info("Training interupted by user")
+            logger.info("Training interrupted by user")
             raise
 
         except Exception as e:
             logger.error(f"Training attempt {attempt+1} failed with error: {e}")
 
             if attempt < max_retries - 1:
-                # Retry taining
+                # Retry training
                 logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
 
                 try:
