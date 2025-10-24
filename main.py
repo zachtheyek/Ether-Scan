@@ -27,6 +27,13 @@ import signal
 from config import Config
 from training import train_full_pipeline, get_latest_tag
 
+# Global resource monitor instance
+_RESOURCE_MONITOR = None
+
+# Global variable to store chunk data for multiprocessing workers
+# This avoids serialization overhead when passing data to workers
+_GLOBAL_CHUNK_DATA = None
+
 
 class StreamToLogger:
     """Redirect stream (stdout/stderr) to logging system"""
@@ -116,7 +123,7 @@ def setup_logging(log_filepath: str) -> Tuple[logging.Logger, Queue, QueueListen
     return logging.getLogger(__name__), log_queue, listener
 
 # Setup logging immediately after imports to ensure logging is configured before any other code runs
-logger, log_queue, log_listener = setup_logging('/datax/scratch/zachy/outputs/etherscan/train_pipeline.log')
+logger, log_queue, log_listener = setup_logging('/datax/scratch/zachy/outputs/etherscan/etherscan.log')
 
 
 def cleanup_logging():
@@ -450,9 +457,6 @@ class ResourceMonitor:
         logger.info(f"Resource utilization plot saved to: {output_path}")
 
 
-# Global resource monitor instance
-_RESOURCE_MONITOR = None
-
 def log_system_resources(output_path: str):
     """
     Start monitoring CPU, GPU, and RAM usage in background thread.
@@ -546,10 +550,6 @@ def setup_gpu_config():
         logger.warning("No GPUs detected, running on CPU")
         return None
 
-
-# Global variable to store chunk data for multiprocessing workers
-# This avoids serialization overhead when passing data to workers
-_GLOBAL_CHUNK_DATA = None
 
 def _init_background_worker(chunk_data, log_queue=None):
     """
