@@ -140,11 +140,23 @@ class ResourceMonitor:
 
         # Data storage
         self.timestamps = []
-        self.cpu_percent_per_core = []  # List of lists, one per core
-        self.ram_percent = []
+
+        # CPU data (total only, no per-core)
+        self.cpu_percent_system = []  # System-wide total CPU
+        self.cpu_percent_process = []  # Process + children CPU
+
+        # RAM data
+        self.ram_percent_system = []  # System-wide RAM
+        self.ram_percent_process = []  # Process + children RAM
+
+        # GPU data (system-wide only)
         self.gpu_usage = []  # List of lists, one per GPU
         self.gpu_memory = []  # List of lists, one per GPU
         self.gpu_names = []
+
+        # Process tracking - get main process
+        self.process = psutil.Process(os.getpid())
+        logger.info(f"Monitoring process PID: {self.process.pid}")
 
         # Detect GPUs
         self._detect_gpus()
@@ -164,7 +176,7 @@ class ResourceMonitor:
                         capture_output=True, text=True, timeout=5
                     )
                     if result.returncode == 0:
-                        self.gpu_names = [name.strip() for name in result.stdout.strip().split('\n')]
+                        self.gpu_names = [f"{name.strip()}:{i}" for i, name in enumerate(result.stdout.strip().split('\n'))]
                     else:
                         self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
                 except:
@@ -210,6 +222,54 @@ class ResourceMonitor:
 
         return gpu_utils, gpu_mems
 
+    def _get_process_tree_stats(self):
+        """
+        Get total CPU and RAM usage for main process and all child processes.
+        This captures multiprocessing workers spawned by Pool() calls.
+
+        Returns:
+            tuple: (cpu_percent_total, ram_percent)
+        """
+        try:
+            # Get all processes in tree (main + children)
+            processes = [self.process]
+            try:
+                processes.extend(self.process.children(recursive=True))
+            except psutil.NoSuchProcess:
+                pass
+
+            # Aggregate CPU and RAM usage across all processes
+            total_cpu = 0.0
+            total_ram_bytes = 0
+
+            for proc in processes:
+                try:
+                    # CPU: Get percentage (can be >100% for multi-core usage)
+                    cpu = proc.cpu_percent(interval=0.0)  # Non-blocking
+                    total_cpu += cpu
+
+                    # RAM: Get RSS (Resident Set Size)
+                    mem_info = proc.memory_info()
+                    total_ram_bytes += mem_info.rss
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # Process may have died between children() and cpu_percent() calls
+                    continue
+
+            # Convert CPU to percentage of total system CPU
+            num_cores = psutil.cpu_count()
+            cpu_percent = (total_cpu / num_cores) * 100 if num_cores > 0 else 0.0
+
+            # Convert RAM to percentage of total system RAM
+            total_system_ram = psutil.virtual_memory().total
+            ram_percent = (total_ram_bytes / total_system_ram) * 100
+
+            return cpu_percent, ram_percent
+
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            logger.warning(f"Error getting process tree stats: {e}")
+            return 0.0, 0.0
+
     def _monitor_loop(self):
         """Background monitoring loop"""
         start_time = time.time()
@@ -220,15 +280,20 @@ class ResourceMonitor:
                 current_time = time.time() - start_time
                 self.timestamps.append(current_time)
 
-                # CPU per core
-                cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
-                self.cpu_percent_per_core.append(cpu_per_core)
+                # CPU - system-wide total
+                cpu_system = psutil.cpu_percent(interval=0.1)
+                self.cpu_percent_system.append(cpu_system)
 
-                # RAM
-                ram = psutil.virtual_memory().percent
-                self.ram_percent.append(ram)
+                # RAM - system-wide
+                ram_system = psutil.virtual_memory().percent
+                self.ram_percent_system.append(ram_system)
 
-                # GPU
+                # CPU & RAM - process + children
+                cpu_process, ram_process = self._get_process_tree_stats()
+                self.cpu_percent_process.append(cpu_process)
+                self.ram_percent_process.append(ram_process)
+
+                # GPU (system-wide only)
                 gpu_utils, gpu_mems = self._get_gpu_stats()
                 self.gpu_usage.append(gpu_utils)
                 self.gpu_memory.append(gpu_mems)
@@ -250,13 +315,18 @@ class ResourceMonitor:
             # Log system information
             logger.info("="*60)
             logger.info("RESOURCE MONITORING STARTED")
+            logger.info(f"  Main Process PID: {self.process.pid}")
             logger.info(f"  CPU Cores: {psutil.cpu_count()}")
             logger.info(f"  GPUs Detected: {self.num_gpus}")
             if self.num_gpus > 0:
                 for i, name in enumerate(self.gpu_names):
-                    logger.info(f"    GPU {i}: {name}")
+                    logger.info(f"    {name}")
             logger.info(f"  Monitoring Interval: {self.interval}s")
             logger.info(f"  Output path: {self.output_path}")
+            logger.info(f"")
+            logger.info(f"  Tracking:")
+            logger.info(f"    - CPU/RAM: System-wide + Process tree")
+            logger.info(f"    - GPU: System-wide only")
             logger.info("="*60)
 
     def stop(self):
@@ -284,36 +354,51 @@ class ResourceMonitor:
 
         # Create figure with 3 subplots
         fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-        fig.suptitle('System Resource Utilization', fontsize=16, fontweight='bold')
+        fig.suptitle('Etherscan Resource Utilization', fontsize=16, fontweight='bold')
 
         timestamps = np.array(self.timestamps) / 60  # Convert to minutes
 
-        # ===== CPU Plot =====
+        # CPU plot
         ax_cpu = axes[0]
-        cpu_data = np.array(self.cpu_percent_per_core).T  # Shape: (num_cores, num_samples)
-        num_cores = cpu_data.shape[0]
+        cpu_system_data = np.array(self.cpu_percent_system)
+        cpu_process_data = np.array(self.cpu_percent_process)
 
-        colors = plt.cm.tab20(np.linspace(0, 1, num_cores))
-        for core_idx in range(num_cores):
-            ax_cpu.plot(timestamps, cpu_data[core_idx], label=f'Core {core_idx}',
-                       color=colors[core_idx], linewidth=0.8, alpha=0.7)
+        # Plot process CPU (shaded area)
+        ax_cpu.plot(timestamps, cpu_process_data, color='#1f77b4', linewidth=1.5,
+                   label='Process + Children', alpha=0.8)
+        ax_cpu.fill_between(timestamps, cpu_process_data, alpha=0.3, color='#1f77b4')
+
+        # Plot system-wide CPU (line on top)
+        ax_cpu.plot(timestamps, cpu_system_data, color='#ff7f0e', linewidth=2.0,
+                   label='System Total', alpha=0.9)
 
         ax_cpu.set_ylabel('CPU Usage (%)', fontsize=12, fontweight='bold')
         ax_cpu.set_ylim(0, 100)
         ax_cpu.grid(True, alpha=0.3)
-        ax_cpu.legend(ncol=min(8, num_cores), fontsize=6, loc='upper left')
-        ax_cpu.set_title(f'CPU Usage (per core, n={num_cores})', fontsize=12)
+        ax_cpu.legend(loc='upper right', fontsize=10)
+        ax_cpu.set_title(f'CPU Pressure (n={psutil.cpu_count()})', fontsize=12)
 
-        # ===== RAM Plot =====
+        # RAM plot
         ax_ram = axes[1]
-        ax_ram.plot(timestamps, self.ram_percent, color='blue', linewidth=1.5)
-        ax_ram.fill_between(timestamps, self.ram_percent, alpha=0.3, color='blue')
-        ax_ram.set_ylabel('RAM Pressure (%)', fontsize=12, fontweight='bold')
+        ram_system_data = np.array(self.ram_percent_system)
+        ram_process_data = np.array(self.ram_percent_process)
+
+        # Plot process RAM (shaded area)
+        ax_ram.plot(timestamps, ram_process_data, color='#2ca02c', linewidth=1.5,
+                   label='Process + Children', alpha=0.8)
+        ax_ram.fill_between(timestamps, ram_process_data, alpha=0.3, color='#2ca02c')
+
+        # Plot system-wide RAM (line on top)
+        ax_ram.plot(timestamps, ram_system_data, color='#d62728', linewidth=2.0,
+                   label='System Total', alpha=0.9)
+
+        ax_ram.set_ylabel('RAM Usage (%)', fontsize=12, fontweight='bold')
         ax_ram.set_ylim(0, 100)
         ax_ram.grid(True, alpha=0.3)
-        ax_ram.set_title('RAM Pressure', fontsize=12)
+        ax_ram.legend(loc='upper right', fontsize=10)
+        ax_ram.set_title('Memory Pressure', fontsize=12)
 
-        # ===== GPU Plot =====
+        # GPU plot
         ax_gpu = axes[2]
         if self.num_gpus > 0:
             gpu_usage_data = np.array(self.gpu_usage).T  # Shape: (num_gpus, num_samples)
@@ -330,12 +415,12 @@ class ResourceMonitor:
 
                 # Usage (solid line, y1)
                 ax_gpu.plot(timestamps, gpu_usage_data[gpu_idx],
-                           label=f'{gpu_name} Usage',
+                           label=f'{gpu_name} (Usage)',
                            color=color, linewidth=1.5, alpha=0.9)
 
                 # Memory (dashed line, y2, dimmer)
                 ax_gpu_mem.plot(timestamps, gpu_memory_data[gpu_idx],
-                               label=f'{gpu_name} Memory',
+                               label=f'{gpu_name} (Memory)',
                                color=color, linewidth=1.5, alpha=0.6, linestyle='--')
 
             ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
@@ -347,14 +432,14 @@ class ResourceMonitor:
             lines1, labels1 = ax_gpu.get_legend_handles_labels()
             lines2, labels2 = ax_gpu_mem.get_legend_handles_labels()
             ax_gpu.legend(lines1 + lines2, labels1 + labels2,
-                         ncol=min(4, self.num_gpus * 2), fontsize=8, loc='upper left')
+                         ncol=min(4, self.num_gpus * 2), fontsize=8, loc='upper right')
         else:
             ax_gpu.text(0.5, 0.5, 'No GPUs detected',
                        ha='center', va='center', transform=ax_gpu.transAxes, fontsize=14)
             ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
 
         ax_gpu.grid(True, alpha=0.3)
-        ax_gpu.set_title(f'GPU Usage & Memory (n={self.num_gpus})', fontsize=12)
+        ax_gpu.set_title(f'GPU Pressure (n={self.num_gpus})', fontsize=12)
         ax_gpu.set_xlabel('Time (minutes)', fontsize=12, fontweight='bold')
 
         # Adjust layout and save
