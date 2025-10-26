@@ -1,5 +1,5 @@
 # TODO: update to match current pipeline imports
-name: etherscan
+name: aetherscan
 channels:
   - conda-forge
   - defaults
@@ -16,7 +16,6 @@ dependencies:
   - scikit-image=0.21.*
   - pytest=7.4.*
   - tensorboard=2.13.*
-  - tqdm=4.65.*
   - psutil=5.9.*
   - h5py=3.9.*
   - scipy=1.11.*
@@ -29,5 +28,3 @@ dependencies:
   - pip:
     - tensorflow==2.16.*
     - setigen
-    - blimpy
-    - pyyaml

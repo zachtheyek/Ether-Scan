@@ -12,5 +12,8 @@ outputs/
 # Virtual environment
 venv/
 
+# Temporary conda environment
+environment_nocuda.yml
+
 # Claude settings
 .claude/
