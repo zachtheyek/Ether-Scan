@@ -28,7 +28,7 @@ jobs:
           # Cache directory
           path: ~/.cache/pip
           # Unique id for cache (invalidates when dependencies change, as defined in pyproject.toml)
-          key: pip-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}  
+          key: pip-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
 
       # Cache ruff outputs to skip unchanged files between workflow runs
       - name: Cache Ruff
@@ -37,11 +37,11 @@ jobs:
           # Cache directory (must match cache_dir in pyproject.toml)
           path: .ruff_cache
           # Unique id for cache (invalidates when dependencies change, as defined in pyproject.toml)
-          key: ruff-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}  
+          key: ruff-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
 
       # Run pre-commit hooks defined in .pre-commit-config.yaml
       # Includes linter, formatter, and other safety checks
-      # Guarantees consistency between local development & remote validation 
+      # Guarantees consistency between local development & remote validation
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
 
@@ -49,7 +49,7 @@ jobs:
       # NOTE: re-runs ruff checks even if they passed, and might show "no errors" in output annotations if another pre-commit hook failed
       # # Run pre-commit hooks defined in .pre-commit-config.yaml
       # # Includes linter, formatter, and other safety checks
-      # # Guarantees consistency between local development & remote validation 
+      # # Guarantees consistency between local development & remote validation
       # - name: Run pre-commit
       #   uses: pre-commit/action@v3.0.1
       #   continue-on-error: true
