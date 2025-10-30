@@ -1,19 +1,20 @@
-# Forward-search paper (Ma et. al. 2023)
+# Forward-search paper
 2301.12670v1.pdf
 
 # Outputs & logs
 outputs/
 *.log
 
+# Python environments
+venv/
+environment_nocuda.yml
+
 # Artifacts
 **/__pycache__/
 .ipynb_checkpoints/
 
-# Virtual environment
-venv/
+# Linter cache
+.ruff_cache
 
-# Temporary conda environment
-environment_nocuda.yml
-
-# Claude settings
+# Claude configs
 .claude/
