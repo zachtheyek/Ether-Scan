@@ -1,13 +1,13 @@
 """
-Random Forest classifier for Etherscan Pipeline
+Random Forest classifier for Aetherscan Pipeline
 """
 
+import logging
+
+import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.utils import shuffle
-import joblib
-from typing import Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,9 @@ def prepare_latent_features(latent_vectors: np.ndarray, num_observations: int = 
     num_latents = latent_vectors.shape[0]
 
     if num_latents % num_observations != 0:
-        raise ValueError(f"Received {num_latents} latent vectors. Not divisible by num_observations ({num_observations})")
+        raise ValueError(
+            f"Received {num_latents} latent vectors. Not divisible by num_observations ({num_observations})"
+        )
 
     num_cadences = num_latents // num_observations
     latent_dim = latent_vectors.shape[1]
@@ -33,7 +35,9 @@ def prepare_latent_features(latent_vectors: np.ndarray, num_observations: int = 
 
     for i in range(num_cadences):
         # Flatten & concatenate the latent vectors according to the number of observations
-        features[i, :] = latent_vectors[i*num_observations:(i+1)*num_observations, :].ravel()
+        features[i, :] = latent_vectors[
+            i * num_observations : (i + 1) * num_observations, :
+        ].ravel()
 
     return features
 
@@ -48,12 +52,13 @@ class RandomForestModel:
             bootstrap=config.rf.bootstrap,
             max_features=config.rf.max_features,
             n_jobs=config.rf.n_jobs,
-            random_state=config.rf.seed
+            random_state=config.rf.seed,
         )
         self.is_trained = False
 
-    def prepare_training_data(self, true_latents: np.ndarray,
-                              false_latents: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def prepare_training_data(
+        self, true_latents: np.ndarray, false_latents: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Prepare training data for Random Forest
         Combines true/false features, generates labels, and shuffles data
@@ -66,10 +71,9 @@ class RandomForestModel:
         features = np.concatenate([true_features, false_features], axis=0)
 
         # Create labels
-        labels = np.concatenate([
-            np.ones(true_features.shape[0]),
-            np.zeros(false_features.shape[0])
-        ])
+        labels = np.concatenate(
+            [np.ones(true_features.shape[0]), np.zeros(false_features.shape[0])]
+        )
 
         # Shuffle data
         features, labels = shuffle(features, labels, random_state=self.config.rf.seed)
@@ -91,8 +95,10 @@ class RandomForestModel:
         # TODO: rethink RF visualizations *return feature importance & create plots in training.py? or create directly from here? in evaluation.py)?
         # Log feature importances
         importances = self.model.feature_importances_
-        logger.info(f"Feature importance stats - Mean: {np.mean(importances):.4f}, "
-                   f"Std: {np.std(importances):.4f}")
+        logger.info(
+            f"Feature importance stats - Mean: {np.mean(importances):.4f}, "
+            f"Std: {np.std(importances):.4f}"
+        )
         logger.info(f"Feature importance: \n{importances}")
 
     def predict_proba(self, latent_vectors: np.ndarray) -> np.ndarray:
@@ -113,8 +119,9 @@ class RandomForestModel:
         probas = self.predict_proba(latent_vectors)
         return (probas[:, 1] > threshold).astype(int)
 
-    def predict_verbose(self, latent_vectors: np.ndarray,
-                        threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_verbose(
+        self, latent_vectors: np.ndarray, threshold: float = 0.5
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Predict binary classes given some input latent cadences
         Returns 1 if probability of true signal > threshold, else 0

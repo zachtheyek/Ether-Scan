@@ -1,8 +1,7 @@
 """
-Data preprocessing module for Etherscan Pipeline
+Data preprocessing module for Aetherscan Pipeline
 """
 
-import numpy as np
 # from numba import jit, prange
 # from typing import Tuple, List, Dict
 import logging
@@ -10,8 +9,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # NOTE: come back to this later (start here)
-# NOTE: preprocess_cadence() is used in inference.py, everything else unused? 
-# NOTE: maybe repurpose preprocess.py to do bandpass removal & energy detection? 
+# NOTE: preprocess_cadence() is used in inference.py, everything else unused?
+# NOTE: maybe repurpose preprocess.py to do bandpass removal & energy detection?
 
 # @jit(nopython=True, parallel=True)
 # def shaping_data_dynamic(data: np.ndarray, width_bin: int = 4096) -> np.ndarray:
@@ -112,7 +111,7 @@ logger = logging.getLogger(__name__)
 #         self.config = config
 #         self.width_bin = config.data.width_bin
 #         self.downsample_factor = config.data.downsample_factor
-#         self.final_freq_bins = self.width_bin // self.downsample_factor 
+#         self.final_freq_bins = self.width_bin // self.downsample_factor
 #
 #     def process_single_observation(self, obs_data: np.ndarray) -> np.ndarray:
 #         """
@@ -130,13 +129,13 @@ logger = logging.getLogger(__name__)
 #
 #         # Downsample
 #         downsampled = downscale_local_mean(
-#             snippets, 
+#             snippets,
 #             (1, 1, self.downsample_factor, 1)
 #         )
 #
 #         return downsampled
 #
-#     def preprocess_cadence(self, observations: List[np.ndarray], 
+#     def preprocess_cadence(self, observations: List[np.ndarray],
 #                            use_overlap: bool = False) -> np.ndarray:
 #         """
 #         Preprocess a full cadence
