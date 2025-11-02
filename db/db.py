@@ -4,6 +4,8 @@ Uses SQLite with asynchronous queue-based writes to handle concurrent data colle
 processes safely
 """
 
+from __future__ import annotations
+
 import getpass
 import json
 import logging

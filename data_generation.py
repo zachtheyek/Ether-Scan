@@ -2,6 +2,8 @@
 Synthetic data generation for Aetherscan Pipeline
 """
 
+from __future__ import annotations
+
 import gc
 import logging
 import random

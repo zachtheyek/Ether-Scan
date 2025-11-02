@@ -3,6 +3,8 @@ Resource monitor for Aetherscan Pipeline
 Runs in background as a daemon thread with writes to SQLite database
 """
 
+from __future__ import annotations
+
 import contextlib
 import gc
 import logging

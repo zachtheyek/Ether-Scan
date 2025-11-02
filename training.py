@@ -2,6 +2,8 @@
 Training pipeline for Aetherscan models
 """
 
+from __future__ import annotations
+
 import gc
 import glob
 import logging

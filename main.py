@@ -2,6 +2,8 @@
 Main entry point for Aetherscan Pipeline
 """
 
+from __future__ import annotations
+
 import argparse
 import atexit
 import contextlib
