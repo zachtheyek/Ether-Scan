@@ -11,9 +11,6 @@ from multiprocessing import Queue
 
 import tensorflow as tf
 
-# NOTE: is this needed?
-logger = logging.getLogger(__name__)
-
 
 class StreamToLogger:
     """Redirect stream (stdout/stderr) to logging system"""

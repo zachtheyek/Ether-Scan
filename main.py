@@ -455,10 +455,6 @@ def train_command(args):
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
 
-    # TEST: test
-    time.sleep(300)
-    sys.exit(1)
-
     # Load and preprocess background data
     try:
         background_data = load_background_data(config)

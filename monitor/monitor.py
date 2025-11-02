@@ -211,6 +211,9 @@ class ResourceMonitor:
                 # Sleep until next interval (interruptible for faster shutdown)
                 self.stop_event.wait(self.monitor_retry_delay)
 
+        # Save plot on shutdown
+        self.save_plot()
+
     def _get_process_tree_stats(self):
         """
         Get total CPU and RAM usage for main process and all child processes.
@@ -557,5 +560,4 @@ def shutdown_monitor():
         return
 
     _RESOURCE_MONITOR.stop()
-    _RESOURCE_MONITOR.save_plot()  # Save plot on shutdown
     _RESOURCE_MONITOR = None
