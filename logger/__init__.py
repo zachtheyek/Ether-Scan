@@ -3,9 +3,9 @@ Logger package for Aetherscan pipeline
 """
 
 from .logger import (
-    setup_logging,
+    init_logger,
 )
 
 __all__ = [
-    "setup_logging",
+    "init_logger",
 ]

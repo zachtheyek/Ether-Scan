@@ -22,7 +22,7 @@ from skimage.transform import downscale_local_mean
 
 from config import Config
 from db import init_db, shutdown_db
-from logger import setup_logging
+from logger import init_logger
 from monitor import init_monitor, shutdown_monitor
 from training import get_latest_tag, train_full_pipeline
 
@@ -35,7 +35,7 @@ _GLOBAL_CHUNK_DATA = None
 
 # Setup logging immediately after imports to ensure logging is configured before any other code runs
 logger = logging.getLogger(__name__)
-log_queue, log_listener = setup_logging("/datax/scratch/zachy/outputs/aetherscan/aetherscan.log")
+log_queue, log_listener = init_logger("/datax/scratch/zachy/outputs/aetherscan/aetherscan.log")
 
 
 def cleanup_all():

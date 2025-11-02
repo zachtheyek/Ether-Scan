@@ -35,7 +35,7 @@ class StreamToLogger:
             handler.flush()
 
 
-def setup_logging(log_filepath: str) -> tuple[Queue, QueueListener]:
+def init_logger(log_filepath: str) -> tuple[Queue, QueueListener]:
     """
     Configure logging to write to both log file & console with multiprocessing support
     Captures all output sources: Python logging, TensorFlow, warnings, print statements, and stderr
