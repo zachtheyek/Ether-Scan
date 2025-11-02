@@ -201,7 +201,7 @@ def _downsample_cadence_worker(args):
     cadence_idx, downsample_factor, final_width = args
 
     # Get cadence from global chunk data
-    if _GLOBAL_CHUNK_DATA:
+    if _GLOBAL_CHUNK_DATA is not None:
         cadence = _GLOBAL_CHUNK_DATA[cadence_idx]
 
         # Skip invalid cadences
@@ -218,7 +218,6 @@ def _downsample_cadence_worker(args):
 
         return downsampled_cadence
 
-    # NOTE: is this condition correct?
     else:
         logger.warning("No global chunk data available")
         return None
@@ -435,7 +434,7 @@ def train_command(args):
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
-        sys.exit(1)
+        raise SystemExit() from None
 
     # Initialize resource monitoring
     try:
@@ -443,7 +442,7 @@ def train_command(args):
         logger.info("Resource monitor initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize resource monitoring: {e}")
-        sys.exit(1)
+        raise SystemExit() from None
 
     # Setup GPU and get strategy
     strategy = setup_gpu_config()
@@ -460,7 +459,7 @@ def train_command(args):
         background_data = load_background_data(config)
     except Exception as e:
         logger.error(f"Failed to load background data: {e}")
-        sys.exit(1)
+        raise SystemExit() from None
 
     logger.info(f"Background data loaded: {background_data.shape}")
 
@@ -540,7 +539,7 @@ def train_command(args):
                 # Max retries exceeded
                 logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
                 logger.error(f"Final error: {e}")
-                sys.exit(1)
+                raise SystemExit() from None
 
     # Save configuration
     config_path = os.path.join(config.model_path, f"config_{final_tag}.json")
