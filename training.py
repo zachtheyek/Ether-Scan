@@ -18,7 +18,7 @@ from matplotlib.gridspec import GridSpec
 from tensorflow.keras.initializers import GlorotNormal, HeNormal
 from tensorflow.keras.layers import Conv2D, Dense
 
-from config import TrainingConfig
+from config import Config
 from data_generation import DataGenerator
 from models import RandomForestModel, create_beta_vae_model
 
@@ -231,50 +231,48 @@ def get_latest_tag(checkpoints_dir: str) -> str:
     return tag
 
 
-def calculate_curriculum_snr(
-    round_idx: int, total_rounds: int, config: TrainingConfig
-) -> tuple[int, int]:
+def calculate_curriculum_snr(round_idx: int, total_rounds: int, config: Config) -> tuple[int, int]:
     """
     Calculate SNR parameters for curriculum learning
 
     Args:
         round_idx: Current training round (0-indexed)
         total_rounds: Total number of training rounds
-        config: Training configuration
+        config: Configuration object
 
     Returns:
         (snr_base, snr_range) tuple
     """
     # Edge case: use initial snr range if only training for 1 round
     if total_rounds == 1:
-        return config.snr_base, config.initial_snr_range
+        return config.training.snr_base, config.training.initial_snr_range
 
     # Progress through curriculum: 0.0 (easy) -> 1.0 (hard)
     progress = round_idx / (total_rounds - 1)
 
-    if config.curriculum_schedule == "linear":
+    if config.training.curriculum_schedule == "linear":
         # Linear progression from wide to narrow SNR range
-        current_range = config.initial_snr_range - progress * (
-            config.initial_snr_range - config.final_snr_range
+        current_range = config.training.initial_snr_range - progress * (
+            config.training.initial_snr_range - config.training.final_snr_range
         )
-    elif config.curriculum_schedule == "exponential":
+    elif config.training.curriculum_schedule == "exponential":
         # Exponential decay - start easy, then get hard quickly
-        current_range = config.final_snr_range + (
-            config.initial_snr_range - config.final_snr_range
-        ) * np.exp(config.exponential_decay_rate * progress)
-    elif config.curriculum_schedule == "step":
+        current_range = config.training.final_snr_range + (
+            config.training.initial_snr_range - config.training.final_snr_range
+        ) * np.exp(config.training.exponential_decay_rate * progress)
+    elif config.training.curriculum_schedule == "step":
         # Step function - easy for first part, hard for second part
         # TODO: add mechanism for more step changes
-        if round_idx < config.step_easy_rounds:
-            current_range = config.initial_snr_range
+        if round_idx < config.training.step_easy_rounds:
+            current_range = config.training.initial_snr_range
         else:
-            current_range = config.final_snr_range
+            current_range = config.training.final_snr_range
     else:
         raise ValueError(
-            f"'{config.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'"
+            f"'{config.training.curriculum_schedule} is invalid. Accepted values: 'linear', 'exponential', 'step'"
         )
 
-    return config.snr_base, int(current_range)
+    return config.training.snr_base, int(current_range)
 
 
 def prepare_distributed_dataset(
@@ -717,9 +715,7 @@ class TrainingPipeline:
             logger.info(f"Starting training for {n_rounds} rounds")
 
         for round_idx in range(start_round - 1, n_rounds):
-            snr_base, snr_range = calculate_curriculum_snr(
-                round_idx, n_rounds, self.config.training
-            )
+            snr_base, snr_range = calculate_curriculum_snr(round_idx, n_rounds, self.config)
 
             logger.info(f"{'=' * 50}")
             logger.info(f"ROUND {round_idx + 1}/{n_rounds}")

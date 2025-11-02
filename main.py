@@ -1,34 +1,27 @@
 """
-Main entry point for Etherscan Pipeline
+Main entry point for Aetherscan Pipeline
 """
 
 import argparse
-import logging
+import atexit
+import contextlib
+import gc
+import json
 import os
+import signal
 import sys
+import time
+from multiprocessing import Pool, cpu_count
+
 import numpy as np
 import tensorflow as tf
-from typing import Optional, Tuple
-import json
-import gc
-import time
 from skimage.transform import downscale_local_mean
-from multiprocessing import Pool, cpu_count, Queue
-from logging.handlers import QueueHandler, QueueListener
-import threading
-import psutil
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for headless environments
-import matplotlib.pyplot as plt
-from datetime import datetime
-import atexit
-import signal
 
 from config import Config
-from training import train_full_pipeline, get_latest_tag
-
-# Global resource monitor instance
-_RESOURCE_MONITOR = None
+from db import init_db, shutdown_db
+from logger import setup_logging
+from monitor import init_monitor, shutdown_monitor
+from training import get_latest_tag, train_full_pipeline
 
 # Global flag to prevent double-execution of cleanup
 _CLEANUP_EXECUTED = False
@@ -38,453 +31,20 @@ _CLEANUP_EXECUTED = False
 _GLOBAL_CHUNK_DATA = None
 
 
-class StreamToLogger:
-    """Redirect stream (stdout/stderr) to logging system"""
-    def __init__(self, logger, level):
-        self.logger = logger
-        self.level = level
-        self.linebuf = ''
-
-    def write(self, buf):
-        for line in buf.rstrip().splitlines():
-            self.logger.log(self.level, line.rstrip())
-
-    def flush(self):
-        # Flush any remaining content in linebuf if needed
-        if self.linebuf:
-            self.logger.log(self.level, self.linebuf.rstrip())
-            self.linebuf = ''
-
-        # Flush all handlers attached to the logger
-        for handler in self.logger.handlers:
-            handler.flush()
-
-
-def setup_logging(log_filepath: str) -> Tuple[logging.Logger, Queue, QueueListener]:
-    """
-    Configure logging to write to both log file & console with multiprocessing support
-    Captures all output sources: Python logging, TensorFlow, warnings, print statements, and stderr
-    Must be called after importing TensorFlow to override its default logging config
-
-    Uses queue-based logging to avoid deadlocks and corrupted output from worker processes.
-    Workers send log messages to a queue, which a listener thread in the main process
-    reads from and writes to the actual log handlers.
-
-    Returns:
-        Tuple of (logger, log_queue, listener)
-        - logger: Main logger instance
-        - log_queue: Queue for worker processes to send log messages
-        - listener: QueueListener that must be stopped on exit
-    """
-    # Create queue for worker processes (no size limit)
-    log_queue = Queue(-1)
-
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)  # Ignore DEBUG level logs
-    root_logger.handlers.clear()  # Clear existing handlers
-
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s')
-
-    # Setup file handler (only used by main process via listener)
-    file_handler = logging.FileHandler(log_filepath, mode='w')
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-
-    # Setup stream handler (only used by main process via listener)
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setLevel(logging.INFO)
-    stream_handler.setFormatter(formatter)
-
-    # Create queue listener - runs in background thread, writes logs from queue
-    listener = QueueListener(log_queue, file_handler, stream_handler, respect_handler_level=True)
-    listener.start()
-
-    # Add queue handler to root logger (both main and workers use this)
-    queue_handler = QueueHandler(log_queue)
-    root_logger.addHandler(queue_handler)
-
-    # Redirect TensorFlow logs to Python logging
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # Show all TF logs
-    tf.get_logger().setLevel(logging.INFO)
-    tf_logger = tf.get_logger()
-    tf_logger.handlers = []  # Remove TF's default handlers
-    tf_logger.propagate = True  # Use root logger handlers
-
-    # Capture Python warnings module output
-    logging.captureWarnings(True)
-    warnings_logger = logging.getLogger('py.warnings')
-    warnings_logger.setLevel(logging.WARNING)
-
-    # Redirect stdout and stderr to logging
-    # This captures print statements and C library output
-    # Note that workers will reset these to avoid inheritance issues
-    sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
-    sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
-
-    return logging.getLogger(__name__), log_queue, listener
-
 # Setup logging immediately after imports to ensure logging is configured before any other code runs
-logger, log_queue, log_listener = setup_logging('/datax/scratch/zachy/outputs/etherscan/etherscan.log')
-
-
-class ResourceMonitor:
-    """Background thread to monitor system resources"""
-
-    def __init__(self, output_path, interval=1.0):
-        self.output_path = output_path
-        self.interval = interval
-        self.stop_event = threading.Event()  # Thread-safe flag for stopping
-        self.thread = None
-
-        # Data storage
-        self.timestamps = []
-
-        # CPU data (total only, no per-core)
-        self.cpu_percent_system = []  # System-wide total CPU
-        self.cpu_percent_process = []  # Process + children CPU
-
-        # RAM data
-        self.ram_percent_system = []  # System-wide RAM
-        self.ram_percent_process = []  # Process + children RAM
-
-        # GPU data (system-wide only)
-        self.gpu_usage = []  # List of lists, one per GPU
-        self.gpu_memory = []  # List of lists, one per GPU
-        self.gpu_names = []
-
-        # Process tracking - get main process
-        self.process = psutil.Process(os.getpid())
-        logger.info(f"Monitoring process PID: {self.process.pid}")
-
-        # Detect GPUs
-        self._detect_gpus()
-
-    def _detect_gpus(self):
-        """Detect available GPUs"""
-        try:
-            gpus = tf.config.list_physical_devices('GPU')
-            self.num_gpus = len(gpus)
-
-            # Try to get GPU names using nvidia-smi if available
-            if self.num_gpus > 0:
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        self.gpu_names = [f"{name.strip()}:{i}" for i, name in enumerate(result.stdout.strip().split('\n'))]
-                    else:
-                        self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
-                except:
-                    self.gpu_names = [f"GPU:{i}" for i in range(self.num_gpus)]
-            else:
-                self.gpu_names = []
-
-        except:
-            self.num_gpus = 0
-            self.gpu_names = []
-
-    def _get_gpu_stats(self):
-        """Get GPU usage and memory statistics"""
-        gpu_utils = []
-        gpu_mems = []
-
-        if self.num_gpus > 0:
-            try:
-                import subprocess
-                # Get GPU utilization
-                result = subprocess.run(
-                    ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total',
-                     '--format=csv,noheader,nounits'],
-                    capture_output=True, text=True, timeout=5
-                )
-
-                if result.returncode == 0:
-                    for line in result.stdout.strip().split('\n'):
-                        parts = line.split(',')
-                        util = float(parts[0].strip())
-                        mem_used = float(parts[1].strip())
-                        mem_total = float(parts[2].strip())
-                        mem_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0
-
-                        gpu_utils.append(util)
-                        gpu_mems.append(mem_percent)
-                else:
-                    gpu_utils = [0.0] * self.num_gpus
-                    gpu_mems = [0.0] * self.num_gpus
-            except:
-                gpu_utils = [0.0] * self.num_gpus
-                gpu_mems = [0.0] * self.num_gpus
-
-        return gpu_utils, gpu_mems
-
-    def _get_process_tree_stats(self):
-        """
-        Get total CPU and RAM usage for main process and all child processes.
-        This captures multiprocessing workers spawned by Pool() calls.
-
-        Returns:
-            tuple: (cpu_percent_total, ram_percent)
-        """
-        try:
-            # Get all processes in tree (main + children)
-            processes = [self.process]
-            try:
-                processes.extend(self.process.children(recursive=True))
-            except psutil.NoSuchProcess:
-                pass
-
-            # Aggregate CPU and RAM usage across all processes
-            total_cpu = 0.0
-            total_ram_bytes = 0
-
-            for proc in processes:
-                try:
-                    # CPU: Get percentage (can be >100% for multi-core usage)
-                    cpu = proc.cpu_percent(interval=0.0)  # Non-blocking
-                    total_cpu += cpu
-
-                    # RAM: Get RSS (Resident Set Size)
-                    mem_info = proc.memory_info()
-                    total_ram_bytes += mem_info.rss
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # Process may have died between children() and cpu_percent() calls
-                    continue
-
-            # Convert CPU to percentage of total system CPU
-            num_cores = psutil.cpu_count()
-            cpu_percent = total_cpu / num_cores if num_cores > 0 else 0.0
-
-            # Convert RAM to percentage of total system RAM
-            total_system_ram = psutil.virtual_memory().total
-            ram_percent = (total_ram_bytes / total_system_ram) * 100
-
-            return cpu_percent, ram_percent
-
-        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-            logger.warning(f"Error getting process tree stats: {e}")
-            return 0.0, 0.0
-
-    def _monitor_loop(self):
-        """Background monitoring loop"""
-        start_time = time.time()
-
-        while not self.stop_event.is_set():
-            try:
-                # Record timestamp
-                current_time = time.time() - start_time
-                self.timestamps.append(current_time)
-
-                # CPU - system-wide total
-                cpu_system = psutil.cpu_percent(interval=0.1)
-                self.cpu_percent_system.append(cpu_system)
-
-                # RAM - system-wide
-                ram_system = psutil.virtual_memory().percent
-                self.ram_percent_system.append(ram_system)
-
-                # CPU & RAM - process + children
-                cpu_process, ram_process = self._get_process_tree_stats()
-                self.cpu_percent_process.append(cpu_process)
-                self.ram_percent_process.append(ram_process)
-
-                # GPU (system-wide only)
-                gpu_utils, gpu_mems = self._get_gpu_stats()
-                self.gpu_usage.append(gpu_utils)
-                self.gpu_memory.append(gpu_mems)
-
-                # Sleep until next interval (interruptible for faster shutdown)
-                self.stop_event.wait(self.interval)
-
-            except Exception as e:
-                logger.error(f"Error in resource monitoring: {e}")
-                self.stop_event.wait(self.interval)
-
-    def start(self):
-        """Start monitoring in background thread"""
-        if not self.stop_event.is_set():
-            self.stop_event.clear()  # Ensure event is not set
-            self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self.thread.start()
-
-            # Log system information
-            logger.info("="*60)
-            logger.info("RESOURCE MONITORING STARTED")
-            logger.info(f"  Main Process PID: {self.process.pid}")
-            logger.info(f"  CPU Cores: {psutil.cpu_count()}")
-            logger.info(f"  GPUs Detected: {self.num_gpus}")
-            if self.num_gpus > 0:
-                for i, name in enumerate(self.gpu_names):
-                    logger.info(f"    {name}")
-            logger.info(f"  Monitoring Interval: {self.interval}s")
-            logger.info(f"  Output path: {self.output_path}")
-            logger.info(f"")
-            logger.info(f"  Tracking:")
-            logger.info(f"    - CPU/RAM: System-wide + Process tree")
-            logger.info(f"    - GPU: System-wide only")
-            logger.info("="*60)
-
-    def stop(self):
-        """Stop monitoring"""
-        if not self.stop_event.is_set():
-            self.stop_event.set()  # Signal the thread to stop
-            if self.thread:
-                self.thread.join(timeout=5)  # Wait max 5 secs for thread to finish
-
-            duration_mins = self.timestamps[-1] / 60 if self.timestamps else 0
-            logger.info("="*60)
-            logger.info("RESOURCE MONITORING STOPPED")
-            logger.info(f"  Duration: {duration_mins:.2f} minutes")
-            logger.info(f"  Samples Collected: {len(self.timestamps)}")
-            logger.info("="*60)
-
-    def save_plot(self, output_path):
-        """Generate and save resource utilization plot"""
-        if len(self.timestamps) == 0:
-            logger.warning("No monitoring data to plot")
-            return
-
-        # Ensure output directory exists
-        if os.path.dirname(output_path):
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        # Create figure with 3 subplots
-        fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-        fig.suptitle('Etherscan Resource Utilization', fontsize=16, fontweight='bold')
-
-        timestamps = np.array(self.timestamps) / 60  # Convert to minutes
-
-        # CPU plot
-        ax_cpu = axes[0]
-        cpu_system_data = np.array(self.cpu_percent_system)
-        cpu_process_data = np.array(self.cpu_percent_process)
-
-        # Plot process CPU (shaded area)
-        ax_cpu.plot(timestamps, cpu_process_data, color='#1f77b4', linewidth=1.5,
-                   label='Process + Children', alpha=0.8)
-        ax_cpu.fill_between(timestamps, cpu_process_data, alpha=0.3, color='#1f77b4')
-
-        # Plot system-wide CPU (line on top)
-        ax_cpu.plot(timestamps, cpu_system_data, color='#ff7f0e', linewidth=2.0,
-                   label='System Total', alpha=0.9)
-
-        ax_cpu.set_ylabel('CPU Usage (%)', fontsize=12, fontweight='bold')
-        ax_cpu.set_ylim(0, 100)
-        ax_cpu.grid(True, alpha=0.3)
-        ax_cpu.legend(loc='upper right', fontsize=10)
-        ax_cpu.set_title(f'CPU Pressure (n={psutil.cpu_count()})', fontsize=12)
-
-        # RAM plot
-        ax_ram = axes[1]
-        ram_system_data = np.array(self.ram_percent_system)
-        ram_process_data = np.array(self.ram_percent_process)
-
-        # Plot process RAM (shaded area)
-        ax_ram.plot(timestamps, ram_process_data, color='#2ca02c', linewidth=1.5,
-                   label='Process + Children', alpha=0.8)
-        ax_ram.fill_between(timestamps, ram_process_data, alpha=0.3, color='#2ca02c')
-
-        # Plot system-wide RAM (line on top)
-        ax_ram.plot(timestamps, ram_system_data, color='#d62728', linewidth=2.0,
-                   label='System Total', alpha=0.9)
-
-        ax_ram.set_ylabel('RAM Usage (%)', fontsize=12, fontweight='bold')
-        ax_ram.set_ylim(0, 100)
-        ax_ram.grid(True, alpha=0.3)
-        ax_ram.legend(loc='upper right', fontsize=10)
-        ax_ram.set_title('Memory Pressure', fontsize=12)
-
-        # GPU plot
-        ax_gpu = axes[2]
-        if self.num_gpus > 0:
-            gpu_usage_data = np.array(self.gpu_usage).T  # Shape: (num_gpus, num_samples)
-            gpu_memory_data = np.array(self.gpu_memory).T  # Shape: (num_gpus, num_samples)
-
-            # Create second y-axis for memory
-            ax_gpu_mem = ax_gpu.twinx()
-
-            colors = plt.cm.tab10(np.linspace(0, 1, self.num_gpus))
-
-            for gpu_idx in range(self.num_gpus):
-                color = colors[gpu_idx]
-                gpu_name = self.gpu_names[gpu_idx] if gpu_idx < len(self.gpu_names) else f"GPU:{gpu_idx}"
-
-                # Usage (solid line, y1)
-                ax_gpu.plot(timestamps, gpu_usage_data[gpu_idx],
-                           label=f'{gpu_name} (Usage)',
-                           color=color, linewidth=1.5, alpha=0.9)
-
-                # Memory (dashed line, y2, dimmer)
-                ax_gpu_mem.plot(timestamps, gpu_memory_data[gpu_idx],
-                               label=f'{gpu_name} (Memory)',
-                               color=color, linewidth=1.5, alpha=0.6, linestyle='--')
-
-            ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
-            ax_gpu_mem.set_ylabel('GPU Memory (%)', fontsize=12, fontweight='bold')
-            ax_gpu.set_ylim(0, 100)
-            ax_gpu_mem.set_ylim(0, 100)
-
-            # Combine legends
-            lines1, labels1 = ax_gpu.get_legend_handles_labels()
-            lines2, labels2 = ax_gpu_mem.get_legend_handles_labels()
-            ax_gpu.legend(lines1 + lines2, labels1 + labels2,
-                         ncol=min(4, self.num_gpus * 2), fontsize=8, loc='upper right')
-        else:
-            ax_gpu.text(0.5, 0.5, 'No GPUs detected',
-                       ha='center', va='center', transform=ax_gpu.transAxes, fontsize=14)
-            ax_gpu.set_ylabel('GPU Usage (%)', fontsize=12, fontweight='bold')
-
-        ax_gpu.grid(True, alpha=0.3)
-        ax_gpu.set_title(f'GPU Pressure (n={self.num_gpus})', fontsize=12)
-        ax_gpu.set_xlabel('Time (minutes)', fontsize=12, fontweight='bold')
-
-        # Adjust layout and save
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-
-        logger.info(f"Resource utilization plot saved to: {output_path}")
-
-
-def log_system_resources(output_path: str):
-    """
-    Start monitoring CPU, GPU, and RAM usage in background thread.
-    Should be called at the start of main.py execution.
-    Automatically saves plot on exit via unified cleanup handler.
-
-    Args:
-        output_path: Path where resource utilization plot will be saved
-
-    Returns:
-        ResourceMonitor: The monitoring instance
-    """
-    global _RESOURCE_MONITOR
-
-    if _RESOURCE_MONITOR is not None:
-        logger.warning("Resource monitoring already started")
-        return _RESOURCE_MONITOR
-
-    # Create and start monitor instance
-    # Cleanup is handled automatically by the unified cleanup_all() function
-    _RESOURCE_MONITOR = ResourceMonitor(output_path=output_path, interval=1.0)
-    _RESOURCE_MONITOR.start()
-
-    return _RESOURCE_MONITOR
+logger, log_queue, log_listener = setup_logging(
+    "/datax/scratch/zachy/outputs/aetherscan/aetherscan.log"
+)
 
 
 def cleanup_all():
     """
-    Unified cleanup handler for both resource monitoring and logging.
+    Unified cleanup handler for resource monitoring, database, and logging.
 
     Execution order:
-    1. Stop resource monitoring thread
-    2. Save resource utilization plot (generates final log messages)
-    3. Stop logging queue listener (flushes all remaining logs including those from step 2)
+    1. Stop resource monitoring thread & save plots
+    2. Stop database writer (flushes remaining data)
+    3. Stop logging queue listener (flushes all remaining logs)
 
     Guards against double-execution from both atexit and signal handlers.
     """
@@ -496,26 +56,26 @@ def cleanup_all():
     _CLEANUP_EXECUTED = True
 
     # Step 1: Stop resource monitoring and save plot
-    # This must happen BEFORE logging cleanup so final messages can be logged
-    if _RESOURCE_MONITOR is not None:
-        try:
-            _RESOURCE_MONITOR.stop()
-            _RESOURCE_MONITOR.save_plot(_RESOURCE_MONITOR.output_path)
-        except Exception as e:
-            # Still try to log the error if possible
-            try:
-                logger.error(f"Error during resource monitor cleanup: {e}")
-            except:
-                pass
-
-    # Step 2: Stop logging system (flushes all queued messages)
-    # This must happen LAST to capture all final log messages
+    # This must happen BEFORE monitoring/logging cleanup so final messages can be logged
     try:
+        shutdown_monitor()
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            logger.error(f"Error during resource monitor shutdown: {e}")
+
+    # Step 2: Stop database (flushes remaining data)
+    # This must happen BEFORE logging cleanup so DB shutdown messages can be logged
+    try:
+        shutdown_db()
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            logger.error(f"Error during database cleanup: {e}")
+
+    # Step 3: Stop logging system (flushes all queued messages)
+    # This must happen LAST to capture all final log messages
+    with contextlib.suppress(Exception):
         log_listener.stop()
         # Note that we can't log after stopping the listener, so no final message here
-    except Exception as e:
-        # Nothing we can do here since logging is down
-        pass
 
 
 def signal_handler(signum, frame):
@@ -526,13 +86,12 @@ def signal_handler(signum, frame):
     before exiting.
     """
     # We can still log here since cleanup_all() hasn't been called yet
-    try:
+    with contextlib.suppress(Exception):
         logger.info(f"Received signal {signum}, initiating cleanup...")
-    except:
-        pass
 
     cleanup_all()
     sys.exit(0)
+
 
 # Register unified cleanup handler
 # This will fire on normal exit, but NOT on SIGINT/SIGTERM (handled separately)
@@ -540,24 +99,31 @@ atexit.register(cleanup_all)
 
 # Register signal handlers for interrupt and termination
 # These ensure cleanup happens even when process is killed
-signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # kill <pid> or docker stop
 
 
 def setup_gpu_config():
     """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
 
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Prevent memory fragmentation within each GPU
-    os.environ['TF_ENABLE_GPU_GARBAGE_COLLECTION'] = 'true'  # Aggressive cleanup of intermediate tensors
+    os.environ["TF_GPU_ALLOCATOR"] = (
+        "cuda_malloc_async"  # Prevent memory fragmentation within each GPU
+    )
+    os.environ["TF_ENABLE_GPU_GARBAGE_COLLECTION"] = (
+        "true"  # Aggressive cleanup of intermediate tensors
+    )
 
-    gpus = tf.config.list_physical_devices('GPU')
+    gpus = tf.config.list_physical_devices("GPU")
     if gpus:
         try:
             # Set equal memory limits for all GPUs
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
                 tf.config.experimental.set_virtual_device_configuration(
-                    gpu, [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=14000)]  # 14GiB limit per GPU
+                    gpu,
+                    [
+                        tf.config.experimental.VirtualDeviceConfiguration(memory_limit=14000)
+                    ],  # 14GiB limit per GPU
                 )
 
             # Set distributed strategy to prevent uneven GPU memory usage
@@ -598,21 +164,25 @@ def _init_background_worker(chunk_data, log_queue=None):
     global _GLOBAL_CHUNK_DATA
     _GLOBAL_CHUNK_DATA = chunk_data
 
+    import logging
+    import sys
+
+    # Reset stdout/stderr to avoid inherited StreamToLogger from parent
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+
     # Configure process-local logging to use queue
     if log_queue is not None:
-        import sys
-        import logging
         from logging.handlers import QueueHandler
 
-        # Reset stdout/stderr to avoid inherited StreamToLogger
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
-
-        # Clear inherited handlers and configure queue-based logging
         root_logger = logging.getLogger()
         root_logger.handlers.clear()
         root_logger.addHandler(QueueHandler(log_queue))
         root_logger.setLevel(logging.INFO)
+    else:
+        # If no queue provided, disable logging to avoid conflicts
+        logging.getLogger().handlers.clear()
+        logging.getLogger().addHandler(logging.NullHandler())
 
 
 def _downsample_cadence_worker(args):
@@ -626,28 +196,33 @@ def _downsample_cadence_worker(args):
     Returns:
         Downsampled cadence of shape (6, 16, final_width) or None if invalid
     """
-    global _GLOBAL_CHUNK_DATA
     cadence_idx, downsample_factor, final_width = args
 
     # Get cadence from global chunk data
-    cadence = _GLOBAL_CHUNK_DATA[cadence_idx]
+    if _GLOBAL_CHUNK_DATA:
+        cadence = _GLOBAL_CHUNK_DATA[cadence_idx]
 
-    # Skip invalid cadences
-    if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
+        # Skip invalid cadences
+        if np.any(np.isnan(cadence)) or np.any(np.isinf(cadence)) or np.max(cadence) <= 0:
+            return None
+
+        # Downsample each observation separately
+        downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
+
+        for obs_idx in range(6):
+            downsampled_cadence[obs_idx] = downscale_local_mean(
+                cadence[obs_idx], (1, downsample_factor)
+            ).astype(np.float32)
+
+        return downsampled_cadence
+
+    # NOTE: is this condition correct?
+    else:
+        logger.warning("No global chunk data available")
         return None
 
-    # Downsample each observation separately
-    downsampled_cadence = np.zeros((6, 16, final_width), dtype=np.float32)
 
-    for obs_idx in range(6):
-        downsampled_cadence[obs_idx] = downscale_local_mean(
-            cadence[obs_idx], (1, downsample_factor)
-        ).astype(np.float32)
-
-    return downsampled_cadence
-
-
-def load_background_data(config: Config, n_processes: Optional[int] = None) -> np.ndarray:
+def load_background_data(config: Config, n_processes: int | None = None) -> np.ndarray:
     """
     Load & downsample background plates for pipeline using parallel processing
 
@@ -690,7 +265,7 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
 
         try:
             # Use memory mapping to avoid loading full file
-            raw_data = np.load(filepath, mmap_mode='r')
+            raw_data = np.load(filepath, mmap_mode="r")
 
             # Apply subset if specified in config
             if start is not None or end is not None:
@@ -710,13 +285,21 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
 
                 # Process cadences in parallel using multiprocessing
                 # Create pool with chunk data initialized in workers to avoid serialization
-                with Pool(processes=n_processes, initializer=_init_background_worker,
-                         initargs=(chunk_data, log_queue)) as pool:
-
+                with Pool(
+                    processes=n_processes,
+                    initializer=_init_background_worker,
+                    initargs=(chunk_data, log_queue),
+                ) as pool:
                     # Prepare arguments (just indices, not data - data is in global state)
-                    n_cadences = min(chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds))
+                    n_cadences = min(
+                        chunk_data.shape[0], num_target_backgrounds - len(all_backgrounds)
+                    )
                     args_list = [
-                        (i, downsample_factor, final_width)  # Just pass the chunk index, not the full cadence data
+                        (
+                            i,
+                            downsample_factor,
+                            final_width,
+                        )  # Just pass the chunk index, not the full cadence data
                         for i in range(n_cadences)
                     ]
 
@@ -770,13 +353,15 @@ def load_background_data(config: Config, n_processes: Optional[int] = None) -> n
 
 def train_command(args):
     """Execute training pipeline with distributed strategy & fault tolerance"""
-    logger.info("="*60)
-    logger.info("Starting Etherscan Training Pipeline")
-    logger.info("="*60)
+    logger.info("=" * 60)
+    logger.info("Starting Aetherscan Training Pipeline")
+    logger.info("=" * 60)
 
     # Load configuration
     config = Config()
 
+    # TODO: double check args match main()
+    # TODO: double check overrides match config.py
     # Override config values with CLI args
     if args.num_target_backgrounds:
         config.data.num_target_backgrounds = args.num_target_backgrounds
@@ -834,39 +419,43 @@ def train_command(args):
         config.training.retry_delay = args.retry_delay
     if args.load_tag:
         tag = args.load_tag
-        if tag.startswith('round_'):
-            start_round = int(tag.split('_')[1]) + 1  # Start training from the round proceeding model checkpoint
-        else:
-            start_round = 1
+        # Start training from the round proceeding model checkpoint
+        start_round = int(tag.split("_")[1]) + 1 if tag.startswith("round_") else 1
     else:
         tag = None
         start_round = 1
-    if args.load_dir:
-        dir = args.load_dir
-    else:
-        dir = None
-    if args.save_tag:
-        final_tag = args.save_tag
-    else:
-        final_tag = None
+    dir = args.load_dir if args.load_dir else None
+    final_tag = args.save_tag if args.save_tag else None
 
-    # Start resource monitoring
-    if final_tag is not None:
-        output_path = os.path.join(config.output_path, 'plots', f'resource_utilization_{final_tag}.png')
-    else:
-        output_path = os.path.join(config.output_path, 'plots', f'resource_utilization_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+    # Initialize database
+    try:
+        init_db(config)
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        sys.exit(1)
 
-    log_system_resources(output_path)
+    # Initialize resource monitoring
+    try:
+        init_monitor(config, tag=final_tag)
+        logger.info("Resource monitor initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize resource monitoring: {e}")
+        sys.exit(1)
 
     # Setup GPU and get strategy
     strategy = setup_gpu_config()
 
-    logger.info(f"Configuration:")
+    logger.info("Configuration:")
     logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
     logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
     logger.info(f"  Data path: {config.data_path}")
     logger.info(f"  Model path: {config.model_path}")
     logger.info(f"  Output path: {config.output_path}")
+
+    # TEST: test
+    time.sleep(300)
+    sys.exit(1)
 
     # Load and preprocess background data
     try:
@@ -885,7 +474,7 @@ def train_command(args):
 
     for attempt in range(max_retries):
         try:
-            logger.info(f"Training attempt: {attempt+1}/{max_retries}")
+            logger.info(f"Training attempt: {attempt + 1}/{max_retries}")
 
             if attempt > 0:
                 logger.info(f"Retrying training from round {start_round}")
@@ -899,7 +488,7 @@ def train_command(args):
                 dir=dir,
                 start_round=start_round,
                 final_tag=final_tag,
-                log_queue=log_queue
+                log_queue=log_queue,
             )
 
             # If we get here, training succeeded
@@ -911,28 +500,32 @@ def train_command(args):
             raise
 
         except Exception as e:
-            logger.error(f"Training attempt {attempt+1} failed with error: {e}")
+            logger.error(f"Training attempt {attempt + 1} failed with error: {e}")
 
             if attempt < max_retries - 1:
                 # Retry training
-                logger.info(f"Attempting to recover from failure: attempt {attempt+2}/{max_retries}")
+                logger.info(
+                    f"Attempting to recover from failure: attempt {attempt + 2}/{max_retries}"
+                )
 
                 try:
                     # Clean up failed pipeline
-                    if 'pipeline' in locals():
+                    if "pipeline" in locals():
                         del pipeline
                     gc.collect()
                     logger.info("Cleaned up failed pipeline")
 
                     # Find the latest checkpoint & determine where to resume from
-                    dir = 'checkpoints'
+                    dir = "checkpoints"
                     tag = get_latest_tag(os.path.join(config.model_path, dir))
                     if tag.startswith("round_"):
-                        start_round = int(tag.split("_")[1]) + 1  # Start training from the round proceeding model checkpoint
-                        logger.info(f"Loaded latest checkpoint from round {start_round-1}")
+                        start_round = (
+                            int(tag.split("_")[1]) + 1
+                        )  # Start training from the round proceeding model checkpoint
+                        logger.info(f"Loaded latest checkpoint from round {start_round - 1}")
                     else:
                         logger.info("No valid checkpoints loaded")
-                        raise ValueError(f"No valid checkpoints loaded")
+                        raise ValueError("No valid checkpoints loaded")
 
                     logger.info(f"Waiting {retry_delay} seconds before retry...")
                     time.sleep(retry_delay)
@@ -940,90 +533,87 @@ def train_command(args):
                 except Exception as recovery_error:
                     # If no checkpoints loaded, restart from last valid start_round
                     logger.error(f"Recovery failed: {recovery_error}")
-                    logger.info(f"Restarting training from round {start_round} in {retry_delay} seconds")
+                    logger.info(
+                        f"Restarting training from round {start_round} in {retry_delay} seconds"
+                    )
                     time.sleep(retry_delay)
 
             else:
                 # Max retries exceeded
                 logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
                 logger.error(f"Final error: {e}")
-                raise Exception(f"Training attempts exceeded maximum retries ({max_retries}). Final error: {e}")
+                sys.exit(1)
 
     # Save configuration
-    config_path = os.path.join(config.model_path, f'config_{final_tag}.json')
-    with open(config_path, 'w') as f:
+    config_path = os.path.join(config.model_path, f"config_{final_tag}.json")
+    with open(config_path, "w") as f:
         json.dump(config.to_dict(), f, indent=2)
     logger.info(f"Configuration saved to {config_path}")
 
-    logger.info("="*60)
+    logger.info("=" * 60)
     logger.info("Training completed successfully!")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
 
-def inference_command(args):
-    """Execute inference command"""
-    logger.info("Starting inference pipeline...")
-
-    # Setup GPU
-    setup_gpu_config()
-
-    # Load configuration
-    config = Config()
-
-    # Load saved config if provided
-    if args.config:
-        with open(args.config, 'r') as f:
-            saved_config = json.load(f)
-            # Update config with saved values
-            for section_key, section_value in saved_config.items():
-                if hasattr(config, section_key) and isinstance(section_value, dict):
-                    for key, value in section_value.items():
-                        if hasattr(getattr(config, section_key), key):
-                            setattr(getattr(config, section_key), key, value)
-
-    # Prepare observation files
-    observation_files = []
-
-    # Check for prepared test cadences
-    test_dir = os.path.join(config.data_path, 'testing', 'prepared_cadences')
-    if os.path.exists(test_dir):
-        # Load prepared cadences
-        for cadence_idx in range(args.n_bands):
-            cadence_files = []
-            for obs_idx in range(6):
-                obs_file = os.path.join(test_dir, f'cadence_{cadence_idx:04d}_obs_{obs_idx}.npy')
-                if os.path.exists(obs_file):
-                    cadence_files.append(obs_file)
-
-            if len(cadence_files) == 6:
-                observation_files.append(cadence_files)
-
-    if not observation_files:
-        logger.error("No observation files found. Please prepare test data first.")
-        sys.exit(1)
-
-    logger.info(f"Found {len(observation_files)} cadences for inference")
-
-    # Run inference
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
-
-    results = run_inference(
-        config,
-        observation_files,
-        args.vae_model,
-        args.rf_model,
-        output_path
-    )
-
-    logger.info(f"Inference completed. Results saved to {output_path}")
-
-    # Print summary
-    if results is not None and not results.empty:
-        n_total = len(results)
-        n_high_conf = len(results[results['confidence'] > 0.9])
-        logger.info(f"Total detections: {n_total}")
-        logger.info(f"High confidence (>90%): {n_high_conf}")
+# NOTE: come back to this later
+# def inference_command(args):
+#     """Execute inference command"""
+#     logger.info("Starting inference pipeline...")
+#
+#     # Setup GPU
+#     setup_gpu_config()
+#
+#     # Load configuration
+#     config = Config()
+#
+#     # Load saved config if provided
+#     if args.config:
+#         with open(args.config) as f:
+#             saved_config = json.load(f)
+#             # Update config with saved values
+#             for section_key, section_value in saved_config.items():
+#                 if hasattr(config, section_key) and isinstance(section_value, dict):
+#                     for key, value in section_value.items():
+#                         if hasattr(getattr(config, section_key), key):
+#                             setattr(getattr(config, section_key), key, value)
+#
+#     # Prepare observation files
+#     observation_files = []
+#
+#     # Check for prepared test cadences
+#     test_dir = os.path.join(config.data_path, "testing", "prepared_cadences")
+#     if os.path.exists(test_dir):
+#         # Load prepared cadences
+#         for cadence_idx in range(args.n_bands):
+#             cadence_files = []
+#             for obs_idx in range(6):
+#                 obs_file = os.path.join(test_dir, f"cadence_{cadence_idx:04d}_obs_{obs_idx}.npy")
+#                 if os.path.exists(obs_file):
+#                     cadence_files.append(obs_file)
+#
+#             if len(cadence_files) == 6:
+#                 observation_files.append(cadence_files)
+#
+#     if not observation_files:
+#         logger.error("No observation files found. Please prepare test data first.")
+#         sys.exit(1)
+#
+#     logger.info(f"Found {len(observation_files)} cadences for inference")
+#
+#     # Run inference
+#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#     output_path = args.output or f"/outputs/seti/detections_{timestamp}.csv"
+#
+#     results = run_inference(config, observation_files, args.vae_model, args.rf_model, output_path)
+#
+#     logger.info(f"Inference completed. Results saved to {output_path}")
+#
+#     # Print summary
+#     if results is not None and not results.empty:
+#         n_total = len(results)
+#         n_high_conf = len(results[results["confidence"] > 0.9])
+#         logger.info(f"Total detections: {n_total}")
+#         logger.info(f"High confidence (>90%): {n_high_conf}")
 
 
 # NOTE: come back to this later
@@ -1087,79 +677,190 @@ def inference_command(args):
 #     logger.info("="*60)
 
 
+# TODO: double check args match config.py
+# TODO: double check descriptions make sense
 # TODO: add assertions to make sure no problematic values gets passed through CLI args
-    # signal-injection-chunk-size, num-samples-beta-vae, and num-samples-rf must be divisible by 4 to generate balanced classes
+# signal-injection-chunk-size, num-samples-beta-vae, and num-samples-rf must be divisible by 4 to generate balanced classes
 def main():
-    """Main entry point to Etherscan pipeline"""
+    """Main entry point to Aetherscan pipeline"""
     parser = argparse.ArgumentParser(
-        description='Etherscan Pipeline - Search for ETI signals using deep learning'
+        description="Aetherscan Pipeline - Breakthrough Listen's first end-to-end production-grade DL pipeline for SETI @ scale"
     )
 
     # Add subcommands
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Training command
-    train_parser = subparsers.add_parser('train', help='Training pipeline (defaults in config.py)')
-    train_parser.add_argument('--num-target-backgrounds', type=int, default=None,
-                              help='Number of background cadences to load')
-    train_parser.add_argument('--background-load-chunk-size', type=int, default=None,
-                              help='Maximum cadences to process at once during background loading')
-    train_parser.add_argument('--max-chunks-per-file', type=int, default=None,
-                              help='Maximum chunks to load from a single file')
-    train_parser.add_argument('--train-files', type=str, nargs='+', default=None,
-                              help='List of training data files to use')
-    train_parser.add_argument('--rounds', type=int, default=None,
-                              help='Number of training rounds')
-    train_parser.add_argument('--epochs', type=int, default=None,
-                              help='Epochs per training round')
-    train_parser.add_argument('--num-samples-beta-vae', type=int, default=None,
-                              help='Number of training samples for beta-vae')
-    train_parser.add_argument('--num-samples-rf', type=int, default=None,
-                              help='Number of training samples for random forest')
-    train_parser.add_argument('--train-val-split', type=float, default=None,
-                              help='Training/validation split for beta-vae')
-    train_parser.add_argument('--batch-size', type=int, default=None,
-                              help='Per replica batch size for training')
-    train_parser.add_argument('--global-batch-size', type=int, default=None,
-                              help='Effective batch size for gradient accumulation')
-    train_parser.add_argument('--val-batch-size', type=int, default=None,
-                              help='Per replica batch size for validation')
-    train_parser.add_argument('--signal-injection-chunk-size', type=int, default=None,
-                              help='Maximum cadences to process at once during data generation')
-    train_parser.add_argument('--snr-base', type=int, default=None,
-                              help='Base SNR for curriculum learning')
-    train_parser.add_argument('--initial-snr-range', type=int, default=None,
-                              help='Initial SNR range for curriculum learning')
-    train_parser.add_argument('--final-snr-range', type=int, default=None,
-                              help='Final SNR range for curriculum learning')
-    train_parser.add_argument('--curriculum-schedule', type=str, default=None,
-                              help='Curriculum learning schedule: linear, exponential, or step')
-    train_parser.add_argument('--exponential-decay-rate', type=int, default=None,
-                              help='Exponential decay rate for curriculum (must be <0)')
-    train_parser.add_argument('--step-easy-rounds', type=int, default=None,
-                              help='Number of rounds with easy signals (for step schedule)')
-    train_parser.add_argument('--step-hard-rounds', type=int, default=None,
-                              help='Number of rounds with challenging signals (for step schedule)')
-    train_parser.add_argument('--base-learning-rate', type=float, default=None,
-                              help='Base learning rate for training')
-    train_parser.add_argument('--min-learning-rate', type=float, default=None,
-                              help='Minimum learning rate for adaptive LR')
-    train_parser.add_argument('--min-pct-improvement', type=float, default=None,
-                              help='Minimum percentage improvement for adaptive LR')
-    train_parser.add_argument('--patience-threshold', type=int, default=None,
-                              help='Consecutive epochs with no improvement before LR reduction')
-    train_parser.add_argument('--reduction-factor', type=float, default=None,
-                              help='Factor to reduce learning rate by (e.g., 0.2 = 20% reduction)')
-    train_parser.add_argument('--max-retries', type=int, default=None,
-                              help='Maximum number of retries on training failure')
-    train_parser.add_argument('--retry-delay', type=int, default=None,
-                              help='Delay in seconds between retries')
-    train_parser.add_argument('--load-tag', type=str, default=None,
-                              help='Model tag to resume training from. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
-    train_parser.add_argument('--load-dir', type=str, default=None,
-                              help='Directory to load model tag from. Argument appended to outputs directory')
-    train_parser.add_argument('--save-tag', type=str, default=None,
-                              help='Tag for current pipeline run. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS')
+    train_parser = subparsers.add_parser("train", help="Training pipeline (defaults in config.py)")
+    train_parser.add_argument(
+        "--num-target-backgrounds",
+        type=int,
+        default=None,
+        help="Number of background cadences to load",
+    )
+    train_parser.add_argument(
+        "--background-load-chunk-size",
+        type=int,
+        default=None,
+        help="Maximum cadences to process at once during background loading",
+    )
+    train_parser.add_argument(
+        "--max-chunks-per-file",
+        type=int,
+        default=None,
+        help="Maximum chunks to load from a single file",
+    )
+    train_parser.add_argument(
+        "--train-files",
+        type=str,
+        nargs="+",  # NOTE: what does this do?
+        default=None,
+        help="List of training data files to use",
+    )
+    train_parser.add_argument(
+        "--rounds",
+        type=int,
+        default=None,
+        help="Number of training rounds",
+    )
+    train_parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Epochs per training round",
+    )
+    train_parser.add_argument(
+        "--num-samples-beta-vae",
+        type=int,
+        default=None,
+        help="Number of training samples for beta-vae",
+    )
+    train_parser.add_argument(
+        "--num-samples-rf",
+        type=int,
+        default=None,
+        help="Number of training samples for random forest",
+    )
+    train_parser.add_argument(
+        "--train-val-split",
+        type=float,
+        default=None,
+        help="Training/validation split for beta-vae",
+    )
+    train_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Per replica batch size for training",
+    )
+    train_parser.add_argument(
+        "--global-batch-size",
+        type=int,
+        default=None,
+        help="Effective batch size for gradient accumulation",
+    )
+    train_parser.add_argument(
+        "--val-batch-size",
+        type=int,
+        default=None,
+        help="Per replica batch size for validation",
+    )
+    train_parser.add_argument(
+        "--signal-injection-chunk-size",
+        type=int,
+        default=None,
+        help="Maximum cadences to process at once during data generation",
+    )
+    train_parser.add_argument(
+        "--snr-base", type=int, default=None, help="Base SNR for curriculum learning"
+    )
+    train_parser.add_argument(
+        "--initial-snr-range",
+        type=int,
+        default=None,
+        help="Initial SNR range for curriculum learning",
+    )
+    train_parser.add_argument(
+        "--final-snr-range", type=int, default=None, help="Final SNR range for curriculum learning"
+    )
+    train_parser.add_argument(
+        "--curriculum-schedule",
+        type=str,
+        default=None,
+        help="Curriculum learning schedule: linear, exponential, or step",
+    )
+    train_parser.add_argument(
+        "--exponential-decay-rate",
+        type=int,
+        default=None,
+        help="Exponential decay rate for curriculum (must be <0)",
+    )
+    train_parser.add_argument(
+        "--step-easy-rounds",
+        type=int,
+        default=None,
+        help="Number of rounds with easy signals (for step schedule)",
+    )
+    train_parser.add_argument(
+        "--step-hard-rounds",
+        type=int,
+        default=None,
+        help="Number of rounds with challenging signals (for step schedule)",
+    )
+    train_parser.add_argument(
+        "--base-learning-rate", type=float, default=None, help="Base learning rate for training"
+    )
+    train_parser.add_argument(
+        "--min-learning-rate",
+        type=float,
+        default=None,
+        help="Minimum learning rate for adaptive LR",
+    )
+    train_parser.add_argument(
+        "--min-pct-improvement",
+        type=float,
+        default=None,
+        help="Minimum percentage improvement for adaptive LR",
+    )
+    train_parser.add_argument(
+        "--patience-threshold",
+        type=int,
+        default=None,
+        help="Consecutive epochs with no improvement before LR reduction",
+    )
+    train_parser.add_argument(
+        "--reduction-factor",
+        type=float,
+        default=None,
+        help="Factor to reduce learning rate by (e.g., 0.2 = 20% reduction)",
+    )
+    train_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=None,
+        help="Maximum number of retries on training failure",
+    )
+    train_parser.add_argument(
+        "--retry-delay", type=int, default=None, help="Delay in seconds between retries"
+    )
+    train_parser.add_argument(
+        "--load-tag",
+        type=str,
+        default=None,
+        help="Model tag to resume training from. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS",
+    )
+    train_parser.add_argument(
+        "--load-dir",
+        type=str,
+        default=None,
+        help="Directory to load model tag from. Argument appended to outputs directory",
+    )
+    train_parser.add_argument(
+        "--save-tag",
+        type=str,
+        default=None,
+        help="Tag for current pipeline run. Accepted formats: final_vX, round_XX, YYYYMMDD_HHMMSS",
+    )
     # TODO: finish adding train_command args
     # train_parser.add_argument('--start-round', type=int, default=None,
     #                           help='Training round to start from (default: 1, or the next round proceeding checkpoint tag if provided)')
@@ -1185,10 +886,10 @@ def main():
     args = parser.parse_args()
 
     # Execute command
-    if args.command == 'train':
+    if args.command == "train":
         train_command(args)
-    elif args.command == 'inference':
-        inference_command(args)
+    # elif args.command == "inference":
+    #     inference_command(args)
     # elif args.command == 'evaluate':
     #     evaluate_command(args)
     else:
@@ -1196,5 +897,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

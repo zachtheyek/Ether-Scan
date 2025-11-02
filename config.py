@@ -1,4 +1,5 @@
-# TODO: remove unaccessed config params
+# TODO: make sure config params are used where possible, and remove unaccessed config params
+# TODO: make sure pipeline uses the same singleton config param instance (not separate instances)
 # TODO: double check to_dict
 """
 Configuration module for Aetherscan Pipeline
@@ -12,11 +13,21 @@ from dataclasses import dataclass
 class DBConfig:
     """SQLite database configuration"""
 
-    write_buffer_max_size: int = 100  # records
-    write_interval: float = 5.0  # seconds
     get_connection_timeout: float = 60.0  # seconds
-    writer_thread_timeout: float = 10.0  # seconds
-    retry_delay: float = 1.0  # seconds
+    stop_writer_timeout: float = 10.0  # seconds
+    write_interval: float = 5.0  # seconds
+    write_buffer_max_size: int = 100  # records
+    write_retry_delay: float = 1.0  # seconds
+
+
+@dataclass
+class MonitorConfig:
+    """Resource monitor configuration"""
+
+    get_gpu_timeout: float = 5.0  # seconds
+    stop_monitor_timeout: float = 10.0  # seconds
+    monitor_interval: float = 1.0  # seconds
+    monitor_retry_delay: float = 1.0  # seconds
 
 
 @dataclass
@@ -131,6 +142,7 @@ class Config:
 
     def __init__(self):
         self.db = DBConfig()
+        self.monitor = MonitorConfig()
         self.beta_vae = BetaVAEConfig()
         self.rf = RandomForestConfig()
         self.data = DataConfig()
@@ -169,11 +181,17 @@ class Config:
         """Convert config to dictionary for serialization"""
         return {
             "db": {
+                "get_connection_timeout": self.db.get_connection_timeout,
+                "stop_writer_timeout": self.db.stop_writer_timeout,
                 "write_interval": self.db.write_interval,
                 "write_buffer_max_size": self.db.write_buffer_max_size,
-                "get_connection_timeout": self.db.get_connection_timeout,
-                "writer_thread_timeout": self.db.writer_thread_timeout,
-                "retry_delay": self.db.retry_delay,
+                "write_retry_delay": self.db.write_retry_delay,
+            },
+            "monitor": {
+                "get_gpu_timeout": self.monitor.get_gpu_timeout,
+                "stop_monitor_timeout": self.monitor.stop_monitor_timeout,
+                "monitor_interval": self.monitor.monitor_interval,
+                "monitor_retry_delay": self.monitor.monitor_retry_delay,
             },
             "beta_vae": {
                 "latent_dim": self.beta_vae.latent_dim,
