@@ -22,24 +22,26 @@ from skimage.transform import downscale_local_mean
 
 from config import Config
 from db import init_db, shutdown_db
-from logger import init_logger, shutdown_logger
+from logger import init_logger, init_worker_logging, shutdown_logger
 from monitor import init_monitor, shutdown_monitor
 from training import get_latest_tag, train_full_pipeline
 
-# Global flag to prevent multiprocessing workers triggering cleanup
-_MAIN_PROCESS_PID = os.getpid()
+logger = logging.getLogger(__name__)
 
-# Global flag to prevent double-execution of cleanup
-_CLEANUP_EXECUTED = False
+# Setup logging immediately after imports to ensure logging is configured before any other code runs
+init_logger("/datax/scratch/zachy/outputs/aetherscan/aetherscan.log")
 
 # TODO: move to preprocessing.py
 # Global variable to store chunk data for multiprocessing workers
 # This avoids serialization overhead when passing data to workers
 _GLOBAL_CHUNK_DATA = None
 
-# Setup logging immediately after imports to ensure logging is configured before any other code runs
-logger = logging.getLogger(__name__)
-log_queue, log_listener = init_logger("/datax/scratch/zachy/outputs/aetherscan/aetherscan.log")
+
+# Global flag to prevent multiprocessing workers triggering cleanup
+_MAIN_PROCESS_PID = os.getpid()
+
+# Global flag to prevent double-execution of cleanup
+_CLEANUP_EXECUTED = False
 
 
 def cleanup_all():
@@ -48,10 +50,11 @@ def cleanup_all():
 
     Execution order:
     1. Stop resource monitoring thread & save plots
-    2. Stop database writer (flushes remaining data)
-    3. Stop logging queue listener (flushes all remaining logs)
+    2. Stop database writer thread & flush remaining data
+    3. Stop logging listener queue & flush all remaining logs
 
-    Guards against double-execution from both atexit and signal handlers.
+    Skips calls from worker processes
+    Guards against double-execution (e.g. from atexit or signal handlers)
     """
     global _CLEANUP_EXECUTED
 
@@ -65,135 +68,64 @@ def cleanup_all():
         return
     _CLEANUP_EXECUTED = True
 
-    # Step 1: Stop resource monitoring and save plot
-    # This must happen BEFORE monitoring/logging cleanup so final messages can be logged
+    # Stop resource monitoring
     try:
         shutdown_monitor()
     except Exception as e:
         with contextlib.suppress(Exception):
             logger.error(f"Error during resource monitor shutdown: {e}")
 
-    # Step 2: Stop database (flushes remaining data)
-    # This must happen BEFORE logging cleanup so DB shutdown messages can be logged
+    # Stop database
     try:
         shutdown_db()
     except Exception as e:
         with contextlib.suppress(Exception):
             logger.error(f"Error during database cleanup: {e}")
 
-    # Step 3: Stop logging system (flushes all queued messages)
-    # This must happen LAST to capture all final log messages
+    # Stop logging
     with contextlib.suppress(Exception):
-        shutdown_logger(log_listener)
+        shutdown_logger()
         # Note that we can't log after stopping the listener, so no final message here
 
 
 def signal_handler(signum, frame):
     """
     Handle SIGINT (Ctrl+C) and SIGTERM (kill/docker stop) gracefully.
-
-    Ensures both resource monitoring and logging are properly cleaned up
-    before exiting.
     """
-    # We can still log here since cleanup_all() hasn't been called yet
-    with contextlib.suppress(Exception):
-        logger.info(f"Received signal {signum}, initiating cleanup...")
+    # Ignore workers
+    if os.getpid() != _MAIN_PROCESS_PID:
+        with contextlib.suppress(Exception):
+            logger.info(f"Ignoring signal {signum} from worker process (PID {os.getpid()})")
 
-    cleanup_all()
+    else:
+        with contextlib.suppress(Exception):
+            logger.info(f"Received signal {signum}, initiating cleanup...")
+        cleanup_all()
+
     sys.exit(0)
 
 
-# Register unified cleanup handler
-# This will fire on normal exit, but NOT on SIGINT/SIGTERM (handled separately)
+# Register cleanup handler to fire on normal exit
 atexit.register(cleanup_all)
 
-# Register signal handlers for interrupt and termination
-# These ensure cleanup happens even when process is killed
+# Register signal handler for interruptions and terminations
 signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # kill <pid> or docker stop
 
 
-def setup_gpu_config():
-    """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
-
-    os.environ["TF_GPU_ALLOCATOR"] = (
-        "cuda_malloc_async"  # Prevent memory fragmentation within each GPU
-    )
-    os.environ["TF_ENABLE_GPU_GARBAGE_COLLECTION"] = (
-        "true"  # Aggressive cleanup of intermediate tensors
-    )
-
-    gpus = tf.config.list_physical_devices("GPU")
-    if gpus:
-        try:
-            # Set equal memory limits for all GPUs
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-                tf.config.experimental.set_virtual_device_configuration(
-                    gpu,
-                    [
-                        tf.config.experimental.VirtualDeviceConfiguration(memory_limit=14000)
-                    ],  # 14GiB limit per GPU
-                )
-
-            # Set distributed strategy to prevent uneven GPU memory usage
-            try:
-                # Primary choice: NCCL for NVIDIA GPUs
-                strategy = tf.distribute.MirroredStrategy(
-                    cross_device_ops=tf.distribute.NcclAllReduce(num_packs=2)
-                )
-                logger.info("Using NcclAllReduce for optimal NVIDIA GPU performance")
-
-            except Exception as e:
-                # Fallback: HierarchicalCopyAllReduce
-                logger.warning(f"NCCL failed ({e}), using HierarchicalCopyAllReduce")
-                strategy = tf.distribute.MirroredStrategy(
-                    cross_device_ops=tf.distribute.HierarchicalCopyAllReduce(num_packs=2)
-                )
-
-            logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
-            return strategy
-
-        except RuntimeError as e:
-            logger.error(f"GPU configuration error: {e}")
-            return None
-
-    else:
-        logger.warning("No GPUs detected, running on CPU")
-        return None
-
-
 # TODO: move to preprocessing.py
-def _init_background_worker(chunk_data, log_queue=None):
+def _init_background_worker(chunk_data):
     """
     Initialize worker process with chunk data and queue-based logging
 
     Args:
         chunk_data: Background data chunk to process
-        log_queue: Queue for sending log messages to main process (optional)
     """
     global _GLOBAL_CHUNK_DATA
     _GLOBAL_CHUNK_DATA = chunk_data
 
-    import logging
-    import sys
-
-    # Reset stdout/stderr to avoid inherited StreamToLogger from parent
-    sys.stdout = sys.__stdout__
-    sys.stderr = sys.__stderr__
-
-    # Configure process-local logging to use queue
-    if log_queue is not None:
-        from logging.handlers import QueueHandler
-
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
-        root_logger.addHandler(QueueHandler(log_queue))
-        root_logger.setLevel(logging.INFO)
-    else:
-        # If no queue provided, disable logging to avoid conflicts
-        logging.getLogger().handlers.clear()
-        logging.getLogger().addHandler(logging.NullHandler())
+    # Initialize worker logging
+    init_worker_logging()
 
 
 # TODO: move to preprocessing.py
@@ -300,7 +232,7 @@ def load_background_data(config: Config, n_processes: int | None = None) -> np.n
                 with Pool(
                     processes=n_processes,
                     initializer=_init_background_worker,
-                    initargs=(chunk_data, log_queue),
+                    initargs=(chunk_data,),
                 ) as pool:
                     # Prepare arguments (just indices, not data - data is in global state)
                     n_cadences = min(
@@ -363,208 +295,253 @@ def load_background_data(config: Config, n_processes: int | None = None) -> np.n
     return background_array
 
 
-def train_command(args):
-    """Execute training pipeline with distributed strategy & fault tolerance"""
-    try:
-        logger.info("=" * 60)
-        logger.info("Starting Aetherscan Training Pipeline")
-        logger.info("=" * 60)
+def setup_gpu_config():
+    """Configure GPU memory growth, memory limits, multi-GPU strategy with load balancing & async allocator"""
 
-        # Load configuration
-        config = Config()
+    os.environ["TF_GPU_ALLOCATOR"] = (
+        "cuda_malloc_async"  # Prevent memory fragmentation within each GPU
+    )
+    os.environ["TF_ENABLE_GPU_GARBAGE_COLLECTION"] = (
+        "true"  # Aggressive cleanup of intermediate tensors
+    )
 
-        # TODO: double check args match main()
-        # TODO: double check overrides match config.py
-        # Override config values with CLI args
-        if args.num_target_backgrounds:
-            config.data.num_target_backgrounds = args.num_target_backgrounds
-        if args.background_load_chunk_size:
-            config.data.background_load_chunk_size = args.background_load_chunk_size
-        if args.max_chunks_per_file:
-            config.data.max_chunks_per_file = args.max_chunks_per_file
-        if args.train_files:
-            config.data.train_files = args.train_files
-        if args.rounds:
-            config.training.num_training_rounds = args.rounds
-        if args.epochs:
-            config.training.epochs_per_round = args.epochs
-        if args.num_samples_beta_vae:
-            config.training.num_samples_beta_vae = args.num_samples_beta_vae
-        if args.num_samples_rf:
-            config.training.num_samples_rf = args.num_samples_rf
-        if args.train_val_split:
-            config.training.train_val_split = args.train_val_split
-        if args.batch_size:
-            config.training.per_replica_batch_size = args.batch_size
-        if args.global_batch_size:
-            config.training.global_batch_size = args.global_batch_size
-        if args.val_batch_size:
-            config.training.per_replica_val_batch_size = args.val_batch_size
-        if args.signal_injection_chunk_size:
-            config.training.signal_injection_chunk_size = args.signal_injection_chunk_size
-        if args.snr_base:
-            config.training.snr_base = args.snr_base
-        if args.initial_snr_range:
-            config.training.initial_snr_range = args.initial_snr_range
-        if args.final_snr_range:
-            config.training.final_snr_range = args.final_snr_range
-        if args.curriculum_schedule:
-            config.training.curriculum_schedule = args.curriculum_schedule
-        if args.exponential_decay_rate:
-            config.training.exponential_decay_rate = args.exponential_decay_rate
-        if args.step_easy_rounds:
-            config.training.step_easy_rounds = args.step_easy_rounds
-        if args.step_hard_rounds:
-            config.training.step_hard_rounds = args.step_hard_rounds
-        if args.base_learning_rate:
-            config.training.base_learning_rate = args.base_learning_rate
-        if args.min_learning_rate:
-            config.training.min_learning_rate = args.min_learning_rate
-        if args.min_pct_improvement:
-            config.training.min_pct_improvement = args.min_pct_improvement
-        if args.patience_threshold:
-            config.training.patience_threshold = args.patience_threshold
-        if args.reduction_factor:
-            config.training.reduction_factor = args.reduction_factor
-        if args.max_retries:
-            config.training.max_retries = args.max_retries
-        if args.retry_delay:
-            config.training.retry_delay = args.retry_delay
-        if args.load_tag:
-            tag = args.load_tag
-            # Start training from the round proceeding model checkpoint
-            start_round = int(tag.split("_")[1]) + 1 if tag.startswith("round_") else 1
-        else:
-            tag = None
-            start_round = 1
-        dir = args.load_dir if args.load_dir else None
-        final_tag = args.save_tag if args.save_tag else None
-
-        # Initialize database
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
         try:
-            init_db(config)
-            logger.info("Database initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            sys.exit(1)
-
-        # Initialize resource monitoring
-        try:
-            init_monitor(config, tag=final_tag)
-            logger.info("Resource monitor initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize resource monitoring: {e}")
-            sys.exit(1)
-
-        # Setup GPU and get strategy
-        strategy = setup_gpu_config()
-
-        logger.info("Configuration:")
-        logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
-        logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
-        logger.info(f"  Data path: {config.data_path}")
-        logger.info(f"  Model path: {config.model_path}")
-        logger.info(f"  Output path: {config.output_path}")
-
-        # Load and preprocess background data
-        try:
-            background_data = load_background_data(config)
-        except Exception as e:
-            logger.error(f"Failed to load background data: {e}")
-            sys.exit(1)
-
-        logger.info(f"Background data loaded: {background_data.shape}")
-
-        # Train models with fault tolerance
-        logger.info("Starting training pipeline...")
-
-        max_retries = config.training.max_retries
-        retry_delay = config.training.retry_delay
-
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Training attempt: {attempt + 1}/{max_retries}")
-
-                if attempt > 0:
-                    logger.info(f"Retrying training from round {start_round}")
-
-                # Reinitialize training pipeline on each attempt so no corrupted state is persisted
-                pipeline = train_full_pipeline(
-                    config,
-                    background_data,
-                    strategy=strategy,
-                    tag=tag,
-                    dir=dir,
-                    start_round=start_round,
-                    final_tag=final_tag,
-                    log_queue=log_queue,
+            # Set equal memory limits for all GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                tf.config.experimental.set_virtual_device_configuration(
+                    gpu,
+                    [
+                        tf.config.experimental.VirtualDeviceConfiguration(memory_limit=14000)
+                    ],  # 14GiB limit per GPU
                 )
 
-                # If we get here, training succeeded
-                break
-
-            except KeyboardInterrupt:
-                # Don't retry on user interruption
-                logger.info("Training interrupted by user")
-                raise
+            # Set distributed strategy to prevent uneven GPU memory usage
+            try:
+                # Primary choice: NCCL for NVIDIA GPUs
+                strategy = tf.distribute.MirroredStrategy(
+                    cross_device_ops=tf.distribute.NcclAllReduce(num_packs=2)
+                )
+                logger.info("Using NcclAllReduce for optimal NVIDIA GPU performance")
 
             except Exception as e:
-                logger.error(f"Training attempt {attempt + 1} failed with error: {e}")
+                # Fallback: HierarchicalCopyAllReduce
+                logger.warning(f"NCCL failed ({e}), using HierarchicalCopyAllReduce")
+                strategy = tf.distribute.MirroredStrategy(
+                    cross_device_ops=tf.distribute.HierarchicalCopyAllReduce(num_packs=2)
+                )
 
-                if attempt < max_retries - 1:
-                    # Retry training
+            logger.info(f"Distributed strategy: {strategy.num_replicas_in_sync} GPUs")
+            return strategy
+
+        except RuntimeError as e:
+            logger.error(f"GPU configuration error: {e}")
+            return None
+
+    else:
+        logger.warning("No GPUs detected, running on CPU")
+        return None
+
+
+def train_command(args):
+    """Execute training pipeline with distributed strategy & fault tolerance"""
+    logger.info("=" * 60)
+    logger.info("Starting Aetherscan Training Pipeline")
+    logger.info("=" * 60)
+
+    # Load configuration
+    config = Config()
+
+    # TODO: double check args match main()
+    # TODO: double check overrides match config.py
+    # Override config values with CLI args
+    if args.num_target_backgrounds:
+        config.data.num_target_backgrounds = args.num_target_backgrounds
+    if args.background_load_chunk_size:
+        config.data.background_load_chunk_size = args.background_load_chunk_size
+    if args.max_chunks_per_file:
+        config.data.max_chunks_per_file = args.max_chunks_per_file
+    if args.train_files:
+        config.data.train_files = args.train_files
+    if args.rounds:
+        config.training.num_training_rounds = args.rounds
+    if args.epochs:
+        config.training.epochs_per_round = args.epochs
+    if args.num_samples_beta_vae:
+        config.training.num_samples_beta_vae = args.num_samples_beta_vae
+    if args.num_samples_rf:
+        config.training.num_samples_rf = args.num_samples_rf
+    if args.train_val_split:
+        config.training.train_val_split = args.train_val_split
+    if args.batch_size:
+        config.training.per_replica_batch_size = args.batch_size
+    if args.global_batch_size:
+        config.training.global_batch_size = args.global_batch_size
+    if args.val_batch_size:
+        config.training.per_replica_val_batch_size = args.val_batch_size
+    if args.signal_injection_chunk_size:
+        config.training.signal_injection_chunk_size = args.signal_injection_chunk_size
+    if args.snr_base:
+        config.training.snr_base = args.snr_base
+    if args.initial_snr_range:
+        config.training.initial_snr_range = args.initial_snr_range
+    if args.final_snr_range:
+        config.training.final_snr_range = args.final_snr_range
+    if args.curriculum_schedule:
+        config.training.curriculum_schedule = args.curriculum_schedule
+    if args.exponential_decay_rate:
+        config.training.exponential_decay_rate = args.exponential_decay_rate
+    if args.step_easy_rounds:
+        config.training.step_easy_rounds = args.step_easy_rounds
+    if args.step_hard_rounds:
+        config.training.step_hard_rounds = args.step_hard_rounds
+    if args.base_learning_rate:
+        config.training.base_learning_rate = args.base_learning_rate
+    if args.min_learning_rate:
+        config.training.min_learning_rate = args.min_learning_rate
+    if args.min_pct_improvement:
+        config.training.min_pct_improvement = args.min_pct_improvement
+    if args.patience_threshold:
+        config.training.patience_threshold = args.patience_threshold
+    if args.reduction_factor:
+        config.training.reduction_factor = args.reduction_factor
+    if args.max_retries:
+        config.training.max_retries = args.max_retries
+    if args.retry_delay:
+        config.training.retry_delay = args.retry_delay
+    if args.load_tag:
+        tag = args.load_tag
+        # Start training from the round proceeding model checkpoint
+        start_round = int(tag.split("_")[1]) + 1 if tag.startswith("round_") else 1
+    else:
+        tag = None
+        start_round = 1
+    dir = args.load_dir if args.load_dir else None
+    final_tag = args.save_tag if args.save_tag else None
+
+    # Initialize database
+    try:
+        init_db(config)
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        sys.exit(1)
+
+    # Initialize resource monitoring
+    try:
+        init_monitor(config, tag=final_tag)
+        logger.info("Resource monitor initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize resource monitoring: {e}")
+        sys.exit(1)
+
+    # Setup GPU and get strategy
+    strategy = setup_gpu_config()
+
+    logger.info("Configuration:")
+    logger.info(f"  Number of rounds: {config.training.num_training_rounds}")
+    logger.info(f"  Epochs per round: {config.training.epochs_per_round}")
+    logger.info(f"  Data path: {config.data_path}")
+    logger.info(f"  Model path: {config.model_path}")
+    logger.info(f"  Output path: {config.output_path}")
+
+    # Load and preprocess background data
+    try:
+        background_data = load_background_data(config)
+    except Exception as e:
+        logger.error(f"Failed to load background data: {e}")
+        sys.exit(1)
+
+    logger.info(f"Background data loaded: {background_data.shape}")
+
+    # Train models with fault tolerance
+    logger.info("Starting training pipeline...")
+
+    max_retries = config.training.max_retries
+    retry_delay = config.training.retry_delay
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Training attempt: {attempt + 1}/{max_retries}")
+
+            if attempt > 0:
+                logger.info(f"Retrying training from round {start_round}")
+
+            # Reinitialize training pipeline on each attempt so no corrupted state is persisted
+            pipeline = train_full_pipeline(
+                config,
+                background_data,
+                strategy=strategy,
+                tag=tag,
+                dir=dir,
+                start_round=start_round,
+                final_tag=final_tag,
+            )
+
+            # If we get here, training succeeded
+            break
+
+        except KeyboardInterrupt:
+            # Don't retry on user interruption
+            logger.info("Training interrupted by user")
+            raise
+
+        except Exception as e:
+            logger.error(f"Training attempt {attempt + 1} failed with error: {e}")
+
+            if attempt < max_retries - 1:
+                # Retry training
+                logger.info(
+                    f"Attempting to recover from failure: attempt {attempt + 2}/{max_retries}"
+                )
+
+                try:
+                    # Clean up failed pipeline
+                    if "pipeline" in locals():
+                        del pipeline
+                    gc.collect()
+                    logger.info("Cleaned up failed pipeline")
+
+                    # Find the latest checkpoint & determine where to resume from
+                    dir = "checkpoints"
+                    tag = get_latest_tag(os.path.join(config.model_path, dir))
+                    if tag.startswith("round_"):
+                        start_round = (
+                            int(tag.split("_")[1]) + 1
+                        )  # Start training from the round proceeding model checkpoint
+                        logger.info(f"Loaded latest checkpoint from round {start_round - 1}")
+                    else:
+                        logger.info("No valid checkpoints loaded")
+                        raise ValueError("No valid checkpoints loaded")
+
+                    logger.info(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+
+                except Exception as recovery_error:
+                    # If no checkpoints loaded, restart from last valid start_round
+                    logger.error(f"Recovery failed: {recovery_error}")
                     logger.info(
-                        f"Attempting to recover from failure: attempt {attempt + 2}/{max_retries}"
+                        f"Restarting training from round {start_round} in {retry_delay} seconds"
                     )
+                    time.sleep(retry_delay)
 
-                    try:
-                        # Clean up failed pipeline
-                        if "pipeline" in locals():
-                            del pipeline
-                        gc.collect()
-                        logger.info("Cleaned up failed pipeline")
+            else:
+                # Max retries exceeded
+                logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
+                logger.error(f"Final error: {e}")
+                sys.exit(1)
 
-                        # Find the latest checkpoint & determine where to resume from
-                        dir = "checkpoints"
-                        tag = get_latest_tag(os.path.join(config.model_path, dir))
-                        if tag.startswith("round_"):
-                            start_round = (
-                                int(tag.split("_")[1]) + 1
-                            )  # Start training from the round proceeding model checkpoint
-                            logger.info(f"Loaded latest checkpoint from round {start_round - 1}")
-                        else:
-                            logger.info("No valid checkpoints loaded")
-                            raise ValueError("No valid checkpoints loaded")
+    # Save configuration
+    config_path = os.path.join(config.model_path, f"config_{final_tag}.json")
+    with open(config_path, "w") as f:
+        json.dump(config.to_dict(), f, indent=2)
+    logger.info(f"Configuration saved to {config_path}")
 
-                        logger.info(f"Waiting {retry_delay} seconds before retry...")
-                        time.sleep(retry_delay)
-
-                    except Exception as recovery_error:
-                        # If no checkpoints loaded, restart from last valid start_round
-                        logger.error(f"Recovery failed: {recovery_error}")
-                        logger.info(
-                            f"Restarting training from round {start_round} in {retry_delay} seconds"
-                        )
-                        time.sleep(retry_delay)
-
-                else:
-                    # Max retries exceeded
-                    logger.error(f"Training attempts exceeded maximum retries ({max_retries})")
-                    logger.error(f"Final error: {e}")
-                    sys.exit(1)
-
-        # Save configuration
-        config_path = os.path.join(config.model_path, f"config_{final_tag}.json")
-        with open(config_path, "w") as f:
-            json.dump(config.to_dict(), f, indent=2)
-        logger.info(f"Configuration saved to {config_path}")
-
-        logger.info("=" * 60)
-        logger.info("Training completed successfully!")
-        logger.info("=" * 60)
-
-    finally:
-        cleanup_all()
+    logger.info("=" * 60)
+    logger.info("Training completed successfully!")
+    logger.info("=" * 60)
 
 
 # NOTE: come back to this later
@@ -905,6 +882,7 @@ def main():
     # elif args.command == 'evaluate':
     #     evaluate_command(args)
     else:
+        # NOTE: what does this do?
         parser.print_help()
         sys.exit(1)
 

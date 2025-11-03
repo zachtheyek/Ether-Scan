@@ -7,11 +7,13 @@ from __future__ import annotations
 import gc
 import logging
 import random
-from multiprocessing import Pool, Queue, cpu_count, shared_memory
+from multiprocessing import Pool, cpu_count, shared_memory
 
 import numpy as np
 import setigen as stg
 from astropy import units as u
+
+from logger import init_worker_logging
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ _GLOBAL_SHAPE = None
 _GLOBAL_DTYPE = None
 
 
-def _init_worker(shm_name, shape, dtype, log_queue=None):
+def _init_worker(shm_name, shape, dtype):
     """
     Initialize worker process with shared memory reference and queue-based logging
     This avoids copying data to each worker, saving memory
@@ -32,7 +34,6 @@ def _init_worker(shm_name, shape, dtype, log_queue=None):
         shm_name: Name of the shared memory block
         shape: Shape of the background array
         dtype: Data type of the background array
-        log_queue: Queue for sending log messages to main process (optional)
 
     Note:
         Worker cleanup is automatic - when the pool terminates, the OS reclaims
@@ -41,26 +42,10 @@ def _init_worker(shm_name, shape, dtype, log_queue=None):
     """
     global _GLOBAL_SHM, _GLOBAL_BACKGROUNDS, _GLOBAL_SHAPE, _GLOBAL_DTYPE
 
-    import logging
     import os
-    import sys
 
-    # Reset stdout/stderr to avoid inherited StreamToLogger from parent
-    sys.stdout = sys.__stdout__
-    sys.stderr = sys.__stderr__
-
-    # Configure process-local logging to use queue
-    if log_queue is not None:
-        from logging.handlers import QueueHandler
-
-        root_logger = logging.getLogger()
-        root_logger.handlers.clear()
-        root_logger.addHandler(QueueHandler(log_queue))
-        root_logger.setLevel(logging.INFO)
-    else:
-        # If no queue provided, disable logging to avoid conflicts
-        logging.getLogger().handlers.clear()
-        logging.getLogger().addHandler(logging.NullHandler())
+    # Initialize worker logging
+    init_worker_logging()
 
     # Seed processes with process IDs so each worker gets a different random state
     random.seed(os.getpid())
@@ -464,7 +449,6 @@ class DataGenerator:
         config,
         background_plates: np.ndarray,
         n_processes: int | None = None,
-        log_queue: Queue | None = None,
     ):
         """
         Initialize generator
@@ -474,10 +458,8 @@ class DataGenerator:
             background_plates: Array of background observations
                               Shape: (n_backgrounds, 6, 16, 512) after preprocessing
             n_processes: Number of parallel processes for signal injection (defaults to cpu_count())
-            log_queue: Queue for worker process logging (optional, for multiprocessing safety)
         """
         self.config = config
-        self.log_queue = log_queue  # Store for worker initialization
 
         # Sanity check: verify no NaN or Inf values in background plates
         if np.isnan(background_plates).any():
@@ -526,7 +508,6 @@ class DataGenerator:
                     self.shm.name,
                     self._background_shape,
                     self._background_dtype,
-                    self.log_queue,
                 ),
             )
 

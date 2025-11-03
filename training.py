@@ -27,6 +27,7 @@ from models import RandomForestModel, create_beta_vae_model
 logger = logging.getLogger(__name__)
 
 
+# NOTE: move this to main.py so directories are setup at the start of train_command()?
 def handle_directory(base_dir: str, target_dirs: list[str] | None = None, round_num: int = 1):
     """
     Archive and clean up a directory
@@ -530,9 +531,7 @@ def check_encoder_trained(encoder, threshold=0.2):
 class TrainingPipeline:
     """Training pipeline"""
 
-    def __init__(
-        self, config, background_data: np.ndarray, strategy=None, start_round=1, log_queue=None
-    ):
+    def __init__(self, config, background_data: np.ndarray, strategy=None, start_round=1):
         """
         Initialize training pipeline
 
@@ -541,7 +540,6 @@ class TrainingPipeline:
             background_data: Preprocessed background observations
             strategy: TensorFlow distribution strategy
             start_round: Round number to start training from
-            log_queue: Queue for multiprocessing logging (optional)
         """
         self.config = config
         self.strategy = strategy or tf.distribute.get_strategy()
@@ -551,7 +549,7 @@ class TrainingPipeline:
         logger.info(f"Background data shape: {background_data.shape}")
 
         # Initialize components with log queue for multiprocessing safety
-        self.data_generator = DataGenerator(config, background_data, log_queue=log_queue)
+        self.data_generator = DataGenerator(config, background_data)
 
         # Create VAE model & optimizer inside distributed context
         with self.strategy.scope():
@@ -1522,7 +1520,6 @@ def train_full_pipeline(
     dir=None,
     start_round=1,
     final_tag=None,
-    log_queue=None,
 ) -> TrainingPipeline:
     """
     Train complete Aetherscan pipeline
@@ -1530,13 +1527,12 @@ def train_full_pipeline(
         config: Configuration object
         background_data: Preprocessed background observations
         strategy: TensorFlow distribution strategy
-        log_queue: Queue for multiprocessing logging (optional)
 
     Returns:
         Trained pipeline object
     """
     # Create pipeline
-    pipeline = TrainingPipeline(config, background_data, strategy, start_round, log_queue)
+    pipeline = TrainingPipeline(config, background_data, strategy, start_round)
 
     # Resume from checkpoint if provided
     if tag:
