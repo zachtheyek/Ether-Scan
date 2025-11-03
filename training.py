@@ -581,6 +581,7 @@ class TrainingPipeline:
         # Setup TensorBoard logging
         self.setup_tensorboard_logging(start_round)
 
+    # NOTE: when does this run?
     def __del__(self):
         """Cleanup TensorBoard writers and data generator"""
         if hasattr(self, "train_writer"):

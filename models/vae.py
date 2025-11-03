@@ -3,6 +3,8 @@
 Beta-VAE model implementation for Aetherscan Pipeline
 """
 
+from __future__ import annotations
+
 import logging
 
 import tensorflow as tf

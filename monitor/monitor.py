@@ -1,6 +1,6 @@
 """
 Resource monitor for Aetherscan Pipeline
-Runs in background as a daemon thread with writes to SQLite database
+Runs as background thread & records system metrics (CPU, RAM, GPU) to database
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ class ResourceMonitor:
             return
 
         self.stop_event.clear()
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=False)
         self.monitor_thread.start()
         logger.info("Resource monitoring thread started")
 
@@ -139,7 +139,7 @@ class ResourceMonitor:
                 current_time = time.time()
 
                 if self.db is None:
-                    raise RuntimeError("Database not initialized - cannot run monitoring loop")
+                    raise RuntimeError("No database instance detected - cannot run monitoring loop")
 
                 # Get system resources & queue db writes (non-blocking)
                 self.db.write_system_resource(
@@ -307,7 +307,7 @@ class ResourceMonitor:
 
         # Query resource metrics from database
         if self.db is None:
-            raise RuntimeError("Database not initialized - cannot generate plot")
+            raise RuntimeError("No database instance detected - cannot generate resource plot")
 
         all_resources = self.db.query_system_resource(
             start_time=self.start_time,

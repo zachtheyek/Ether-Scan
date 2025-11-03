@@ -22,13 +22,17 @@ from skimage.transform import downscale_local_mean
 
 from config import Config
 from db import init_db, shutdown_db
-from logger import init_logger
+from logger import init_logger, shutdown_logger
 from monitor import init_monitor, shutdown_monitor
 from training import get_latest_tag, train_full_pipeline
+
+# Global flag to prevent multiprocessing workers triggering cleanup
+_MAIN_PROCESS_PID = os.getpid()
 
 # Global flag to prevent double-execution of cleanup
 _CLEANUP_EXECUTED = False
 
+# TODO: move to preprocessing.py
 # Global variable to store chunk data for multiprocessing workers
 # This avoids serialization overhead when passing data to workers
 _GLOBAL_CHUNK_DATA = None
@@ -50,6 +54,11 @@ def cleanup_all():
     Guards against double-execution from both atexit and signal handlers.
     """
     global _CLEANUP_EXECUTED
+
+    # Ignore workers
+    if os.getpid() != _MAIN_PROCESS_PID:
+        logger.info(f"Skipping cleanup in worker process (PID: {os.getpid()})")
+        return
 
     # Guard against double execution
     if _CLEANUP_EXECUTED:
@@ -75,7 +84,7 @@ def cleanup_all():
     # Step 3: Stop logging system (flushes all queued messages)
     # This must happen LAST to capture all final log messages
     with contextlib.suppress(Exception):
-        log_listener.stop()
+        shutdown_logger(log_listener)
         # Note that we can't log after stopping the listener, so no final message here
 
 
@@ -154,6 +163,7 @@ def setup_gpu_config():
         return None
 
 
+# TODO: move to preprocessing.py
 def _init_background_worker(chunk_data, log_queue=None):
     """
     Initialize worker process with chunk data and queue-based logging
@@ -186,6 +196,7 @@ def _init_background_worker(chunk_data, log_queue=None):
         logging.getLogger().addHandler(logging.NullHandler())
 
 
+# TODO: move to preprocessing.py
 def _downsample_cadence_worker(args):
     """
     Worker function to downsample a single cadence in parallel
@@ -222,6 +233,7 @@ def _downsample_cadence_worker(args):
         return None
 
 
+# TODO: move to preprocessing.py
 def load_background_data(config: Config, n_processes: int | None = None) -> np.ndarray:
     """
     Load & downsample background plates for pipeline using parallel processing

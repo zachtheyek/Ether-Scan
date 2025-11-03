@@ -1,5 +1,5 @@
 """
-Database management for Aetherscan Pipeline
+Database for Aetherscan Pipeline
 Uses SQLite with asynchronous queue-based writes to handle concurrent data collection from multiple
 processes safely
 """

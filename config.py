@@ -5,6 +5,8 @@
 Configuration module for Aetherscan Pipeline
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 

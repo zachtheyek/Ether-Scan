@@ -1,7 +1,12 @@
+# NOTE: should we implement a singleton logger instance like in db and monitor?
+# NOTE: implement get_logger instead of passing logger objects as args
 """
 Logger for Aetherscan Pipeline
-Uses queue-based logging to avoid deadlocks and corrupted output from worker processes
+Uses thread-safe queue-based logging to avoid deadlocks and corrupted outputs from
+multiple worker processes
 """
+
+from __future__ import annotations
 
 import logging
 import os
@@ -72,8 +77,10 @@ def init_logger(log_filepath: str) -> tuple[Queue, QueueListener]:
     stream_handler.setFormatter(formatter)
 
     # Create queue listener - runs in background thread, writes logs from queue
-    listener = QueueListener(log_queue, file_handler, stream_handler, respect_handler_level=True)
-    listener.start()
+    log_listener = QueueListener(
+        log_queue, file_handler, stream_handler, respect_handler_level=True
+    )
+    log_listener.start()
 
     # Add queue handler to root logger (both main and workers use this)
     queue_handler = QueueHandler(log_queue)
@@ -97,4 +104,8 @@ def init_logger(log_filepath: str) -> tuple[Queue, QueueListener]:
     sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
     sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
 
-    return log_queue, listener
+    return log_queue, log_listener
+
+
+def shutdown_logger(log_listener):
+    log_listener.stop()

@@ -568,6 +568,7 @@ class DataGenerator:
             finally:
                 self.shm = None
 
+    # NOTE: when does this run?
     def __del__(self):
         """Clean up multiprocessing pool and shared memory on deletion"""
         from contextlib import suppress

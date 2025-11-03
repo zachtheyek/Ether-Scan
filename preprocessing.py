@@ -2,8 +2,8 @@
 Data preprocessing module for Aetherscan Pipeline
 """
 
-# from numba import jit, prange
-# from typing import Tuple, List, Dict
+from __future__ import annotations
+
 import logging
 
 logger = logging.getLogger(__name__)
