@@ -1,14 +1,15 @@
-name: Linter
+name: Pre-commit Hooks
 
-# Run on every push and PR, to any branch
+# Run on every push and PR, to any branch, or via manual trigger
 on:
   push:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_dispatch:
 
 jobs:
-  ruff:
+  pre-commit:
     runs-on: ubuntu-latest
     steps:
       # Pull repo contents into GitHub Actions runner
@@ -40,7 +41,7 @@ jobs:
           key: ruff-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
 
       # Run pre-commit hooks defined in .pre-commit-config.yaml
-      # Includes linter, formatter, and other safety checks
+      # Includes linter, formatter, secrets scanning, and other safety checks
       # Guarantees consistency between local development & remote validation
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1

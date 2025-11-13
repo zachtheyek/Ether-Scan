@@ -3,7 +3,7 @@
 repos:
   # Ruff - fast Python linter and formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.14.4
     hooks:
       # Run linter
       - id: ruff
@@ -15,7 +15,7 @@ repos:
 
   # Additional general-purpose safety hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       # Block commits with large binaries (>1 Mb)
       - id: check-added-large-files
@@ -32,6 +32,15 @@ repos:
       - id: end-of-file-fixer
       # Trim trailing whitespace
       - id: trailing-whitespace
+      # Check for private keys (vulnerability)
+      - id: detect-private-key
+      # TODO: uncomment after configuring repo branch protection rules
       # Blocks commits directly to master to main branch
-      - id: no-commit-to-branch
-        args: ['--branch', 'master']
+      # - id: no-commit-to-branch
+      #   args: ['--branch', 'master']
+
+  # Gitleaks - scan for secrets and credentials
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.29.0
+    hooks:
+      - id: gitleaks
