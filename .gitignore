@@ -1,20 +1,11 @@
 # Forward-search paper
 2301.12670v1.pdf
 
-# Outputs & logs
+# Outputs
 outputs/
-*.log
 
-# Python environments
-venv/
+# Local development environment
 environment_nocuda.yml
-
-# Artifacts
-**/__pycache__/
-.ipynb_checkpoints/
 
 # Linter cache
 .ruff_cache
-
-# Claude configs
-.claude/
